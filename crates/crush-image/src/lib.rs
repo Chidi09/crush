@@ -199,13 +199,45 @@ impl ImageStore {
             }
         }
 
+        let mut stored_digests = Vec::new();
         for layer_digest in &layers {
             if self.blobs.contains(layer_digest) {
+                stored_digests.push(layer_digest.clone());
                 continue;
             }
 
             let client = self.registry_client.lock().await;
             let blob_data = client.fetch_blob(registry, image_name, layer_digest).await?;
+            drop(client);
 
             let compressed = compress::compress_zstd(&blob_data, 3)?;
-            let zstd_digest = self.blobs.at
+            let zstd_digest = self.blobs.atomic_write(&compressed)?;
+            stored_digests.push(zstd_digest);
+        }
+
+        let total_size: u64 = stored_digests.iter()
+            .filter_map(|d| std::fs::metadata(self.blobs.path_for_digest(d)).ok().map(|m| m.len()))
+            .sum();
+
+        let image_id = if digest.is_empty() {
+            stored_digests.first().cloned()
+                .unwrap_or_else(|| format!("sha256:{}", hex::encode(tag.as_bytes())))
+        } else {
+            digest.to_string()
+        };
+
+        let image = Image {
+            id: image_id.clone(),
+            tag: tag.to_string(),
+            digest: image_id,
+            size_bytes: total_size,
+            layers: stored_digests,
+            architecture: "amd64".to_string(),
+            os: "linux".to_string(),
+        };
+
+        self.db.put_image(&image).await?;
+
+        Ok(image)
+    }
+}
