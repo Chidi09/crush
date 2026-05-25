@@ -156,9 +156,9 @@ const SEARCH_ITEMS: SearchItem[] = [
 
             <!-- Search Dropdown Box (Appearing right below the button) -->
             @if (searchOpen()) {
-              <!-- Invisible backdrop to catch clicks outside the dropdown -->
+              <!-- Translucent blurred backdrop to capture clicks outside the dropdown and highlight focus -->
               <div 
-                class="fixed inset-0 z-40 bg-transparent cursor-default"
+                class="fixed inset-0 z-40 bg-black/15 backdrop-blur-[2px] animate-in fade-in-0 duration-200 cursor-default"
                 (click)="searchOpen.set(false)"
               ></div>
 
