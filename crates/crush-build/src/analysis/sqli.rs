@@ -50,10 +50,10 @@ static NOSQL_PATTERNS: &[&str] = &[
 
 // (pattern, description)
 static ORM_RAW_PATTERNS: &[(&str, &str)] = &[
-    (r"\.raw\(\s*f[\"']",         "Django raw() with f-string — SQL injection vector"),
-    (r"\.raw\(\s*[\"'][^\"']*\+", "Django raw() with string concatenation — SQL injection vector"),
-    (r"execute\(\s*f[\"']",       "SQLAlchemy execute() with f-string — SQL injection vector"),
-    (r"text\(\s*f[\"']",          "SQLAlchemy text() with f-string — SQL injection vector"),
+    (r#"\.raw\(\s*f["']"#,         "Django raw() with f-string — SQL injection vector"),
+    (r#"\.raw\(\s*["'][^"']*\+"#,  "Django raw() with string concatenation — SQL injection vector"),
+    (r#"execute\(\s*f["']"#,       "SQLAlchemy execute() with f-string — SQL injection vector"),
+    (r#"text\(\s*f["']"#,          "SQLAlchemy text() with f-string — SQL injection vector"),
 ];
 
 static CONN_STRING_FIX: &str =
