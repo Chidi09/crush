@@ -121,55 +121,22 @@ const SECURITY_ROWS: ComparisonRow[] = [
   imports: [CommonModule],
   template: `
     <div class="w-full space-y-6 font-sans">
-      <!-- Premium Glass Segmented Control / Tabs Header (SpartanUI style) -->
+      <!-- Premium Header Section (SpartanUI style) -->
       <div
-        class="flex flex-col sm:flex-row justify-between items-center gap-4 border-b border-crush-border/30 pb-4 select-none"
+        class="flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4 border-b border-crush-border/30 pb-4 select-none"
       >
-        <div
-          class="flex gap-1.5 p-1 rounded-xl border border-crush-border/40 bg-crush-dark/40 backdrop-blur-md"
-        >
-          <button
-            (click)="activeTab.set('performance')"
-            class="px-4 py-2 rounded-lg text-xs font-semibold tracking-wide transition-all duration-300 outline-none"
-            [ngClass]="
-              activeTab() === 'performance'
-                ? 'bg-gradient-to-r from-crush-orange to-crush-orangeLight text-white shadow-lg shadow-crush-orange/15 scale-[1.02]'
-                : 'text-crush-textMuted hover:text-white hover:bg-crush-surface/50'
-            "
-          >
-            Performance
-          </button>
-          <button
-            (click)="activeTab.set('features')"
-            class="px-4 py-2 rounded-lg text-xs font-semibold tracking-wide transition-all duration-300 outline-none"
-            [ngClass]="
-              activeTab() === 'features'
-                ? 'bg-gradient-to-r from-crush-orange to-crush-orangeLight text-white shadow-lg shadow-crush-orange/15 scale-[1.02]'
-                : 'text-crush-textMuted hover:text-white hover:bg-crush-surface/50'
-            "
-          >
-            Features
-          </button>
-          <button
-            (click)="activeTab.set('security')"
-            class="px-4 py-2 rounded-lg text-xs font-semibold tracking-wide transition-all duration-300 outline-none"
-            [ngClass]="
-              activeTab() === 'security'
-                ? 'bg-gradient-to-r from-crush-orange to-crush-orangeLight text-white shadow-lg shadow-crush-orange/15 scale-[1.02]'
-                : 'text-crush-textMuted hover:text-white hover:bg-crush-surface/50'
-            "
-          >
-            Security
-          </button>
+        <div>
+          <h4 class="text-sm font-semibold text-white tracking-wide">Crush vs. Docker Desktop</h4>
+          <p class="text-xs text-crush-textMuted mt-0.5">
+            A comprehensive unified comparison of performance, developer features, and security.
+          </p>
         </div>
-
-        <!-- Aligned Column Customization Action -->
-        <div class="flex items-center gap-2 select-none">
-          <span class="text-xs text-crush-textMuted font-medium">Category:</span>
+        <div class="flex items-center gap-2">
+          <span class="text-xs text-crush-textMuted font-medium">Scope:</span>
           <span
             class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-bold bg-crush-orange/10 text-crush-orangeLight border border-crush-orange/20 uppercase tracking-wider"
           >
-            {{ activeTab() }}
+            Unified Audit
           </span>
         </div>
       </div>
@@ -222,7 +189,232 @@ const SECURITY_ROWS: ComparisonRow[] = [
 
           <!-- Table Body -->
           <tbody class="divide-y divide-crush-border/20">
-            @for (row of getActiveRows(); track row.feature) {
+            <!-- PERFORMANCE SECTION -->
+            <tr
+              class="bg-crush-dark/60 text-[10px] font-bold uppercase tracking-widest text-crush-orangeLight select-none border-t border-b border-crush-border/30"
+            >
+              <td
+                colspan="6"
+                class="px-6 py-2.5 bg-gradient-to-r from-crush-orange/5 via-transparent to-transparent"
+              >
+                Performance Metrics
+              </td>
+            </tr>
+            @for (row of performanceRows; track row.feature) {
+              <tr class="hover:bg-crush-surface/30 transition-all duration-200 group">
+                <!-- Checkbox Row Selector -->
+                <td class="px-6 py-4 text-center">
+                  <div class="flex items-center justify-center select-none">
+                    <span
+                      class="h-3.5 w-3.5 rounded border border-crush-border/60 bg-crush-black/40 block hover:border-crush-orange/40 transition-colors"
+                    ></span>
+                  </div>
+                </td>
+
+                <!-- Feature -->
+                <td
+                  class="px-6 py-4 font-semibold text-crush-text group-hover:text-white transition-colors"
+                >
+                  {{ row.feature }}
+                </td>
+
+                <!-- Type Badge -->
+                <td class="px-6 py-4 select-none">
+                  <span
+                    class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-crush-surface/80 text-crush-textMuted border border-crush-border/30 uppercase tracking-wider font-mono"
+                  >
+                    {{ row.type }}
+                  </span>
+                </td>
+
+                <!-- Crush Spec (Green highlight if winner) -->
+                <td class="px-6 py-4 font-medium">
+                  @if (row.winner === 'crush') {
+                    <span
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shadow-sm animate-fade-in font-mono"
+                    >
+                      {{ row.crush }}
+                    </span>
+                  } @else {
+                    <span
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-crush-surface/40 text-crush-textMuted border border-crush-border/30"
+                    >
+                      {{ row.crush }}
+                    </span>
+                  }
+                </td>
+
+                <!-- Docker Desktop Spec -->
+                <td class="px-6 py-4 font-medium">
+                  @if (row.winner === 'docker') {
+                    <span
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20 shadow-sm animate-fade-in font-mono"
+                    >
+                      {{ row.docker }}
+                    </span>
+                  } @else {
+                    <span
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-crush-surface/40 text-crush-textMuted border border-crush-border/30 font-mono"
+                    >
+                      {{ row.docker }}
+                    </span>
+                  }
+                </td>
+
+                <!-- Status column (SpartanUI styled loader/checkmark check) -->
+                <td class="px-6 py-4 text-center select-none w-28">
+                  @if (row.status === 'done') {
+                    <span
+                      class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                    >
+                      <svg viewBox="0 0 24 24" class="h-3 w-3 fill-none stroke-current stroke-2.5">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                      Done
+                    </span>
+                  } @else {
+                    <span
+                      class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        class="h-3 w-3 fill-none stroke-current stroke-2.5 animate-spin"
+                      >
+                        <line x1="12" y1="2" x2="12" y2="6" />
+                        <line x1="12" y1="18" x2="12" y2="22" />
+                        <line x1="4.93" y1="4.93" x2="7.76" y2="7.76" />
+                        <line x1="16.24" y1="16.24" x2="19.07" y2="19.07" />
+                        <line x1="2" y1="12" x2="6" y2="12" />
+                        <line x1="18" y1="12" x2="22" y2="12" />
+                        <line x1="4.93" y1="19.07" x2="7.76" y2="16.24" />
+                        <line x1="16.24" y1="7.76" x2="19.07" y2="4.93" />
+                      </svg>
+                      WIP
+                    </span>
+                  }
+                </td>
+              </tr>
+            }
+
+            <!-- FEATURE SECTION -->
+            <tr
+              class="bg-crush-dark/60 text-[10px] font-bold uppercase tracking-widest text-crush-orangeLight select-none border-t border-b border-crush-border/30"
+            >
+              <td
+                colspan="6"
+                class="px-6 py-2.5 bg-gradient-to-r from-crush-orange/5 via-transparent to-transparent"
+              >
+                Developer Features
+              </td>
+            </tr>
+            @for (row of featureRows; track row.feature) {
+              <tr class="hover:bg-crush-surface/30 transition-all duration-200 group">
+                <!-- Checkbox Row Selector -->
+                <td class="px-6 py-4 text-center">
+                  <div class="flex items-center justify-center select-none">
+                    <span
+                      class="h-3.5 w-3.5 rounded border border-crush-border/60 bg-crush-black/40 block hover:border-crush-orange/40 transition-colors"
+                    ></span>
+                  </div>
+                </td>
+
+                <!-- Feature -->
+                <td
+                  class="px-6 py-4 font-semibold text-crush-text group-hover:text-white transition-colors"
+                >
+                  {{ row.feature }}
+                </td>
+
+                <!-- Type Badge -->
+                <td class="px-6 py-4 select-none">
+                  <span
+                    class="inline-flex items-center px-2 py-0.5 rounded-full text-[10px] font-semibold bg-crush-surface/80 text-crush-textMuted border border-crush-border/30 uppercase tracking-wider font-mono"
+                  >
+                    {{ row.type }}
+                  </span>
+                </td>
+
+                <!-- Crush Spec (Green highlight if winner) -->
+                <td class="px-6 py-4 font-medium">
+                  @if (row.winner === 'crush') {
+                    <span
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shadow-sm animate-fade-in font-mono"
+                    >
+                      {{ row.crush }}
+                    </span>
+                  } @else {
+                    <span
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-crush-surface/40 text-crush-textMuted border border-crush-border/30"
+                    >
+                      {{ row.crush }}
+                    </span>
+                  }
+                </td>
+
+                <!-- Docker Desktop Spec -->
+                <td class="px-6 py-4 font-medium">
+                  @if (row.winner === 'docker') {
+                    <span
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20 shadow-sm animate-fade-in font-mono"
+                    >
+                      {{ row.docker }}
+                    </span>
+                  } @else {
+                    <span
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-crush-surface/40 text-crush-textMuted border border-crush-border/30 font-mono"
+                    >
+                      {{ row.docker }}
+                    </span>
+                  }
+                </td>
+
+                <!-- Status column (SpartanUI styled loader/checkmark check) -->
+                <td class="px-6 py-4 text-center select-none w-28">
+                  @if (row.status === 'done') {
+                    <span
+                      class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                    >
+                      <svg viewBox="0 0 24 24" class="h-3 w-3 fill-none stroke-current stroke-2.5">
+                        <polyline points="20 6 9 17 4 12" />
+                      </svg>
+                      Done
+                    </span>
+                  } @else {
+                    <span
+                      class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                    >
+                      <svg
+                        viewBox="0 0 24 24"
+                        class="h-3 w-3 fill-none stroke-current stroke-2.5 animate-spin"
+                      >
+                        <line x1="12" y1="2" x2="12" y2="6" />
+                        <line x1="12" y1="18" x2="12" y2="22" />
+                        <line x1="4.93" y1="4.93" x2="7.76" y2="7.76" />
+                        <line x1="16.24" y1="16.24" x2="19.07" y2="19.07" />
+                        <line x1="2" y1="12" x2="6" y2="12" />
+                        <line x1="18" y1="12" x2="22" y2="12" />
+                        <line x1="4.93" y1="19.07" x2="7.76" y2="16.24" />
+                        <line x1="16.24" y1="7.76" x2="19.07" y2="4.93" />
+                      </svg>
+                      WIP
+                    </span>
+                  }
+                </td>
+              </tr>
+            }
+
+            <!-- SECURITY SECTION -->
+            <tr
+              class="bg-crush-dark/60 text-[10px] font-bold uppercase tracking-widest text-crush-orangeLight select-none border-t border-b border-crush-border/30"
+            >
+              <td
+                colspan="6"
+                class="px-6 py-2.5 bg-gradient-to-r from-crush-orange/5 via-transparent to-transparent"
+              >
+                Security & Supply Chain
+              </td>
+            </tr>
+            @for (row of securityRows; track row.feature) {
               <tr class="hover:bg-crush-surface/30 transition-all duration-200 group">
                 <!-- Checkbox Row Selector -->
                 <td class="px-6 py-4 text-center">
@@ -324,16 +516,7 @@ const SECURITY_ROWS: ComparisonRow[] = [
   `,
 })
 export class ComparisonTableComponent {
-  activeTab = signal<'performance' | 'features' | 'security'>('performance');
-
-  getActiveRows(): ComparisonRow[] {
-    switch (this.activeTab()) {
-      case 'performance':
-        return PERFORMANCE_ROWS;
-      case 'features':
-        return FEATURE_ROWS;
-      case 'security':
-        return SECURITY_ROWS;
-    }
-  }
+  performanceRows = PERFORMANCE_ROWS;
+  featureRows = FEATURE_ROWS;
+  securityRows = SECURITY_ROWS;
 }
