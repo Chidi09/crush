@@ -1,0 +1,51 @@
+{
+  "name": "crush-container-runtime",
+  "displayName": "Crush Container Runtime",
+  "description": "VS Code integration for Crush — container explorer, Crushfile support, one-click run",
+  "version": "0.1.0",
+  "publisher": "crush",
+  "license": "MIT",
+  "engines": { "vscode": "^1.85.0" },
+  "categories": ["Programming Languages", "Other"],
+  "activationEvents": ["onStartupFinished"],
+  "main": "./src/extension.js",
+  "contributes": {
+    "commands": [
+      { "command": "crush.run", "title": "Crush: Run Current Project" },
+      { "command": "crush.debug", "title": "Crush: Debug Container" },
+      { "command": "crush.ps", "title": "Crush: List Containers" },
+      { "command": "crush.logs", "title": "Crush: Show Container Logs" }
+    ],
+    "menus": {
+      "editor/title": [{
+        "when": "resourceLangId == crushfile",
+        "command": "crush.run"
+      }]
+    },
+    "languages": [{
+      "id": "crushfile",
+      "aliases": ["Crushfile", "crushfile"],
+      "filenamePatterns": ["Crushfile", "crushfile.toml"],
+      "configuration": "./language-configuration.json"
+    }],
+    "grammars": [{
+      "language": "crushfile",
+      "scopeName": "source.toml.crush",
+      "path": "./syntaxes/crushfile.tmLanguage.json"
+    }],
+    "viewsContainers": {
+      "activitybar": [{
+        "id": "crush-explorer",
+        "title": "Crush",
+        "icon": "icon.png"
+      }]
+    },
+    "views": {
+      "crush-explorer": [
+        { "id": "crush-containers", "name": "Containers" },
+        { "id": "crush-images", "name": "Images" },
+        { "id": "crush-volumes", "name": "Volumes" }
+      ]
+    }
+  }
+}

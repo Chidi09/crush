@@ -1,0 +1,42 @@
+name: Security & Auditing
+
+on:
+  schedule:
+    # Run weekly every Sunday at midnight
+    - cron: '0 0 * * 0'
+  push:
+    branches: [ main ]
+  pull_request:
+
+jobs:
+  security-audit:
+    name: Dependency Audit
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-audit
+        run: cargo install cargo-audit
+
+      - name: Run Vulnerability Audit
+        run: cargo audit
+
+  license-compliance:
+    name: License & Bans Audit (cargo-deny)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: Setup Rust Toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install cargo-deny
+        run: cargo install --locked cargo-deny
+
+      - name: Run cargo-deny checks
+        run: cargo deny check

@@ -1,0 +1,165 @@
+pub mod detect;
+pub mod version;
+pub mod env;
+pub mod multiservice;
+pub mod crushfile;
+pub mod parser;
+pub mod cache;
+pub mod pipeline;
+pub mod stages;
+pub mod secrets;
+pub mod ignore;
+pub mod cross;
+pub mod sbom;
+pub mod attest;
+pub mod progress;
+pub mod analysis;
+
+use std::path::PathBuf;
+use std::fs;
+use serde::{Serialize, Deserialize};
+use crush_types::{Result, CrushError};
+
+pub use detect::{CrushSpecDetector, Detection, RuntimeType, SubService};
+pub use parser::{CrushfileParser, Crushfile, CrushfileStage, CrushfileSecret};
+pub use cache::BuildCache;
+pub use pipeline::{BuildPipeline, PipelineResult};
+pub use stages::MultiStageGraph;
+pub use secrets::BuildSecrets;
+pub use progress::BuildProgress;
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct InferredStack {
+    pub language: String,
+    pub runtime_version: String,
+    pub build_command: String,
+    pub entry_point: String,
+    pub default_port: u16,
+    pub confidence: f32,
+}
+
+impl From<Detection> for InferredStack {
+    fn from(d: Detection) -> Self {
+        Self {
+            language: format!("{} ({})", d.runtime_type.as_str(), d.framework_name),
+            runtime_version: d.runtime_version,
+            build_command: d.build_command,
+            entry_point: d.entry_point,
+            default_port: d.port,
+            confidence: d.confidence,
+        }
+    }
+}
+
+pub struct StackDetector;
+
+impl StackDetector {
+    pub fn new() -> Self { Self }
+    pub async fn detect(&self, project_root: &PathBuf) -> Result<InferredStack> {
+        let d = CrushSpecDetector::new().detect(project_root);
+        Ok(InferredStack::from(d))
+    }
+}
+
+pub struct BuildEngine {
+    cache: BuildCache,
+    cache_dir: PathBuf,
+}
+
+impl BuildEngine {
+    pub fn new(cache_dir: PathBuf) -> Self {
+        fs::create_dir_all(&cache_dir).ok();
+        Self {
+            cache: BuildCache::new(cache_dir.clone()),
+            cache_dir,
+        }
+    }
+
+    pub async fn execute_layered_build(&self, project_root: &PathBuf, stack: &InferredStack) -> Result<String> {
+        use sha2::{Sha256, Digest};
+
+        let mut hasher = Sha256::new();
+        let mut all_content = Vec::new();
+        self.collect_files(project_root, &mut all_content).ok();
+        for content in &all_content { hasher.update(content); }
+        hasher.update(stack.language.as_bytes());
+        hasher.update(stack.build_command.as_bytes());
+
+        let digest = format!("sha256:{}", hex::encode(hasher.finalize()));
+        let layer_file = self.layer_path(&digest);
+
+        if layer_file.exists() { return Ok(digest); }
+
+        fs::create_dir_all(layer_file.parent().unwrap())
+            .map_err(|e| CrushError::StorageError(e.to_string()))?;
+
+        let mut tar_builder = tar::Builder::new(Vec::new());
+        self.add_files_to_tar(project_root, &mut tar_builder, &mut Vec::new()).ok();
+        let tar_data = tar_builder.into_inner()
+            .map_err(|e| CrushError::StorageError(e.to_string()))?;
+
+        let compressed = {
+            let mut encoder = zstd::Encoder::new(Vec::new(), 3)
+                .map_err(|e| CrushError::StorageError(e.to_string()))?;
+            std::io::Write::write_all(&mut encoder, &tar_data)
+                .map_err(|e| CrushError::StorageError(e.to_string()))?;
+            encoder.finish()
+                .map_err(|e| CrushError::StorageError(e.to_string()))?
+        };
+
+        fs::write(&layer_file, &compressed)
+            .map_err(|e| CrushError::StorageError(e.to_string()))?;
+
+        Ok(digest)
+    }
+
+    fn layer_path(&self, digest: &str) -> PathBuf {
+        self.cache_dir().join("layers").join(digest.replace(':', "_"))
+    }
+
+    fn cache_dir(&self) -> PathBuf {
+        self.cache_dir.clone()
+    }
+
+    fn collect_files(&self, dir: &PathBuf, result: &mut Vec<Vec<u8>>) -> Result<()> {
+        if !dir.is_dir() { return Ok(()); }
+        for entry in fs::read_dir(dir).map_err(|e| CrushError::StorageError(e.to_string()))? {
+            let entry = entry.map_err(|e| CrushError::StorageError(e.to_string()))?;
+            let path = entry.path();
+            if path.is_dir() {
+                let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+                if name == "target" || name == "node_modules" || name == ".git" { continue; }
+                self.collect_files(&path, result)?;
+            } else if path.is_file() {
+                if let Ok(data) = fs::read(&path) { result.push(data); }
+            }
+        }
+        Ok(())
+    }
+
+    fn add_files_to_tar(&self, dir: &PathBuf, tar: &mut tar::Builder<Vec<u8>>, prefix: &mut Vec<String>) -> Result<()> {
+        if !dir.is_dir() { return Ok(()); }
+        for entry in fs::read_dir(dir).map_err(|e| CrushError::StorageError(e.to_string()))? {
+            let entry = entry.map_err(|e| CrushError::StorageError(e.to_string()))?;
+            let path = entry.path();
+            let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
+            if name == "target" || name == "node_modules" || name == ".git" { continue; }
+            if path.is_dir() {
+                prefix.push(name);
+                self.add_files_to_tar(&path, tar, prefix)?;
+                prefix.pop();
+            } else if path.is_file() {
+                let data = fs::read(&path).map_err(|e| CrushError::StorageError(e.to_string()))?;
+                let full_name = prefix.iter().cloned().chain(std::iter::once(name)).collect::<Vec<_>>().join("/");
+                let mut header = tar::Header::new_gnu();
+                header.set_size(data.len() as u64);
+                header.set_mode(0o644);
+                header.set_mtime(0);
+                header.set_entry_type(tar::EntryType::Regular);
+                tar.append_data(&mut header, &full_name, &data[..])
+                    .map_err(|e| CrushError::StorageError(e.to_string()))?;
+            }
+        }
+        Ok(())
+    }
+}

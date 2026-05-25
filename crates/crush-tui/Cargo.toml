@@ -1,0 +1,22 @@
+[package]
+name = "crush-tui"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Crush terminal user interfaces — ratatui-based live TUI for ps, stats, compose, logs, debug"
+
+[dependencies]
+tokio = { workspace = true, features = ["sync", "process", "io-util"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+crush-types = { workspace = true }
+ratatui = { version = "0.29", features = ["all-widgets"] }
+crossterm = { version = "0.28", features = ["event-stream"] }
+notify = { version = "7.0", features = ["macos_kqueue"] }
+chrono = { version = "0.4", features = ["serde"] }
+clap = { workspace = true }
+clap_complete = "4.5"

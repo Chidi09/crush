@@ -1,0 +1,99 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/crush-cli",
+    "crates/crush-types",
+    "crates/crush-runtime-linux",
+    "crates/crush-runtime-windows",
+    "crates/crush-runtime-macos",
+    "crates/crush-runtime-wasm",
+    "crates/crush-image",
+    "crates/crush-registry",
+    "crates/crush-reliability",
+    "crates/crush-volume",
+    "crates/crush-network",
+    "crates/crush-build",
+    "crates/crush-compat",
+    "crates/crush-ai",
+    "crates/crush-tui",
+    "crates/crush-api",
+    "crates/crush-proto",
+]
+
+[workspace.package]
+version = "0.1.0"
+edition = "2021"
+authors = ["Crush Contributors"]
+license = "MIT OR Apache-2.0"
+repository = "https://github.com/crush-runtime/crush"
+homepage = "https://crush.run"
+description = "A from-scratch, production-grade container runtime in Rust"
+
+[workspace.dependencies]
+# Core Async & Control Flow
+tokio = { version = "1.38", features = ["full"] }
+tokio-util = { version = "0.7", features = ["codec", "io"] }
+anyhow = "1.0"
+thiserror = "1.0"
+async-trait = "0.1"
+
+# Serialization & CLI
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+serde_yaml = "0.9"
+toml = "0.8"
+clap = { version = "4.5", features = ["derive", "env"] }
+
+# Logging, Metrics & Diagnostics
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter", "json"] }
+opentelemetry = "0.23"
+prometheus-client = "0.22"
+
+# Local DB & Networking
+sled = "0.34"
+reqwest = { version = "0.12", features = ["json", "stream"] }
+url = "2.5"
+
+# Cryptography & Hash
+sha2 = "0.10"
+hex = "0.4"
+ring = "0.17"
+
+# Compression & Performance
+zstd = "0.13"
+flate2 = "1.0"
+tar = "0.4"
+rayon = "1.10"
+
+# Benchmarks
+criterion = { version = "0.5", features = ["html_reports"] }
+
+# OCI Specifications & Standard Specs
+oci-spec = { version = "0.6", features = ["runtime", "image"] }
+
+# Local workspace internal dependencies
+crush-types = { path = "crates/crush-types" }
+crush-cli = { path = "crates/crush-cli" }
+crush-image = { path = "crates/crush-image" }
+crush-build = { path = "crates/crush-build" }
+crush-compat = { path = "crates/crush-compat" }
+crush-ai = { path = "crates/crush-ai" }
+crush-registry = { path = "crates/crush-registry" }
+crush-network = { path = "crates/crush-network" }
+crush-proto = { path = "crates/crush-proto" }
+crush-runtime-linux = { path = "crates/crush-runtime-linux" }
+crush-runtime-windows = { path = "crates/crush-runtime-windows" }
+crush-runtime-macos = { path = "crates/crush-runtime-macos" }
+crush-runtime-wasm = { path = "crates/crush-runtime-wasm" }
+crush-tui = { path = "crates/crush-tui" }
+crush-api = { path = "crates/crush-api" }
+crush-reliability = { path = "crates/crush-reliability" }
+crush-volume = { path = "crates/crush-volume" }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+panic = "abort"
+strip = true

@@ -1,0 +1,12 @@
+[book]
+authors = ["Crush Contributors"]
+language = "en"
+multilingual = false
+src = "src"
+title = "Crush Runtime Documentation"
+
+[preprocessor.links]
+
+[output.html]
+git-repository-url = "https://github.com/crush-runtime/crush"
+edit-url-template = "https://github.com/crush-runtime/crush/edit/main/docs/{path}"

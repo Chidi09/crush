@@ -1,0 +1,30 @@
+[package]
+name = "crush-build"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Crush build system — layered image construction, content-addressed cache, parallel stages, SBOM, SLSA"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+toml = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+crush-types = { workspace = true }
+crush-image = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+zstd = { workspace = true }
+tar = { workspace = true }
+flate2 = { workspace = true }
+regex = "1.10"
+walkdir = "2.5"
+ignore = "0.4"
+indicatif = "0.17"
+chrono = { version = "0.4", features = ["serde"] }
+uuid = { version = "1.13", features = ["v4"] }
+rayon = "1.10"

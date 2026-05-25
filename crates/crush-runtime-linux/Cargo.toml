@@ -1,0 +1,22 @@
+[package]
+name = "crush-runtime-linux"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Linux sandbox backend using namespaces, cgroups, OverlayFS and seccomp BPF"
+
+[dependencies]
+tokio = { workspace = true, features = ["sync", "process", "io-util"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+crush-types = { workspace = true }
+nix = { version = "0.28", features = ["sched", "mount", "user", "process", "signal"] }
+libc = "0.2"
+caps = "0.5"
+procfs = "0.16"
+rustix = { version = "0.38", features = ["process", "thread", "fs"] }
+landlock = "0.4"

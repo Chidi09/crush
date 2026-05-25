@@ -1,0 +1,90 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  /* Spartan UI / shadcn-ng CSS variable tokens — mapped to the Crush brand palette */
+  :root {
+    --background: 240 6% 4%; /* #09090b  crush-black     */
+    --foreground: 240 11% 93%; /* #e8e8ed  crush-text      */
+    --card: 240 10% 10%; /* ~#181820 slightly above bg */
+    --card-foreground: 240 11% 93%;
+    --popover: 240 10% 10%;
+    --popover-foreground: 240 11% 93%;
+    --primary: 9 72% 56%; /* #e05540  crush-orange    */
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 12% 19%; /* #2a2a35  crush-border    */
+    --secondary-foreground: 240 11% 93%;
+    --muted: 240 12% 19%;
+    --muted-foreground: 240 9% 65%; /* #9a9ab0  crush-textMuted */
+    --accent: 240 12% 19%;
+    --accent-foreground: 240 11% 93%;
+    --destructive: 0 72% 51%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 12% 19%; /* #2a2a35  crush-border    */
+    --input: 240 12% 19%;
+    --ring: 9 72% 56%; /* crush-orange             */
+    --radius: 0.75rem;
+  }
+
+  html {
+    scroll-behavior: smooth;
+    color-scheme: dark;
+  }
+
+  body {
+    @apply min-h-screen;
+  }
+
+  ::selection {
+    @apply bg-crush-orange/30 text-white;
+  }
+
+  ::-webkit-scrollbar {
+    @apply w-2 h-1.5;
+  }
+
+  ::-webkit-scrollbar-track {
+    @apply bg-crush-black;
+  }
+
+  ::-webkit-scrollbar-thumb {
+    @apply bg-crush-border rounded-full;
+  }
+}
+
+@layer components {
+  .gradient-text {
+    @apply bg-gradient-to-r from-crush-orange to-crush-orangeLight bg-clip-text text-transparent;
+  }
+
+  .glow-orange {
+    box-shadow: 0 0 30px rgba(224, 85, 64, 0.15);
+  }
+
+  .glow-orange-lg {
+    box-shadow: 0 0 60px rgba(224, 85, 64, 0.2);
+  }
+
+  .glow-docker-blue {
+    box-shadow: 0 0 30px rgba(13, 183, 237, 0.15);
+  }
+
+  .code-block {
+    @apply bg-crush-surface border border-crush-border rounded-lg font-mono text-sm overflow-x-auto;
+  }
+
+  .code-line {
+    @apply px-4 py-0.5 leading-7;
+  }
+
+  .link-orange {
+    @apply text-crush-orange hover:text-crush-orangeLight transition-colors duration-150;
+  }
+}
+
+@layer utilities {
+  .text-balance {
+    text-wrap: balance;
+  }
+}

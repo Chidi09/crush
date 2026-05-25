@@ -1,0 +1,21 @@
+[package]
+name = "crush-registry"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "OCI registry client and secure local registry server proxy"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+crush-types = { workspace = true }
+reqwest = { workspace = true }
+url = { workspace = true }
+base64 = "0.22"
+sha2 = { workspace = true }
+hex = { workspace = true }

@@ -1,0 +1,24 @@
+[package]
+name = "crush-reliability"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Production reliability — health checks, restart policies, resource limits, OOM, secrets, rootless, AppArmor, SELinux, audit"
+
+[dependencies]
+tokio = { workspace = true, features = ["sync", "process", "io-util", "time"] }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+crush-types = { workspace = true }
+reqwest = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+rand = "0.8"
+chrono = { version = "0.4", features = ["serde"] }
+regex = "1.10"
+base64 = "0.22"
+zeroize = { version = "1.8", features = ["zeroize_derive"] }

@@ -1,0 +1,23 @@
+[package]
+name = "crush-ai"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Crush AI — runtime trace parsing, build error diagnosis, source context, auto-fix, TUI"
+
+[dependencies]
+tokio = { workspace = true }
+serde = { workspace = true }
+serde_json = { workspace = true }
+anyhow = { workspace = true }
+async-trait = { workspace = true }
+crush-types = { workspace = true }
+reqwest = { workspace = true }
+regex = "1.10"
+chrono = { version = "0.4", features = ["serde"] }
+sha2 = { workspace = true }
+hex = { workspace = true }
+similar = "2.5"
+syntect = { version = "5.2", default-features = false, features = ["default-syntaxes", "default-themes"] }

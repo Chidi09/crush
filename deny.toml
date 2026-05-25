@@ -1,0 +1,45 @@
+[graph]
+targets = []
+
+[licenses]
+unlicensed = "deny"
+allow = [
+    "MIT",
+    "Apache-2.0",
+    "ISC",
+]
+deny = []
+copyleft = "deny"
+commercial = "deny"
+
+[[licenses.clarify]]
+name = "ring"
+expression = "ISC AND MIT AND OpenSSL"
+license-files = [
+    { path = "LICENSE", hash = 0xbd0cc235 }
+]
+
+[bans]
+multiple-versions = "warn"
+deny = [
+    # Ban unmaintained or obsolete crates in favor of modern equivalents
+    { name = "lazy_static", reason = "Use std::sync::OnceLock or once_cell instead" },
+    { name = "openssl", reason = "Use rustls / ring for pure Rust cryptography" },
+]
+skip = []
+skip-tree = []
+
+[sources]
+unknown-registry = "deny"
+unknown-git = "deny"
+allow-registry = ["https://github.com/rust-lang/crates.io-index"]
+allow-git = []
+
+[advisories]
+db-path = "~/.cargo/advisory-db"
+db-urls = ["https://github.com/rustsec/advisory-db"]
+vulnerability = "deny"
+unmaintained = "warn"
+unsound = "deny"
+notice = "warn"
+ignore = []

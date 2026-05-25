@@ -1,0 +1,68 @@
+{
+  "name": "crush-web",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "vite build",
+    "start": "vite preview",
+    "build:static": "vite build",
+    "typecheck": "tsc -p tsconfig.app.json --noEmit",
+    "lint": "eslint src/",
+    "format": "prettier --write \"src/**/*.{ts,html,css,json}\"",
+    "format:check": "prettier --check \"src/**/*.{ts,html,css,json}\""
+  },
+  "dependencies": {
+    "@analogjs/content": "^1.13.0",
+    "@analogjs/platform": "^1.13.0",
+    "@analogjs/router": "^1.13.0",
+    "@angular-devkit/build-angular": "^19.2.22",
+    "@angular/animations": "^19.2.22",
+    "@angular/cdk": "^19.2.0",
+    "@angular/common": "^19.2.22",
+    "@angular/compiler": "^19.2.22",
+    "@angular/core": "^19.2.22",
+    "@angular/forms": "^19.2.22",
+    "@angular/platform-browser": "^19.2.22",
+    "@angular/platform-browser-dynamic": "^19.2.22",
+    "@angular/platform-server": "^19.2.22",
+    "@angular/router": "^19.2.22",
+    "@spartan-ng/brain": "^0.0.1-alpha.357",
+    "@spartan-ng/ui-button-helm": "^0.0.1-alpha.357",
+    "@spartan-ng/ui-icon-helm": "^0.0.1-alpha.357",
+    "@ng-icons/core": "^29.0.0",
+    "@ng-icons/lucide": "^29.0.0",
+    "class-variance-authority": "^0.7.0",
+    "clsx": "^2.1.1",
+    "front-matter": "^4.0.2",
+    "marked": "^15.0.0",
+    "prismjs": "^1.29.0",
+    "rxjs": "^7.8.1",
+    "tslib": "^2.8.1",
+    "zone.js": "^0.15.0"
+  },
+  "devDependencies": {
+    "@angular/cli": "^19.2.22",
+    "@angular/compiler-cli": "^19.2.22",
+    "@types/node": "^22.10.0",
+    "@types/prismjs": "^1.26.5",
+    "autoprefixer": "^10.4.20",
+    "eslint": "^9.0.0",
+    "postcss": "^8.4.49",
+    "prettier": "^3.4.0",
+    "tailwindcss": "^3.4.17",
+    "typescript": "~5.8.3",
+    "typescript-eslint": "^8.0.0",
+    "vite": "^6.0.5",
+    "vite-tsconfig-paths": "^5.1.4"
+  },
+  "pnpm": {
+    "onlyBuiltDependencies": [
+      "@parcel/watcher",
+      "esbuild",
+      "lmdb",
+      "msgpackr-extract"
+    ]
+  }
+}

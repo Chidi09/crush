@@ -1,0 +1,17 @@
+# Claude Code tooling
+.claude/
+.antigravitycli/
+
+# Rust
+target/
+
+# Web
+crush-web/node_modules/
+crush-web/dist/
+crush-web/.angular/
+crush-web/dev-out.txt
+crush-web/package.json.tmp
+
+# OS
+.DS_Store
+Thumbs.db

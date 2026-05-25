@@ -1,0 +1,41 @@
+[package]
+name = "crush-fuzz"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+description = "Fuzz targets for Crush parsers — crash-resistant input handling"
+
+[dependencies]
+libfuzzer-sys = "0.4"
+crush-compat = { path = "../crates/crush-compat" }
+crush-image = { path = "../crates/crush-image" }
+crush-build = { path = "../crates/crush-build" }
+
+# Prevent fuzz crate from being built by workspace commands
+[package.metadata]
+cargo-fuzz = true
+
+[[bin]]
+name = "fuzz_dockerfile"
+path = "fuzz_targets/dockerfile.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_oci_manifest"
+path = "fuzz_targets/oci_manifest.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_crushfile"
+path = "fuzz_targets/crushfile.rs"
+test = false
+doc = false
+
+[[bin]]
+name = "fuzz_compose"
+path = "fuzz_targets/compose.rs"
+test = false
+doc = false

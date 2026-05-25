@@ -1,0 +1,11 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 200 48" fill="none">
+  <g transform="translate(0, 4)">
+    <path d="M8 24c0-8 4-14 12-16h4c8 2 12 8 12 16s-4 14-12 16h-4c-8-2-12-8-12-16z" fill="#e05540" opacity="0.15"/>
+    <path d="M12 24c0-6 3-11 9-13h2c6 2 9 7 9 13s-3 11-9 13h-2c-6-2-9-7-9-13z" fill="#e05540"/>
+    <rect x="16" y="14" width="4" height="3" rx="1" fill="#09090b" opacity="0.8"/>
+    <rect x="22" y="12" width="4" height="5" rx="1" fill="#09090b" opacity="0.8"/>
+    <rect x="28" y="16" width="4" height="4" rx="1" fill="#09090b" opacity="0.8"/>
+    <circle cx="13" cy="24" r="1.5" fill="#09090b"/>
+  </g>
+  <text x="48" y="32" font-family="system-ui, -apple-system, sans-serif" font-weight="800" font-size="26" fill="#e8e8ed" letter-spacing="1">CRUSH</text>
+</svg>
