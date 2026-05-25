@@ -111,9 +111,11 @@ impl StorageBackend for ImageStore {
     }
 
     async fn push_image(&self, image_id: &str, registry: &str) -> Result<()> {
-        let image = self.db.get_image_by_digest(image_id).await?
-            .or_else(|| self.db.get_image_by_tag(image_id).await.ok().flatten())
-            .ok_or_else(|| CrushError::ContainerNotFound(format!("Image {} not found", image_id)))?;
+        let image = match self.db.get_image_by_digest(image_id).await? {
+            Some(img) => img,
+            None => self.db.get_image_by_tag(image_id).await?
+                .ok_or_else(|| CrushError::ContainerNotFound(format!("Image {} not found", image_id)))?,
+        };
 
         let client = self.registry_client.lock().await;
         let (reg, img, _) = Self::registry_for_tag(registry);
@@ -130,7 +132,8 @@ impl StorageBackend for ImageStore {
 
         let manifest_path = self.base_dir.join("manifests").join(&image.id);
         if manifest_path.exists() {
-            let manifest_str = tokio::fs::read_to_string(&manifest_path).await?;
+            let manifest_str = tokio::fs::read_to_string(&manifest_path).await
+                .map_err(|e| CrushError::StorageError(format!("Failed to read manifest: {}", e)))?;
             client.put_manifest(&reg, &img, &image.tag, &manifest_str).await?;
         }
 
@@ -146,9 +149,11 @@ impl StorageBackend for ImageStore {
     }
 
     async fn extract_layers(&self, image_id: &str, destination: &PathBuf) -> Result<()> {
-        let image = self.db.get_image_by_digest(image_id).await?
-            .or_else(|| self.db.get_image_by_tag(image_id).await.ok().flatten())
-            .ok_or_else(|| CrushError::ContainerNotFound(format!("Image {} not found", image_id)))?;
+        let image = match self.db.get_image_by_digest(image_id).await? {
+            Some(img) => img,
+            None => self.db.get_image_by_tag(image_id).await?
+                .ok_or_else(|| CrushError::ContainerNotFound(format!("Image {} not found", image_id)))?,
+        };
 
         tokio::fs::create_dir_all(destination).await
             .map_err(|e| CrushError::StorageError(format!("Failed to create destination: {}", e)))?;

@@ -25,11 +25,11 @@ impl ImageDatabase {
         let tag_key = format!("tag:{}", image.tag);
         let tag_value = serde_json::to_vec(image)
             .map_err(|e| CrushError::ImageError(format!("Serialization error: {}", e)))?;
-        db.insert(tag_key.as_bytes(), tag_value)
+        db.insert(tag_key.as_bytes(), tag_value.as_slice())
             .map_err(|e| CrushError::StorageError(format!("DB insert error: {}", e)))?;
 
         let digest_key = format!("digest:{}", image.digest);
-        db.insert(digest_key.as_bytes(), &tag_value)
+        db.insert(digest_key.as_bytes(), tag_value.as_slice())
             .map_err(|e| CrushError::StorageError(format!("DB insert error: {}", e)))?;
 
         let id_key = format!("id:{}", image.id);
