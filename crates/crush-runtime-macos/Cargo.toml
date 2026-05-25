@@ -14,12 +14,14 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 crush-types = { workspace = true }
-objc2 = "0.6"
-objc2-foundation = "0.3"
-block2 = "0.6"
-core-foundation = "0.10"
 uuid = { version = "1.13", features = ["v4"] }
 sha2 = { workspace = true }
 hex = { workspace = true }
 zstd = { workspace = true }
 flate2 = { workspace = true }
+
+[target.'cfg(target_os = "macos")'.dependencies]
+objc2 = "0.6"
+objc2-foundation = "0.3"
+block2 = "0.6"
+core-foundation = "0.10"
