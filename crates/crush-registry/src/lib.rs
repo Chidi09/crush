@@ -8,9 +8,15 @@ use crush_types::{Result, CrushError};
 use serde::{Serialize, Deserialize};
 use auth::AuthHandler;
 
-#[derive(Clone, Default)]
+#[derive(Clone)]
 pub struct RegistryClientHandle {
     inner: Arc<Mutex<RegistryClient>>,
+}
+
+impl Default for RegistryClientHandle {
+    fn default() -> Self {
+        Self::new(None)
+    }
 }
 
 impl RegistryClientHandle {
@@ -20,7 +26,7 @@ impl RegistryClientHandle {
     }
 
     pub async fn fetch_manifest(&self, registry: &str, image: &str, reference: &str) -> Result<serde_json::Value> {
-        let client = self.inner.lock().await;
+        let mut client = self.inner.lock().await;
         client.fetch_manifest_inner(registry, image, reference).await
     }
 
@@ -276,7 +282,7 @@ async fn handle_connection(
     blobs: Arc<Mutex<HashMap<String, StoredBlob>>>,
     manifests: Arc<Mutex<HashMap<String, StoredManifest>>>,
 ) -> Result<()> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
     let mut reader = BufReader::new(&mut stream);
     let mut request_line = String::new();
     reader.read_line(&mut request_line).await
