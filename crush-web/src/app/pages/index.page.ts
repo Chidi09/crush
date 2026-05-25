@@ -378,34 +378,91 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
           </p>
         </div>
 
-        <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
-          @for (stack of stacks; track stack.name) {
-            <div
-              class="rounded-xl border border-crush-border/40 bg-crush-surface/20 p-5 hover:border-crush-orange/30 hover:bg-crush-surface/30 transition-all duration-200"
-            >
-              <div class="flex items-center gap-3 mb-3">
+        <!-- Interactive Showcase Layout -->
+        <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch select-none">
+          <!-- Left side: Selectors (5 columns on large screen) -->
+          <div class="lg:col-span-5 flex flex-col gap-2.5 max-h-[580px] overflow-y-auto pr-2 scrollbar-thin">
+            @for (stack of stacks; track stack.name; let idx = $index) {
+              <button
+                (click)="selectedStack.set(idx)"
+                class="w-full text-left rounded-xl border p-4 transition-all duration-300 outline-none flex items-start gap-4 group"
+                [ngClass]="
+                  selectedStack() === idx
+                    ? 'border-crush-orange/40 bg-crush-orange/5 shadow-[0_0_20px_rgba(224,85,64,0.06)]'
+                    : 'border-crush-border/30 bg-crush-surface/10 hover:border-crush-border/60 hover:bg-crush-surface/20'
+                "
+              >
+                <!-- Icon container -->
                 <div
-                  class="h-8 w-8 rounded-lg flex items-center justify-center shrink-0"
-                  [style.background]="stack.color + '1a'"
-                  [style.border]="'1px solid ' + stack.color + '33'"
+                  class="h-9 w-9 rounded-lg flex items-center justify-center shrink-0 transition-transform duration-300 group-hover:scale-105"
+                  [style.background]="stack.color + '15'"
+                  [style.border]="'1px solid ' + (selectedStack() === idx ? stack.color : stack.color + '33')"
                 >
-                  <svg viewBox="0 0 24 24" class="h-4 w-4 fill-current" [style.color]="stack.color">
+                  <svg viewBox="0 0 24 24" class="h-4.5 w-4.5 fill-current" [style.color]="stack.color">
                     <path [attr.d]="stack.iconPath" />
                   </svg>
                 </div>
-                <h3 class="text-sm font-bold text-white">{{ stack.name }}</h3>
+                <!-- Content text -->
+                <div class="space-y-1">
+                  <div class="flex items-center gap-2">
+                    <h4 class="text-sm font-bold transition-colors" [ngClass]="selectedStack() === idx ? 'text-white' : 'text-crush-textMuted group-hover:text-white'">
+                      {{ stack.name }}
+                    </h4>
+                    @if (selectedStack() === idx) {
+                      <span class="h-1.5 w-1.5 rounded-full bg-crush-orange shadow-[0_0_8px_rgba(224,85,64,0.8)] animate-pulse"></span>
+                    }
+                  </div>
+                  <p class="text-[11px] text-crush-textMuted leading-relaxed line-clamp-2">
+                    {{ stack.desc }}
+                  </p>
+                </div>
+              </button>
+            }
+          </div>
+
+          <!-- Right side: macOS High-Fidelity Terminal Mock (7 columns on large screen) -->
+          <div class="lg:col-span-7 flex flex-col">
+            <div
+              class="w-full flex-1 rounded-2xl border border-crush-border/40 bg-[#07070b]/90 backdrop-blur-md shadow-2xl shadow-crush-orange/5 overflow-hidden flex flex-col font-mono text-[11px] leading-relaxed relative border-t-crush-border/60"
+            >
+              <!-- macOS Window Header Bar -->
+              <div
+                class="flex items-center justify-between px-4 py-3 bg-[#0d0d12] border-b border-crush-border/30 select-none shrink-0"
+              >
+                <!-- Window Controls Dots -->
+                <div class="flex items-center gap-1.5">
+                  <span class="h-3 w-3 rounded-full bg-[#ff5f56] border border-[#e0443e] block"></span>
+                  <span class="h-3 w-3 rounded-full bg-[#ffbd2e] border border-[#dea123] block"></span>
+                  <span class="h-3 w-3 rounded-full bg-[#27c93f] border border-[#1aab29] block"></span>
+                </div>
+                <!-- Window Title -->
+                <div class="text-[10px] text-crush-textMuted tracking-wider flex items-center gap-1.5 font-sans font-semibold">
+                  <svg viewBox="0 0 24 24" class="h-3 w-3 fill-none stroke-current stroke-2.5 text-crush-orangeLight"><path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3 3 3 0 0 0 3-3V6a3 3 0 0 0-3-3zM6 21a3 3 0 0 0 3-3V6a3 3 0 0 0-3-3 3 3 0 0 0-3 3v12a3 3 0 0 0 3 3z"/></svg>
+                  crush-term — {{ stacks[selectedStack()].name }}
+                </div>
+                <!-- Spacing block -->
+                <div class="w-12"></div>
               </div>
-              <p class="text-xs text-crush-textMuted leading-relaxed">{{ stack.desc }}</p>
+
+              <!-- Terminal Output Display Body -->
+              <div class="p-6 overflow-y-auto flex-1 font-mono text-left select-text relative min-h-[360px]">
+                <!-- Glowing dynamic accent reflection inside terminal -->
+                <div 
+                  class="absolute inset-0 pointer-events-none opacity-[0.03] transition-all duration-700 blur-[80px]"
+                  [style.background]="'radial-gradient(circle at 50% 50%, ' + stacks[selectedStack()].color + ', transparent)'"
+                ></div>
+                <!-- Terminal logs pre-wrap block -->
+                <pre class="relative z-10 text-crush-text whitespace-pre-wrap"><code [innerHTML]="stacks[selectedStack()].terminal"></code></pre>
+              </div>
             </div>
-          }
+          </div>
         </div>
 
-        <p class="mt-6 text-center text-xs text-crush-textMuted">
-          Any language that compiles to a native binary or runs on a POSIX-compatible runtime works
-          out of the box.
+        <p class="mt-8 text-center text-xs text-crush-textMuted select-none">
+          Any language that compiles to a native binary or runs on a POSIX-compatible runtime works out of the box.
           <a
             routerLink="/docs/stacks"
-            class="text-crush-orange hover:text-crush-orangeLight transition-colors ml-1"
+            class="text-crush-orange hover:text-crush-orangeLight transition-colors ml-1 font-semibold"
             >View full compatibility list &rarr;</a
           >
         </p>
@@ -921,6 +978,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
 })
 export default class IndexPage implements OnInit {
   activeFaq = signal<number | null>(null);
+  selectedStack = signal<number>(0);
 
   toggleFaq(idx: number): void {
     this.activeFaq.set(this.activeFaq() === idx ? null : idx);
@@ -965,6 +1023,27 @@ export default class IndexPage implements OnInit {
       iconPath:
         'M1.811 10.231c-.047 0-.058-.023-.035-.059l.246-.315c.023-.035.081-.058.128-.058h4.172c.046 0 .058.035.035.07l-.199.303c-.023.036-.082.07-.117.07zM.047 11.306c-.047 0-.059-.023-.035-.058l.245-.316c.023-.035.082-.058.129-.058h5.328c.047 0 .07.035.058.07l-.093.28c-.012.047-.058.07-.105.07zm2.828 1.075c-.047 0-.059-.035-.035-.07l.163-.292c.023-.035.07-.07.117-.07h2.337c.047 0 .07.035.07.082l-.023.28c0 .047-.047.082-.082.082zm12.129-2.36c-.736.187-1.239.327-1.963.514-.176.046-.187.058-.34-.117-.174-.199-.303-.327-.548-.444-.737-.362-1.45-.257-2.115.175-.795.514-1.204 1.274-1.192 2.22.011.935.654 1.706 1.577 1.835.795.105 1.46-.175 1.987-.77.105-.13.198-.27.315-.434H10.47c-.245 0-.304-.152-.222-.35.152-.362.432-.97.596-1.274a.315.315 0 01.292-.187h4.253c-.023.316-.023.631-.07.947a4.983 4.983 0 01-.958 2.29c-.841 1.11-1.94 1.8-3.33 1.986-1.145.152-2.209-.07-3.143-.77-.865-.655-1.356-1.52-1.484-2.595-.152-1.274.222-2.419.993-3.424.83-1.086 1.928-1.776 3.272-2.02 1.098-.2 2.15-.07 3.096.571.62.41 1.063.97 1.356 1.648.07.105.023.164-.117.2m3.868 6.461c-1.064-.024-2.034-.328-2.852-1.029a3.665 3.665 0 01-1.262-2.255c-.21-1.32.152-2.489.947-3.529.853-1.122 1.881-1.706 3.272-1.95 1.192-.21 2.314-.095 3.33.595.923.63 1.496 1.484 1.648 2.605.198 1.578-.257 2.863-1.344 3.962-.771.783-1.718 1.273-2.805 1.495-.315.06-.63.07-.934.106zm2.78-4.72c-.011-.153-.011-.27-.034-.387-.21-1.157-1.274-1.81-2.384-1.554-1.087.245-1.788.935-2.045 2.033-.21.912.234 1.835 1.075 2.21.643.28 1.285.244 1.905-.07.923-.48 1.425-1.228 1.484-2.233z',
       desc: 'Native binary compilation with zero-config layer caching. Crush eliminates multi-minute go build waits on Windows — sub-second hot rebuilds via cached layers.',
+      terminal: `<span class="text-crush-textMuted">~/projects/go-api $</span> <span class="text-crush-orange font-bold">crush</span>
+
+<span class="text-sky-400 font-bold">🔍 Detecting project stack...</span>
+   ↳ Go module detected: <span class="text-white font-semibold">github.com/user/go-api</span> (Go v1.22.2)
+
+<span class="text-purple-400 font-bold">📦 Building containerized layer tree...</span>
+   ↳ [1/2] Base runtime environment (golang:1.22-alpine) ... <span class="text-emerald-400 font-semibold">Cache Hit</span>
+   ↳ [2/2] Running incremental native binary compilation...
+           $ <span class="text-crush-textMuted">go build -ldflags="-w -s" -o /app/server .</span>
+           ✓ Incremental go binary compiled in <span class="text-emerald-400 font-bold">0.42s</span> (Go cache hit: 100%)
+
+<span class="text-emerald-400 font-bold">✨ Successfully crushed to image:</span> <span class="text-white font-semibold">go-api:latest</span>
+   ⚡ Total compressed image size: <span class="text-emerald-400 font-bold">24.3 MB</span> (layer cached)
+
+<span class="text-sky-400 font-bold">🚀 Starting native container environment...</span>
+   ↳ Creating isolated bridge network sandbox (<span class="text-white font-semibold">crush-bridge-0</span>)
+   ↳ Binding local socket interface: <span class="text-white font-semibold">http://localhost:8080</span>
+   ↳ Assigning Windows Job Object policies (CPU rate: 2.0, RAM limit: 256MB)
+
+<span class="text-emerald-400 font-bold">✓ Go server running natively on</span> <span class="text-sky-400 underline font-semibold">http://localhost:8080</span>
+   ⚡ Cold boot elapsed: <span class="text-emerald-400 font-bold">12ms</span> (Total pipeline duration: 0.49s!)`,
     },
     {
       name: 'Python',
@@ -972,6 +1051,29 @@ export default class IndexPage implements OnInit {
       iconPath:
         'M14.25.18l.9.2.73.26.59.3.45.32.34.34.25.34.16.33.1.3.04.26.02.2-.01.13V8.5l-.05.63-.13.55-.21.46-.26.38-.3.31-.33.25-.35.19-.35.14-.33.1-.3.07-.26.04-.21.02H8.77l-.69.05-.59.14-.5.22-.41.27-.33.32-.27.35-.2.36-.15.37-.1.35-.07.32-.04.27-.02.21v3.06H3.17l-.21-.03-.28-.07-.32-.12-.35-.18-.36-.26-.36-.36-.35-.46-.32-.59-.28-.73-.21-.88-.14-1.05-.05-1.23.06-1.22.16-1.04.24-.87.32-.71.36-.57.4-.44.42-.33.42-.24.4-.16.36-.1.32-.05.24-.01h.16l.06.01h8.16v-.83H6.18l-.01-2.75-.02-.37.05-.34.11-.31.17-.28.25-.26.31-.23.38-.2.44-.18.51-.15.58-.12.64-.1.71-.06.77-.04.84-.02 1.27.05zm-6.3 1.98l-.23.33-.08.41.08.41.23.34.33.22.41.09.41-.09.33-.22.23-.34.08-.41-.08-.41-.23-.33-.33-.22-.41-.09-.41.09zm13.09 3.95l.28.06.32.12.35.18.36.27.36.35.35.47.32.59.28.73.21.88.14 1.04.05 1.23-.06 1.23-.16 1.04-.24.86-.32.71-.36.57-.4.45-.42.33-.42.24-.4.16-.36.09-.32.05-.24.02-.16-.01h-8.22v.82h5.84l.01 2.76.02.36-.05.34-.11.31-.17.29-.25.25-.31.24-.38.2-.44.17-.51.15-.58.13-.64.09-.71.07-.77.04-.84.01-1.27-.04-1.07-.14-.9-.2-.73-.25-.59-.3-.45-.33-.34-.34-.25-.34-.16-.33-.1-.3-.04-.25-.02-.2.01-.13v-5.34l.05-.64.13-.54.21-.46.26-.38.3-.32.33-.24.35-.2.35-.14.33-.1.3-.06.26-.04.21-.02.13-.01h5.84l.69-.05.59-.14.5-.21.41-.28.33-.32.27-.35.2-.36.15-.36.1-.35.07-.32.04-.28.02-.21V6.07h2.09l.14.01zm-6.47 14.25l-.23.33-.08.41.08.41.23.33.33.23.41.08.41-.08.33-.23.23-.33.08-.41-.08-.41-.23-.33-.33-.23-.41-.08-.41.08z',
       desc: 'FastAPI, Django, and Flask backends spin up in milliseconds. pip installs cache between rebuilds in isolated Job Object environments — no WSL2 required.',
+      terminal: `<span class="text-crush-textMuted">~/projects/fastapi-backend $</span> <span class="text-crush-orange font-bold">crush</span>
+
+<span class="text-sky-400 font-bold">🔍 Detecting project stack...</span>
+   ↳ Python stack detected: <span class="text-white font-semibold">requirements.txt</span> (Python v3.11.8)
+
+<span class="text-purple-400 font-bold">📦 Building containerized layer tree...</span>
+   ↳ [1/3] Base runtime environment (python:3.11-slim) ... <span class="text-emerald-400 font-semibold">Cache Hit</span>
+   ↳ [2/3] pip packages cache mount (34 dependencies) ... <span class="text-emerald-400 font-semibold">Cache Hit</span>
+   ↳ [3/3] Preparing application source code layers... Done (<span class="text-emerald-400 font-bold">0.05s</span>)
+
+<span class="text-emerald-400 font-bold">✨ Successfully crushed to image:</span> <span class="text-white font-semibold">fastapi-backend:latest</span>
+   ⚡ Total compressed image size: <span class="text-emerald-400 font-bold">88.1 MB</span> (cached)
+
+<span class="text-sky-400 font-bold">🚀 Starting native container environment...</span>
+   ↳ Creating isolated bridge network sandbox (<span class="text-white font-semibold">crush-bridge-0</span>)
+   ↳ Binding local socket interface: <span class="text-white font-semibold">http://localhost:8000</span>
+   ↳ Spawning worker process inside Job Object...
+     $ <span class="text-crush-textMuted">uvicorn main:app --host 0.0.0.0 --port 8000 --workers 4</span>
+     <span class="text-crush-textMuted">INFO:     Started server process [1284]</span>
+     <span class="text-crush-textMuted">INFO:     Uvicorn running on http://0.0.0.0:8000 (Press CTRL+C to quit)</span>
+
+<span class="text-emerald-400 font-bold">✓ FastAPI service running natively on</span> <span class="text-sky-400 underline font-semibold">http://localhost:8000</span>
+   ⚡ Cold boot elapsed: <span class="text-emerald-400 font-bold">0.18s</span> (Total pipeline duration: 0.26s!)`,
     },
     {
       name: 'Node.js',
@@ -979,6 +1081,28 @@ export default class IndexPage implements OnInit {
       iconPath:
         'M11.998,24c-0.321,0-0.641-0.084-0.922-0.247l-2.936-1.737c-0.438-0.245-0.224-0.332-0.08-0.383c0.585-0.203,0.703-0.25,1.328-0.604c0.065-0.037,0.151-0.023,0.218,0.017l2.256,1.339c0.082,0.045,0.197,0.045,0.272,0l8.795-5.076c0.082-0.047,0.134-0.141,0.134-0.238V6.921c0-0.099-0.053-0.192-0.137-0.242l-8.791-5.072c-0.081-0.047-0.189-0.047-0.271,0L3.075,6.68C2.99,6.729,2.936,6.825,2.936,6.921v10.15c0,0.097,0.054,0.189,0.139,0.235l2.409,1.392c1.307,0.654,2.108-0.116,2.108-0.89V7.787c0-0.142,0.114-0.253,0.256-0.253h1.115c0.139,0,0.255,0.112,0.255,0.253v10.021c0,1.745-0.95,2.745-2.604,2.745c-0.508,0-0.909,0-2.026-0.551L2.28,18.675c-0.57-0.329-0.922-0.945-0.922-1.604V6.921c0-0.659,0.353-1.275,0.922-1.603l8.795-5.082c0.557-0.315,1.296-0.315,1.848,0l8.794,5.082c0.57,0.329,0.924,0.944,0.924,1.603v10.15c0,0.659-0.354,1.273-0.924,1.604l-8.794,5.078C12.643,23.916,12.324,24,11.998,24zM19.099,13.993c0-1.9-1.284-2.406-3.987-2.763c-2.731-0.361-3.009-0.548-3.009-1.187c0-0.528,0.235-1.233,2.258-1.233c1.807,0,2.473,0.389,2.747,1.607c0.024,0.115,0.129,0.199,0.247,0.199h1.141c0.071,0,0.138-0.031,0.186-0.081c0.048-0.054,0.074-0.123,0.067-0.196c-0.177-2.098-1.571-3.076-4.388-3.076c-2.508,0-4.004,1.058-4.004,2.833c0,1.925,1.488,2.457,3.895,2.695c2.88,0.282,3.103,0.703,3.103,1.269c0,0.983-0.789,1.402-2.642,1.402c-2.327,0-2.839-0.584-3.011-1.742c-0.02-0.124-0.126-0.215-0.253-0.215h-1.137c-0.141,0-0.254,0.112-0.254,0.253c0,1.482,0.806,3.248,4.655,3.248C17.501,17.007,19.099,15.91,19.099,13.993z',
       desc: 'Fastify, Express, and NestJS run with native I/O performance. npm and pnpm installs cache automatically between container rebuilds.',
+      terminal: `<span class="text-crush-textMuted">~/projects/node-service $</span> <span class="text-crush-orange font-bold">crush</span>
+
+<span class="text-sky-400 font-bold">🔍 Detecting project stack...</span>
+   ↳ Node.js stack detected: <span class="text-white font-semibold">package.json</span> (Node v20.11.0, pnpm package manager)
+
+<span class="text-purple-400 font-bold">📦 Building containerized layer tree...</span>
+   ↳ [1/3] Base runtime environment (node:20-alpine) ... <span class="text-emerald-400 font-semibold">Cache Hit</span>
+   ↳ [2/3] Resolving pnpm dependency storage ... <span class="text-emerald-400 font-semibold">Cache Hit</span> (node_modules/ up-to-date)
+   ↳ [3/3] Copying application assets... Done (<span class="text-emerald-400 font-bold">0.08s</span>)
+
+<span class="text-emerald-400 font-bold">✨ Successfully crushed to image:</span> <span class="text-white font-semibold">node-service:latest</span>
+   ⚡ Total compressed image size: <span class="text-emerald-400 font-bold">45.2 MB</span>
+
+<span class="text-sky-400 font-bold">🚀 Starting native container environment...</span>
+   ↳ Creating isolated bridge network sandbox (<span class="text-white font-semibold">crush-bridge-0</span>)
+   ↳ Binding local socket interface: <span class="text-white font-semibold">http://localhost:3000</span>
+   ↳ Spawning worker process inside Job Object...
+     $ <span class="text-crush-textMuted">node dist/index.js</span>
+     <span class="text-crush-textMuted">[10:14:32] Fastify: Server listening on http://0.0.0.0:3000</span>
+
+<span class="text-emerald-400 font-bold">✓ Fastify server running natively on</span> <span class="text-sky-400 underline font-semibold">http://localhost:3000</span>
+   ⚡ Cold boot elapsed: <span class="text-emerald-400 font-bold">82ms</span> (Total pipeline duration: 0.19s!)`,
     },
     {
       name: 'Rust',
@@ -986,6 +1110,29 @@ export default class IndexPage implements OnInit {
       iconPath:
         'M23.8346 11.7033l-1.0073-.6236a13.7268 13.7268 0 00-.0283-.2936l.8656-.8069a.3483.3483 0 00-.1154-.578l-1.1066-.414a8.4958 8.4958 0 00-.087-.2856l.6904-.9587a.3462.3462 0 00-.2257-.5446l-1.1663-.1894a9.3574 9.3574 0 00-.1407-.2622l.49-1.0761a.3437.3437 0 00-.0274-.3361.3486.3486 0 00-.3006-.154l-1.1845.0416a6.7444 6.7444 0 00-.1873-.2268l.2723-1.153a.3472.3472 0 00-.417-.4172l-1.1532.2724a14.0183 14.0183 0 00-.2278-.1873l.0415-1.1845a.3442.3442 0 00-.49-.328l-1.076.491c-.0872-.0476-.1742-.0952-.2623-.1407l-.1903-1.1673A.3483.3483 0 0016.256.955l-.9597.6905a8.4867 8.4867 0 00-.2855-.086l-.414-1.1066a.3483.3483 0 00-.5781-.1154l-.8069.8666a9.2936 9.2936 0 00-.2936-.0284L12.2946.1683a.3462.3462 0 00-.5892 0l-.6236 1.0073a13.7383 13.7383 0 00-.2936.0284L9.9803.3374a.3462.3462 0 00-.578.1154l-.4141 1.1065c-.0962.0274-.1903.0567-.2855.086L7.744.955a.3483.3483 0 00-.5447.2258L7.009 2.348a9.3574 9.3574 0 00-.2622.1407l-1.0762-.491a.3462.3462 0 00-.49.328l.0416 1.1845a7.9826 7.9826 0 00-.2278.1873L3.8413 3.425a.3472.3472 0 00-.4171.4171l.2713 1.1531c-.0628.075-.1255.1509-.1863.2268l-1.1845-.0415a.3462.3462 0 00-.328.49l.491 1.0761a9.167 9.167 0 00-.1407.2622l-1.1662.1894a.3483.3483 0 00-.2258.5446l.6904.9587a13.303 13.303 0 00-.087.2855l-1.1065.414a.3483.3483 0 00-.1155.5781l.8656.807a9.2936 9.2936 0 00-.0283.2935l-1.0073.6236a.3442.3442 0 000 .5892l1.0073.6236c.008.0982.0182.1964.0283.2936l-.8656.8079a.3462.3462 0 00.1155.578l1.1065.4141c.0273.0962.0567.1914.087.2855l-.6904.9587a.3452.3452 0 00.2268.5447l1.1662.1893c.0456.088.0922.1751.1408.2622l-.491 1.0762a.3462.3462 0 00.328.49l1.1834-.0415c.0618.0769.1235.1528.1873.2277l-.2713 1.1541a.3462.3462 0 00.4171.4161l1.153-.2713c.075.0638.151.1255.2279.1863l-.0415 1.1845a.3442.3442 0 00.49.327l1.0761-.49c.087.0486.1741.0951.2622.1407l.1903 1.1662a.3483.3483 0 00.5447.2268l.9587-.6904a9.299 9.299 0 00.2855.087l.414 1.1066a.3452.3452 0 00.5781.1154l.8079-.8656c.0972.0111.1954.0203.2936.0294l.6236 1.0073a.3472.3472 0 00.5892 0l.6236-1.0073c.0982-.0091.1964-.0183.2936-.0294l.8069.8656a.3483.3483 0 00.578-.1154l.4141-1.1066a8.4626 8.4626 0 00.2855-.087l.9587.6904a.3452.3452 0 00.5447-.2268l.1903-1.1662c.088-.0456.1751-.0931.2622-.1407l1.0762.49a.3472.3472 0 00.49-.327l-.0415-1.1845a6.7267 6.7267 0 00.2267-.1863l1.1531.2713a.3472.3472 0 00.4171-.416l-.2713-1.1542c.0628-.0749.1255-.1508.1863-.2278l1.1845.0415a.3442.3442 0 00.328-.49l-.49-1.076c.0475-.0872.0951-.1742.1407-.2623l1.1662-.1893a.3483.3483 0 00.2258-.5447l-.6904-.9587.087-.2855 1.1066-.414a.3462.3462 0 00.1154-.5781l-.8656-.8079c.0101-.0972.0202-.1954.0283-.2936l1.0073-.6236a.3442.3442 0 000-.5892zm-6.7413 8.3551a.7138.7138 0 01.2986-1.396.714.714 0 11-.2997 1.396zm-.3422-2.3142a.649.649 0 00-.7715.5l-.3573 1.6685c-1.1035.501-2.3285.7795-3.6193.7795a8.7368 8.7368 0 01-3.6951-.814l-.3574-1.6684a.648.648 0 00-.7714-.499l-1.473.3158a8.7216 8.7216 0 01-.7613-.898h7.1676c.081 0 .1356-.0141.1356-.088v-2.536c0-.074-.0536-.0881-.1356-.0881h-2.0966v-1.6077h2.2677c.2065 0 1.1065.0587 1.394 1.2088.0901.3533.2875 1.5044.4232 1.8729.1346.413.6833 1.2381 1.2685 1.2381h3.5716a.7492.7492 0 00.1296-.0131 8.7874 8.7874 0 01-.8119.9526zM6.8369 20.024a.714.714 0 11-.2997-1.396.714.714 0 01.2997 1.396zM4.1177 8.9972a.7137.7137 0 11-1.304.5791.7137.7137 0 011.304-.579zm-.8352 1.9813l1.5347-.6824a.65.65 0 00.33-.8585l-.3158-.7147h1.2432v5.6025H3.5669a8.7753 8.7753 0 01-.2834-3.348zm6.7343-.5437V8.7836h2.9601c.153 0 1.0792.1772 1.0792.8697 0 .575-.7107.7815-1.2948.7815zm10.7574 1.4862c0 .2187-.008.4363-.0243.651h-.9c-.09 0-.1265.0586-.1265.1477v.413c0 .973-.5487 1.1846-1.0296 1.2382-.4576.0517-.9648-.1913-1.0275-.4717-.2704-1.5186-.7198-1.8436-1.4305-2.4034.8817-.5599 1.799-1.386 1.799-2.4915 0-1.1936-.819-1.9458-1.3769-2.3153-.7825-.5163-1.6491-.6195-1.883-.6195H5.4682a8.7651 8.7651 0 014.907-2.7699l1.0974 1.151a.648.648 0 00.9182.0213l1.227-1.1743a8.7753 8.7753 0 016.0044 4.2762l-.8403 1.8982a.652.652 0 00.33.8585l1.6178.7188c.0283.2875.0425.577.0425.8717zm-9.3006-9.5993a.7128.7128 0 11.984 1.0316.7137.7137 0 01-.984-1.0316zm8.3389 6.71a.7107.7107 0 01.9395-.3625.7137.7137 0 11-.9405.3635z',
       desc: 'Incremental compilation with full cargo caching. Crush preserves your target/ directory across builds for sub-second hot rebuilds on every save.',
+      terminal: `<span class="text-crush-textMuted">~/projects/rust-microservice $</span> <span class="text-crush-orange font-bold">crush</span>
+
+<span class="text-sky-400 font-bold">🔍 Detecting project stack...</span>
+   ↳ Rust workspace detected: <span class="text-white font-semibold">Cargo.toml</span> (stable-x86_64-pc-windows-msvc)
+
+<span class="text-purple-400 font-bold">📦 Building containerized layer tree...</span>
+   ↳ [1/2] Base compile environment (rust:1.76-alpine) ... <span class="text-emerald-400 font-semibold">Cache Hit</span>
+   ↳ [2/2] Running compilation with target/ cache mount...
+           $ <span class="text-crush-textMuted">cargo build --release</span>
+           <span class="text-crush-textMuted">Compiling my-rust-service v0.1.0 (/app)</span>
+           ✓ Incremental compile complete in <span class="text-emerald-400 font-bold">0.58s</span> (Cargo cache hit: 98%)
+
+<span class="text-emerald-400 font-bold">✨ Successfully crushed to image:</span> <span class="text-white font-semibold">rust-microservice:latest</span>
+   ⚡ Total compressed image size: <span class="text-emerald-400 font-bold">12.4 MB</span> (super-lightweight OCI static)
+
+<span class="text-sky-400 font-bold">🚀 Starting native container environment...</span>
+   ↳ Creating isolated bridge network sandbox (<span class="text-white font-semibold">crush-bridge-0</span>)
+   ↳ Binding local socket interface: <span class="text-white font-semibold">http://localhost:8080</span>
+   ↳ Spawning optimized binary inside Job Object sandbox...
+     $ <span class="text-crush-textMuted">./target/release/rust-microservice</span>
+
+<span class="text-emerald-400 font-bold">✓ Actix-web server running natively on</span> <span class="text-sky-400 underline font-semibold">http://localhost:8080</span>
+   ⚡ Cold boot elapsed: <span class="text-emerald-400 font-bold">4ms</span> (Total pipeline duration: 0.65s!)`,
     },
     {
       name: '.NET / ASP.NET Core',
@@ -993,6 +1140,31 @@ export default class IndexPage implements OnInit {
       iconPath:
         'M24 8.77h-2.468v7.565h-1.425V8.77h-2.462V7.53H24zm-6.852 7.565h-4.821V7.53h4.63v1.24h-3.205v2.494h2.953v1.234h-2.953v2.604h3.396zm-6.708 0H8.882L4.78 9.863a2.896 2.896 0 0 1-.258-.51h-.036c.032.189.048.592.048 1.21v5.772H3.157V7.53h1.659l3.965 6.32c.167.261.275.442.323.54h.024c-.04-.233-.06-.629-.06-1.185V7.529h1.372zm-8.703-.693a.868.829 0 0 1-.869.829.868.829 0 0 1-.868-.83.868.829 0 0 1 .868-.828.868.829 0 0 1 .869.829Z',
       desc: 'First-class Windows support — ASP.NET Core and Blazor run directly against the NT kernel. No Linux compatibility shim or virtual machine required.',
+      terminal: `<span class="text-crush-textMuted">~/projects/BlazorApp $</span> <span class="text-crush-orange font-bold">crush</span>
+
+<span class="text-sky-400 font-bold">🔍 Detecting project stack...</span>
+   ↳ .NET solution detected: <span class="text-white font-semibold">BlazorApp.csproj</span> (.NET v8.0.3)
+
+<span class="text-purple-400 font-bold">📦 Building containerized layer tree...</span>
+   ↳ [1/3] Base runtime environment (dotnet/aspnet:8.0) ... <span class="text-emerald-400 font-semibold">Cache Hit</span>
+   ↳ [2/3] Restoring NuGet dependencies cache ... <span class="text-emerald-400 font-semibold">Cache Hit</span> (NuGet layer unchanged)
+   ↳ [3/3] Compiling and publishing app assemblies...
+           $ <span class="text-crush-textMuted">dotnet publish -c Release -o /app</span>
+           ✓ Assembly publishing complete in <span class="text-emerald-400 font-bold">0.84s</span>
+
+<span class="text-emerald-400 font-bold">✨ Successfully crushed to image:</span> <span class="text-white font-semibold">blazorapp:latest</span>
+   ⚡ Total compressed image size: <span class="text-emerald-400 font-bold">62.7 MB</span>
+
+<span class="text-sky-400 font-bold">🚀 Starting native container environment...</span>
+   ↳ Booting natively against the NT Kernel (<span class="text-amber-400 font-semibold">no WSL2 or Hyper-V VM required</span>)
+   ↳ Binding local socket interface: <span class="text-white font-semibold">http://localhost:5000</span>
+   ↳ Spawning worker process inside Job Object...
+     $ <span class="text-crush-textMuted">dotnet BlazorApp.dll --urls "http://0.0.0.0:5000"</span>
+     <span class="text-crush-textMuted">info: Microsoft.Hosting.Lifetime[14]</span>
+     <span class="text-crush-textMuted">      Now listening on: http://0.0.0.0:5000</span>
+
+<span class="text-emerald-400 font-bold">✓ ASP.NET Core app running natively on</span> <span class="text-sky-400 underline font-semibold">http://localhost:5000</span>
+   ⚡ Cold boot elapsed: <span class="text-emerald-400 font-bold">0.15s</span> (Total pipeline duration: 1.05s!)`,
     },
     {
       name: 'Java / JVM',
@@ -1000,6 +1172,31 @@ export default class IndexPage implements OnInit {
       iconPath:
         'M11.915 0 11.7.215C9.515 2.4 7.47 6.39 6.046 10.483c-1.064 1.024-3.633 2.81-3.711 3.551-.093.87 1.746 2.611 1.55 3.235-.198.625-1.304 1.408-1.014 1.939.1.188.823.011 1.277-.491a13.389 13.389 0 0 0-.017 2.14c.076.906.27 1.668.643 2.232.372.563.956.911 1.667.911.397 0 .727-.114 1.024-.264.298-.149.571-.33.91-.5.68-.34 1.634-.666 3.53-.604 1.903.062 2.872.39 3.559.704.687.314 1.15.664 1.925.664.767 0 1.395-.336 1.807-.9.412-.563.631-1.33.72-2.24.06-.623.055-1.32 0-2.066.454.45 1.117.604 1.213.424.29-.53-.816-1.314-1.013-1.937-.198-.624 1.642-2.366 1.549-3.236-.08-.748-2.707-2.568-3.748-3.586C16.428 6.374 14.308 2.394 12.13.215zm.175 6.038a2.95 2.95 0 0 1 2.943 2.942 2.95 2.95 0 0 1-2.943 2.943A2.95 2.95 0 0 1 9.148 8.98a2.95 2.95 0 0 1 2.942-2.942zM8.685 7.983a3.515 3.515 0 0 0-.145.997c0 1.951 1.6 3.55 3.55 3.55 1.95 0 3.55-1.598 3.55-3.55 0-.329-.046-.648-.132-.951.334.095.64.208.915.336a42.699 42.699 0 0 1 2.042 5.829c.678 2.545 1.01 4.92.846 6.607-.082.844-.29 1.51-.606 1.94-.315.431-.713.651-1.315.651-.593 0-.932-.27-1.673-.61-.741-.338-1.825-.694-3.792-.758-1.974-.064-3.073.293-3.821.669-.375.188-.659.373-.911.5s-.466.2-.752.2c-.53 0-.876-.209-1.16-.64-.285-.43-.474-1.101-.545-1.948-.141-1.693.176-4.069.823-6.614a43.155 43.155 0 0 1 1.934-5.783c.348-.167.749-.31 1.192-.425zm-3.382 4.362a.216.216 0 0 1 .13.031c-.166.56-.323 1.116-.463 1.665a33.849 33.849 0 0 0-.547 2.555 3.9 3.9 0 0 0-.2-.39c-.58-1.012-.914-1.642-1.16-2.08.315-.24 1.679-1.755 2.24-1.781zm13.394.01c.562.027 1.926 1.543 2.24 1.783-.246.438-.58 1.068-1.16 2.08a4.428 4.428 0 0 0-.163.309 32.354 32.354 0 0 0-.562-2.49 40.579 40.579 0 0 0-.482-1.652.216.216 0 0 1 .127-.03z',
       desc: 'Spring Boot, Micronaut, and Quarkus with pre-warmed container images. Hibernate, Kafka, and JDBC drivers work out of the box — no Hyper-V overhead.',
+      terminal: `<span class="text-crush-textMuted">~/projects/spring-api $</span> <span class="text-crush-orange font-bold">crush</span>
+
+<span class="text-sky-400 font-bold">🔍 Detecting project stack...</span>
+   ↳ Java Maven package detected: <span class="text-white font-semibold">pom.xml</span> (OpenJDK v17.0.10)
+
+<span class="text-purple-400 font-bold">📦 Building containerized layer tree...</span>
+   ↳ [1/3] Base runtime environment (eclipse-temurin:17-jre) ... <span class="text-emerald-400 font-semibold">Cache Hit</span>
+   ↳ [2/3] Maven local repository mount (.m2/ repository cache hit) ... <span class="text-emerald-400 font-semibold">Cache Hit</span>
+   ↳ [3/3] Compiling and packaging JVM binary...
+           $ <span class="text-crush-textMuted">./mvnw package -DskipTests</span>
+           ✓ JAR package compiled successfully in <span class="text-emerald-400 font-bold">1.1s</span>
+
+<span class="text-emerald-400 font-bold">✨ Successfully crushed to image:</span> <span class="text-white font-semibold">spring-api:latest</span>
+   ⚡ Total compressed image size: <span class="text-emerald-400 font-bold">142.6 MB</span>
+
+<span class="text-sky-400 font-bold">🚀 Starting native container environment...</span>
+   ↳ Creating isolated bridge network sandbox (<span class="text-white font-semibold">crush-bridge-0</span>)
+   ↳ Binding local socket interface: <span class="text-white font-semibold">http://localhost:8080</span>
+   ↳ Booting pre-warmed JVM worker process inside Job Object sandbox...
+     $ <span class="text-crush-textMuted">java -jar target/spring-api-0.0.1.jar</span>
+     <span class="text-crush-textMuted">:: Spring Boot ::                (v3.2.3)</span>
+     <span class="text-crush-textMuted">Tomcat initialized with port(s): 8080 (http)</span>
+
+<span class="text-emerald-400 font-bold">✓ Spring Boot app listening natively on</span> <span class="text-sky-400 underline font-semibold">http://localhost:8080</span>
+   ⚡ Cold boot elapsed: <span class="text-emerald-400 font-bold">0.75s</span> (Total pipeline duration: 1.94s!)`,
     },
     {
       name: 'Angular / React / Vue',
@@ -1007,6 +1204,27 @@ export default class IndexPage implements OnInit {
       iconPath:
         'M16.712 17.711H7.288l-1.204 2.916L12 24l5.916-3.373-1.204-2.916ZM14.692 0l7.832 16.855.814-12.856L14.692 0ZM9.308 0 .662 3.999l.814 12.856L9.308 0Zm-.405 13.93h6.198L12 6.396 8.903 13.93Z',
       desc: 'Serve Angular, React, and Vue builds via a built-in Crush static server or proxy to your backend. Export to Dockerfile for Vercel, Netlify, or any CDN edge.',
+      terminal: `<span class="text-crush-textMuted">~/projects/angular-dashboard $</span> <span class="text-crush-orange font-bold">crush</span>
+
+<span class="text-sky-400 font-bold">🔍 Detecting project stack...</span>
+   ↳ Single Page Application stack detected: <span class="text-white font-semibold">package.json</span> (Angular v18, npm)
+
+<span class="text-purple-400 font-bold">📦 Building containerized layer tree...</span>
+   ↳ [1/3] Base runtime web server environment (nginx:alpine) ... <span class="text-emerald-400 font-semibold">Cache Hit</span>
+   ↳ [2/3] Compiling production build web assets...
+           $ <span class="text-crush-textMuted">npm run build --configuration=production</span>
+           ✓ Web assets compiled in <span class="text-emerald-400 font-bold">1.34s</span> (dist/ folder ready)
+   ↳ [3/3] Copying static bundle to Nginx html directory... Done
+
+<span class="text-emerald-400 font-bold">✨ Successfully crushed to image:</span> <span class="text-white font-semibold">angular-dashboard:latest</span>
+   ⚡ Total compressed image size: <span class="text-emerald-400 font-bold">18.1 MB</span>
+
+<span class="text-sky-400 font-bold">🚀 Starting native container environment...</span>
+   ↳ Serving static assets via built-in Crush static routing proxy
+   ↳ Binding local socket interface: <span class="text-white font-semibold">http://localhost:4200</span>
+
+<span class="text-emerald-400 font-bold">✓ Angular application served natively on</span> <span class="text-sky-400 underline font-semibold">http://localhost:4200</span>
+   ⚡ Cold boot elapsed: <span class="text-emerald-400 font-bold">5ms</span> (Total pipeline duration: 1.41s!)`,
     },
     {
       name: 'Bun / Deno',
@@ -1014,6 +1232,26 @@ export default class IndexPage implements OnInit {
       iconPath:
         'M12 22.596c6.628 0 12-4.338 12-9.688 0-3.318-2.057-6.248-5.219-7.986-1.286-.715-2.297-1.357-3.139-1.89C14.058 2.025 13.08 1.404 12 1.404c-1.097 0-2.334.785-3.966 1.821a49.92 49.92 0 0 1-2.816 1.697C2.057 6.66 0 9.59 0 12.908c0 5.35 5.372 9.687 12 9.687v.001ZM10.599 4.715c.334-.759.503-1.58.498-2.409 0-.145.202-.187.23-.029.658 2.783-.902 4.162-2.057 4.624-.124.048-.199-.121-.103-.209a5.763 5.763 0 0 0 1.432-1.977Zm2.058-.102a5.82 5.82 0 0 0-.782-2.306v-.016c-.069-.123.086-.263.185-.172 1.962 2.111 1.307 4.067.556 5.051-.082.103-.23-.003-.189-.126a5.85 5.85 0 0 0 .23-2.431Zm1.776-.561a5.727 5.727 0 0 0-1.612-1.806v-.014c-.112-.085-.024-.274.114-.218 2.595 1.087 2.774 3.18 2.459 4.407a.116.116 0 0 1-.049.071.11.11 0 0 1-.153-.026.122.122 0 0 1-.022-.083a5.891 5.891 0 0 0-.737-2.331Zm-5.087.561c-.617.546-1.282.76-2.063 1-.117 0-.195-.078-.156-.181 1.752-.909 2.376-1.649 2.999-2.778 0 0 .155-.118.188.085 0 .304-.349 1.329-.968 1.874Zm4.945 11.237a2.957 2.957 0 0 1-.937 1.553c-.346.346-.8.565-1.286.62a2.178 2.178 0 0 1-1.327-.62 2.955 2.955 0 0 1-.925-1.553.244.244 0 0 1 .064-.198.234.234 0 0 1 .193-.069h3.965a.226.226 0 0 1 .19.07c.05.053.073.125.063.197Zm-5.458-2.176a1.862 1.862 0 0 1-2.384-.245 1.98 1.98 0 0 1-.233-2.447c.207-.319.503-.566.848-.713a1.84 1.84 0 0 1 1.092-.11c.366.075.703.261.967.531a1.98 1.98 0 0 1 .408 2.114 1.931 1.931 0 0 1-.698.869v.001Zm8.495.005a1.86 1.86 0 0 1-2.381-.253 1.964 1.964 0 0 1-.547-1.366c0-.384.11-.76.32-1.079.207-.319.503-.567.849-.713a1.844 1.844 0 0 1 1.093-.108c.367.076.704.262.968.534a1.98 1.98 0 0 1 .4 2.117 1.932 1.932 0 0 1-.702.868Z',
       desc: 'Modern runtimes with native I/O bindings. Crush runs Bun and Deno workloads without any WSL2 configuration — batteries included on Windows 10 and above.',
+      terminal: `<span class="text-crush-textMuted">~/projects/bun-app $</span> <span class="text-crush-orange font-bold">crush</span>
+
+<span class="text-sky-400 font-bold">🔍 Detecting project stack...</span>
+   ↳ Bun runtime stack detected: <span class="text-white font-semibold">package.json</span> (Bun v1.1.4)
+
+<span class="text-purple-400 font-bold">📦 Building containerized layer tree...</span>
+   ↳ [1/3] Base runtime environment (oven/bun:alpine) ... <span class="text-emerald-400 font-semibold">Cache Hit</span>
+   ↳ [2/3] Bun lockfile dependency cache check ... <span class="text-emerald-400 font-semibold">Cache Hit</span> (bun.lockb unchanged)
+   ↳ [3/3] Packing application TypeScript source code... Done (<span class="text-emerald-400 font-bold">0.01s</span>)
+
+<span class="text-emerald-400 font-bold">✨ Successfully crushed to image:</span> <span class="text-white font-semibold">bun-app:latest</span>
+   ⚡ Total compressed image size: <span class="text-emerald-400 font-bold">28.4 MB</span>
+
+<span class="text-sky-400 font-bold">🚀 Starting native container environment...</span>
+   ↳ Spawning worker process inside Job Object using Bun's native NT I/O bindings...
+     $ <span class="text-crush-textMuted">bun run src/index.ts</span>
+     <span class="text-crush-textMuted">[Bun] Server listening on http://0.0.0.0:3000</span>
+
+<span class="text-emerald-400 font-bold">✓ Bun application running natively on</span> <span class="text-sky-400 underline font-semibold">http://localhost:3000</span>
+   ⚡ Cold boot elapsed: <span class="text-emerald-400 font-bold">8ms</span> (Total pipeline duration: 0.12s!)`,
     },
   ];
 
