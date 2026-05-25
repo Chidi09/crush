@@ -6,12 +6,19 @@
   <p>Sub-second starts &nbsp;·&nbsp; No WSL2 &nbsp;·&nbsp; No VM overhead &nbsp;·&nbsp; OCI-compatible &nbsp;·&nbsp; AI-powered diagnostics</p>
 
   <p>
-    <a href="https://github.com/Chidi09/crush/actions"><img src="https://img.shields.io/github/actions/workflow/status/Chidi09/crush/ci.yml?branch=main&label=CI&style=flat-square" alt="CI" /></a>
-    <a href="https://github.com/Chidi09/crush/blob/main/Cargo.toml"><img src="https://img.shields.io/badge/rust-2021_edition-orange?style=flat-square" alt="Rust Edition" /></a>
+    <a href="https://github.com/Chidi09/crush/actions"><img src="https://img.shields.io/github/actions/workflow/status/Chidi09/crush/ci.yml?branch=main&label=CI&logo=github&style=flat-square" alt="CI" /></a>
+    <a href="https://github.com/Chidi09/crush/blob/main/Cargo.toml"><img src="https://img.shields.io/badge/rustc-1.75%2B-orange?logo=rust&style=flat-square" alt="Rust Version" /></a>
     <a href="https://github.com/Chidi09/crush/blob/main/LICENSE"><img src="https://img.shields.io/badge/license-MIT%20OR%20Apache--2.0-blue?style=flat-square" alt="License" /></a>
-    <a href="https://github.com/Chidi09/crush/stargazers"><img src="https://img.shields.io/github/stars/Chidi09/crush?style=flat-square" alt="Stars" /></a>
+    <a href="https://github.com/Chidi09/crush/stargazers"><img src="https://img.shields.io/github/stars/Chidi09/crush?logo=github&style=flat-square" alt="Stars" /></a>
+    <a href="#contributing"><img src="https://img.shields.io/badge/discord-coming_soon-5865F2?logo=discord&logoColor=white&style=flat-square" alt="Discord" /></a>
+    <a href="#stability-notice"><img src="https://img.shields.io/badge/status-active_alpha-red?style=flat-square" alt="Status" /></a>
   </p>
 </div>
+
+---
+
+> [!IMPORTANT]
+> **Stability Notice**: Crush is currently in active **Alpha** development (pre-release v0.1.0). The CLI commands, TOML schema, and network configurations are under active development and may change. It is not yet recommended for mission-critical production workloads, but early feedback, testing, and contributions are highly encouraged!
 
 ---
 
@@ -19,13 +26,30 @@
 
 Crush is a container runtime built from the ground up in Rust. It detects your project's tech stack, builds a minimal OCI image, and runs it natively — no Docker daemon, no WSL2, no virtual machine in the way.
 
-```bash
-~/my-api $ crush
-  ↳ detected: Node.js 20 · TypeScript · Express
-  ↳ dependencies layer cached (unchanged)
-✓ crushed to image my-api:latest (0.9s · 41 MB)
-  run it now? [Y/n]
-✓ running natively on :3000 — started in 0.3s (total: 1.2s!)
+```
+┌────────────────────────────────────────────────────────────────────────────────┐
+│  ~/my-api $ crush                                                              │
+│                                                                                │
+│  🔍 Detecting project stack...                                                 │
+│     ↳ Detected: Node.js v20.11.0 • TypeScript • Express • TailwindCSS          │
+│                                                                                │
+│  📦 Building containerized layer tree...                                       │
+│     ↳ [1/3] Base runtime system cache hit (debian-slim-nodejs)                 │
+│     ↳ [2/3] Cache Hit: node_modules/ dependencies layer (unchanged)            │
+│     ↳ [3/3] Building source code layer... Done!                                │
+│                                                                                │
+│  ✨ Successfully crushed to image: my-api:latest                               │
+│     ⚡ Build complete in 0.9s (Total compressed image size: 41 MB)             │
+│                                                                                │
+│  🚀 Run container now? [Y/n] Y                                                 │
+│     ↳ Creating container network sandbox (crush-bridge-0)                      │
+│     ↳ Binding local socket port 3000 -> 3000                                   │
+│     ↳ Assigning Windows Job Object policies (CPU rate: 1.0, RAM limit: 512MB)    │
+│                                                                                │
+│  ✓ Container started natively on http://localhost:3000                         │
+│     ⚡ Cold boot elapsed: 0.3s (Total pipeline duration: 1.2s!)                │
+│                                                                                │
+└────────────────────────────────────────────────────────────────────────────────┘
 ```
 
 Already have a Dockerfile? Crush runs it as-is and can export back to a standard `Dockerfile` or `docker-compose.yml` when you need to deploy to a VPS or CI pipeline.
@@ -192,8 +216,15 @@ scoop install crush
 ```
 
 ### Cargo
+
+To compile and install from crates.io from source:
 ```bash
 cargo install crush-cli
+```
+
+**Tip (Fast pre-compiled binaries):** If you have `cargo-binstall` installed, you can pull pre-compiled releases instantly without building locally from source:
+```bash
+cargo binstall crush-cli
 ```
 
 ---
@@ -369,9 +400,11 @@ crush export my-app:latest --output my-app.tar
 
 **Prerequisites:**
 - Rust toolchain (`rustup` recommended) — `rustup update stable`
-- On Windows: Windows SDK 10.0.22000+
-- On Linux: kernel headers, `libseccomp-dev`
-- On macOS: Xcode Command Line Tools
+- **On Windows**: 
+  - Windows SDK 10.0.22000+
+  - **Windows Developer Mode Enabled**: Creating NTFS symlinks (required when compiling modules or running `npm ci`/`yarn` inside your container layers) requires Developer Mode. Search for "Developer settings" in Windows Settings and toggle **Developer Mode** on, or run powershell as administrator.
+- **On Linux**: kernel headers, `libseccomp-dev`
+- **On macOS**: Xcode Command Line Tools
 
 ```bash
 git clone https://github.com/Chidi09/crush.git

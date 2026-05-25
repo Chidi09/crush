@@ -257,7 +257,10 @@ export class TerminalComponent implements OnInit, OnDestroy {
         this.visibleLines.update((lines) => {
           const updated = [...lines];
           if (updated.length > 0) {
-            updated[updated.length - 1] = { ...typingLine, text: targetText.substring(0, currentChar) };
+            updated[updated.length - 1] = {
+              ...typingLine,
+              text: targetText.substring(0, currentChar),
+            };
           }
           return updated;
         });

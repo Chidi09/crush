@@ -1,7 +1,7 @@
-import { Component, OnInit, Inject } from '@angular/core';
+import { Component, OnInit, Inject, signal } from '@angular/core';
 import { RouterLink } from '@angular/router';
 import { Title, Meta } from '@angular/platform-browser';
-import { DOCUMENT } from '@angular/common';
+import { CommonModule, DOCUMENT } from '@angular/common';
 import { HlmButtonDirective } from '@spartan-ng/ui-button-helm';
 import { HlmIconComponent } from '@spartan-ng/ui-icon-helm';
 import { HlmBadgeDirective } from '../ui/badge';
@@ -20,6 +20,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
   standalone: true,
   imports: [
     RouterLink,
+    CommonModule,
     HlmButtonDirective,
     HlmIconComponent,
     HlmBadgeDirective,
@@ -366,9 +367,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
           >
             Your stack, natively
           </div>
-          <h2 class="text-3xl font-bold text-white sm:text-4xl">
-            Supported stacks and frameworks
-          </h2>
+          <h2 class="text-3xl font-bold text-white sm:text-4xl">Supported stacks and frameworks</h2>
           <p class="mt-4 text-lg text-crush-textMuted max-w-2xl mx-auto">
             Zero-config environments for high-performance stacks. Whether you're compiling
             <strong class="text-white font-semibold">Go</strong> binaries, running a
@@ -390,11 +389,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
                   [style.background]="stack.color + '1a'"
                   [style.border]="'1px solid ' + stack.color + '33'"
                 >
-                  <svg
-                    viewBox="0 0 24 24"
-                    class="h-4 w-4 fill-current"
-                    [style.color]="stack.color"
-                  >
+                  <svg viewBox="0 0 24 24" class="h-4 w-4 fill-current" [style.color]="stack.color">
                     <path [attr.d]="stack.iconPath" />
                   </svg>
                 </div>
@@ -519,14 +514,10 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
                   >NT Kernel</span
                 >
               </div>
-              <div class="text-[9px] text-emerald-400 pt-1">
-                ✓ 0.28s cold start · ~18 MB idle
-              </div>
+              <div class="text-[9px] text-emerald-400 pt-1">✓ 0.28s cold start · ~18 MB idle</div>
             </div>
             <div class="space-y-2 opacity-50">
-              <div
-                class="text-[10px] font-bold text-crush-textMuted uppercase tracking-wide mb-3"
-              >
+              <div class="text-[10px] font-bold text-crush-textMuted uppercase tracking-wide mb-3">
                 Docker Desktop (VM-based)
               </div>
               <div class="flex flex-wrap items-center gap-1.5">
@@ -550,9 +541,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
                   >NT Kernel</span
                 >
               </div>
-              <div class="text-[9px] text-red-400/70 pt-1">
-                ✗ 8–30s cold start · ~500 MB idle
-              </div>
+              <div class="text-[9px] text-red-400/70 pt-1">✗ 8–30s cold start · ~500 MB idle</div>
             </div>
           </div>
         </div>
@@ -623,20 +612,38 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
         </div>
 
         <!-- Dockerfile / VPS callout -->
-        <div class="mb-8 rounded-xl border border-crush-orange/20 bg-crush-orange/5 px-6 py-4 flex items-start gap-4">
-          <div class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-crush-orange/10 border border-crush-orange/20 text-crush-orangeLight">
-            <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-2" stroke-linecap="round" stroke-linejoin="round">
-              <rect x="3" y="3" width="18" height="18" rx="2"/><path d="M3 9h18M9 21V9"/>
+        <div
+          class="mb-8 rounded-xl border border-crush-orange/20 bg-crush-orange/5 px-6 py-4 flex items-start gap-4"
+        >
+          <div
+            class="mt-0.5 flex h-8 w-8 shrink-0 items-center justify-center rounded-lg bg-crush-orange/10 border border-crush-orange/20 text-crush-orangeLight"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              class="h-4 w-4 fill-none stroke-current stroke-2"
+              stroke-linecap="round"
+              stroke-linejoin="round"
+            >
+              <rect x="3" y="3" width="18" height="18" rx="2" />
+              <path d="M3 9h18M9 21V9" />
             </svg>
           </div>
           <div>
-            <p class="text-sm font-semibold text-white">Already have a Dockerfile? Crush runs it as-is.</p>
+            <p class="text-sm font-semibold text-white">
+              Already have a Dockerfile? Crush runs it as-is.
+            </p>
             <p class="mt-1 text-sm text-crush-textMuted leading-relaxed">
-              Crush builds out-of-the-box hostable environments from your project — no config needed.
-              When you're ready to deploy, export a standard
-              <code class="px-1 py-0.5 rounded bg-crush-surface border border-crush-border text-crush-text text-xs">Dockerfile</code>
+              Crush builds out-of-the-box hostable environments from your project — no config
+              needed. When you're ready to deploy, export a standard
+              <code
+                class="px-1 py-0.5 rounded bg-crush-surface border border-crush-border text-crush-text text-xs"
+                >Dockerfile</code
+              >
               or
-              <code class="px-1 py-0.5 rounded bg-crush-surface border border-crush-border text-crush-text text-xs">docker-compose.yml</code>
+              <code
+                class="px-1 py-0.5 rounded bg-crush-surface border border-crush-border text-crush-text text-xs"
+                >docker-compose.yml</code
+              >
               to ship to any VPS, CI pipeline, or cloud provider.
             </p>
           </div>
@@ -699,21 +706,72 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
     <hr class="max-w-7xl mx-auto border-crush-border/30" />
 
     <!-- FAQ -->
-    <section class="py-20 sm:py-28">
-      <div class="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8">
-        <div class="mx-auto max-w-2xl text-center mb-12 select-none">
-          <h2 class="text-3xl font-bold text-white sm:text-4xl">Frequently asked questions</h2>
-          <p class="mt-4 text-lg text-crush-textMuted">
-            Everything you need to know about Crush as a Docker Desktop alternative on Windows
+    <section class="py-20 sm:py-28 relative overflow-hidden font-sans">
+      <!-- Background Ambient Light -->
+      <div
+        class="absolute -right-32 top-1/2 -translate-y-1/2 w-80 h-80 bg-crush-orange/3 blur-[120px] pointer-events-none rounded-full"
+      ></div>
+
+      <div class="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8 relative">
+        <div class="mx-auto max-w-2xl text-center mb-16 select-none">
+          <div
+            class="mb-4 inline-flex items-center gap-1.5 rounded-full border border-crush-orange/20 bg-crush-orange/5 px-3 py-1 text-xs font-semibold text-crush-orange uppercase tracking-wider"
+          >
+            FAQ
+          </div>
+          <h2 class="text-3xl font-extrabold text-white sm:text-4xl tracking-tight">
+            Frequently Asked Questions
+          </h2>
+          <p
+            class="mt-4 text-base sm:text-lg text-crush-textMuted max-w-xl mx-auto leading-relaxed"
+          >
+            Everything you need to know about Crush as a daemonless, native Windows container
+            runtime.
           </p>
         </div>
-        <div class="space-y-3">
-          @for (faq of faqs; track faq.q) {
-            <div
-              class="rounded-xl border border-crush-border/40 bg-crush-surface/20 px-6 py-5 hover:border-crush-orange/20 transition-colors duration-200"
-            >
-              <h3 class="text-sm font-semibold text-white mb-2">{{ faq.q }}</h3>
-              <p class="text-sm text-crush-textMuted leading-relaxed">{{ faq.a }}</p>
+
+        <!-- SpartanUI styled Accordion Container -->
+        <div class="divide-y divide-crush-border/30 border-t border-b border-crush-border/30">
+          @for (faq of faqs; track faq.q; let idx = $index) {
+            <div class="group py-2">
+              <button
+                (click)="toggleFaq(idx)"
+                class="flex w-full items-center justify-between py-4 text-left font-semibold text-white hover:text-crush-orangeLight transition-colors duration-200 select-none outline-none group"
+              >
+                <span class="text-sm sm:text-base tracking-wide flex items-center gap-3">
+                  <!-- Bullet/State indicator -->
+                  <span
+                    class="h-1.5 w-1.5 rounded-full transition-all duration-300"
+                    [ngClass]="
+                      activeFaq() === idx
+                        ? 'bg-crush-orange scale-125 shadow-[0_0_8px_rgba(224,85,64,0.8)]'
+                        : 'bg-crush-border/80 group-hover:bg-white'
+                    "
+                  ></span>
+                  {{ faq.q }}
+                </span>
+
+                <!-- Rotating Chevron -->
+                <svg
+                  viewBox="0 0 24 24"
+                  class="h-5 w-5 fill-none stroke-current stroke-2 text-crush-textMuted group-hover:text-white transition-transform duration-300"
+                  [ngClass]="activeFaq() === idx ? 'rotate-180 text-crush-orange' : 'rotate-0'"
+                >
+                  <polyline points="6 9 12 15 18 9" />
+                </svg>
+              </button>
+
+              <!-- Collapsible Content -->
+              <div
+                class="overflow-hidden transition-all duration-300 ease-in-out"
+                [ngClass]="
+                  activeFaq() === idx ? 'max-h-52 opacity-100 pb-5 pl-4.5' : 'max-h-0 opacity-0'
+                "
+              >
+                <p class="text-sm text-crush-textMuted leading-relaxed pr-4 select-text">
+                  {{ faq.a }}
+                </p>
+              </div>
             </div>
           }
         </div>
@@ -770,9 +828,16 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
               rel="noopener"
               class="flex items-center gap-2 text-crush-textMuted hover:text-crush-orange transition-colors duration-200"
             >
-              <svg viewBox="0 0 24 24" class="h-4 w-4 fill-current"><path d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"/></svg>
+              <svg viewBox="0 0 24 24" class="h-4 w-4 fill-current">
+                <path
+                  d="M12 .297c-6.63 0-12 5.373-12 12 0 5.303 3.438 9.8 8.205 11.385.6.113.82-.258.82-.577 0-.285-.01-1.04-.015-2.04-3.338.724-4.042-1.61-4.042-1.61C4.422 18.07 3.633 17.7 3.633 17.7c-1.087-.744.084-.729.084-.729 1.205.084 1.838 1.236 1.838 1.236 1.07 1.835 2.809 1.305 3.495.998.108-.776.417-1.305.76-1.605-2.665-.3-5.466-1.332-5.466-5.93 0-1.31.465-2.38 1.235-3.22-.135-.303-.54-1.523.105-3.176 0 0 1.005-.322 3.3 1.23.96-.267 1.98-.399 3-.405 1.02.006 2.04.138 3 .405 2.28-1.552 3.285-1.23 3.285-1.23.645 1.653.24 2.873.12 3.176.765.84 1.23 1.91 1.23 3.22 0 4.61-2.805 5.625-5.475 5.92.42.36.81 1.096.81 2.22 0 1.606-.015 2.896-.015 3.286 0 .315.21.69.825.57C20.565 22.092 24 17.592 24 12.297c0-6.627-5.373-12-12-12"
+                />
+              </svg>
               Star us on GitHub
-              <span class="px-1.5 py-0.5 rounded-full bg-crush-surface border border-crush-border/60 text-[10px] font-mono text-crush-text">⭐</span>
+              <span
+                class="px-1.5 py-0.5 rounded-full bg-crush-surface border border-crush-border/60 text-[10px] font-mono text-crush-text"
+                >⭐</span
+              >
             </a>
             <span class="w-px h-4 bg-crush-border/50 hidden sm:block"></span>
             <a
@@ -781,19 +846,34 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
               rel="noopener"
               class="flex items-center gap-1.5 text-crush-textMuted hover:text-crush-orange transition-colors duration-200"
             >
-              <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-2" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="10"/><line x1="12" y1="8" x2="12" y2="12"/><line x1="12" y1="16" x2="12.01" y2="16"/></svg>
+              <svg
+                viewBox="0 0 24 24"
+                class="h-4 w-4 fill-none stroke-current stroke-2"
+                stroke-linecap="round"
+                stroke-linejoin="round"
+              >
+                <circle cx="12" cy="12" r="10" />
+                <line x1="12" y1="8" x2="12" y2="12" />
+                <line x1="12" y1="16" x2="12.01" y2="16" />
+              </svg>
               Contribute — browse open issues
             </a>
             <span class="w-px h-4 bg-crush-border/50 hidden sm:block"></span>
             <span class="flex items-center gap-1.5 text-crush-textMuted">
-              <svg viewBox="0 0 24 24" class="h-4 w-4 fill-current text-[#5865F2]"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057c.002.022.015.043.03.053a19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>
+              <svg viewBox="0 0 24 24" class="h-4 w-4 fill-current text-[#5865F2]">
+                <path
+                  d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057c.002.022.015.043.03.053a19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028 14.09 14.09 0 0 0 1.226-1.994.076.076 0 0 0-.041-.106 13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.928 1.793 8.18 1.793 12.062 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.892.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.03zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"
+                />
+              </svg>
               Discord — coming soon
             </span>
           </div>
 
           <!-- Built by -->
           <div class="mt-8 flex flex-col items-center gap-4">
-            <p class="text-[11px] uppercase tracking-widest text-crush-textMuted font-semibold">Built by</p>
+            <p class="text-[11px] uppercase tracking-widest text-crush-textMuted font-semibold">
+              Built by
+            </p>
             <div class="flex items-center gap-3">
               <!-- Founder -->
               <a
@@ -802,9 +882,25 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
                 rel="noopener"
                 class="flex items-center gap-2.5 rounded-full border border-crush-border/50 bg-crush-surface/40 px-4 py-2 hover:border-crush-orange/40 hover:bg-crush-surface/60 transition-all duration-200 group"
               >
-                <div class="h-6 w-6 rounded-full bg-gradient-to-br from-crush-orange to-crush-orangeLight flex items-center justify-center text-white text-[11px] font-bold shrink-0">C</div>
-                <span class="text-sm font-medium text-crush-text group-hover:text-white transition-colors">Chidi</span>
-                <svg viewBox="0 0 24 24" class="h-3 w-3 fill-none stroke-current stroke-2 text-crush-textMuted group-hover:text-crush-orange transition-colors" stroke-linecap="round" stroke-linejoin="round"><path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"/><polyline points="15 3 21 3 21 9"/><line x1="10" y1="14" x2="21" y2="3"/></svg>
+                <img
+                  src="/founder.png"
+                  alt="Chidi"
+                  class="h-6 w-6 rounded-full shrink-0 object-cover border border-crush-orange/20"
+                />
+                <span
+                  class="text-sm font-medium text-crush-text group-hover:text-white transition-colors"
+                  >Chidi</span
+                >
+                <svg
+                  viewBox="0 0 24 24"
+                  class="h-3 w-3 fill-none stroke-current stroke-2 text-crush-textMuted group-hover:text-crush-orange transition-colors"
+                  stroke-linecap="round"
+                  stroke-linejoin="round"
+                >
+                  <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6" />
+                  <polyline points="15 3 21 3 21 9" />
+                  <line x1="10" y1="14" x2="21" y2="3" />
+                </svg>
               </a>
               <!-- Join -->
               <a
@@ -818,13 +914,17 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
               </a>
             </div>
           </div>
-
         </div>
       </div>
     </section>
   `,
 })
 export default class IndexPage implements OnInit {
+  activeFaq = signal<number | null>(null);
+
+  toggleFaq(idx: number): void {
+    this.activeFaq.set(this.activeFaq() === idx ? null : idx);
+  }
   clouds = [
     {
       name: 'AWS EC2 / ECS / EKS',
@@ -943,7 +1043,7 @@ export default class IndexPage implements OnInit {
   constructor(
     private title: Title,
     private meta: Meta,
-    @Inject(DOCUMENT) private document: Document,
+    @Inject(DOCUMENT) private document: Document
   ) {}
 
   ngOnInit(): void {

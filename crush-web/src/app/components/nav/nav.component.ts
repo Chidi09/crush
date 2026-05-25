@@ -39,7 +39,8 @@ import { HlmIconComponent } from '@spartan-ng/ui-icon-helm';
             <span
               class="text-[17px] font-semibold text-crush-orange leading-none tracking-tight -ml-3"
               style="font-family: 'Geist', sans-serif;"
-            >Crush</span>
+              >Crush</span
+            >
           </a>
 
           <!-- Desktop Links (Premium style) -->
