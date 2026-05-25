@@ -81,7 +81,19 @@ impl CriService {
         }
     }
 
-    pub async fn create_container(&self, req: CreateContainerRequest) -> CreateContainerResponse {
+    pub async fn create_container(&self, req: CreateContainerRequest) -> Result<CreateContainerResponse, String> {
+        let data_dir = dirs_or_default();
+        let db = crush_image::db::ImageDatabase::new(&data_dir.join("images"))
+            .map_err(|e| format!("Failed to open image DB: {}", e))?;
+        
+        let image_exists = db.get_image_by_tag(&req.image).await
+            .map(|opt| opt.is_some())
+            .unwrap_or(false);
+            
+        if !image_exists {
+            return Err(format!("Image '{}' not found in Crush OCI store. Please pull it first.", req.image));
+        }
+
         let id = format!("crush_{}", hex_encode_random());
         let now = std::time::SystemTime::now()
             .duration_since(std::time::UNIX_EPOCH)
@@ -103,7 +115,7 @@ impl CriService {
         let mut containers = self.containers.lock().await;
         containers.insert(id.clone(), record);
 
-        CreateContainerResponse { container_id: id }
+        Ok(CreateContainerResponse { container_id: id })
     }
 
     pub async fn start_container(&self, container_id: &str) -> Result<(), String> {
@@ -201,4 +213,16 @@ fn rand_pid() -> u32 {
         .unwrap_or_default()
         .as_nanos();
     (nanos as u32 % 65535) + 1
+}
+
+fn dirs_or_default() -> std::path::PathBuf {
+    let base = if cfg!(target_os = "linux") {
+        std::path::PathBuf::from("/var/lib/crush")
+    } else if cfg!(target_os = "windows") {
+        std::path::PathBuf::from(std::env::var("PROGRAMDATA").unwrap_or_else(|_| "C:\\ProgramData\\Crush".to_string()))
+    } else {
+        dirs::data_dir().unwrap_or_else(|| std::path::PathBuf::from(".")).join("crush")
+    };
+    std::fs::create_dir_all(&base).ok();
+    base
 }

@@ -409,7 +409,7 @@ async fn main() -> anyhow::Result<()> {
             let container_id = format!("crush_{}", hex_encode_random());
             let container = Container {
                 id: container_id.clone(),
-                name: args.name.unwrap_or_else(|| format!("crush_{}&container_id[..8]", &container_id[..8])),
+                name: args.name.unwrap_or_else(|| format!("crush_{}", &container_id[..8])),
                 image: args.image,
                 status: ContainerStatus::Creating,
                 pid: None,

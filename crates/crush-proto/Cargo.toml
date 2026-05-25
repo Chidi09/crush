@@ -10,6 +10,8 @@ description = "gRPC and Protobuf structures for Crush CRI and metrics"
 [dependencies]
 tokio = { workspace = true }
 serde = { workspace = true }
+serde_json = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 crush-types = { workspace = true }
+crush-image = { workspace = true }

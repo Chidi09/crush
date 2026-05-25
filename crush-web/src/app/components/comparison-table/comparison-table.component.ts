@@ -143,19 +143,19 @@ const SECURITY_ROWS: ComparisonRow[] = [
 
       <!-- High-Fidelity Table Container -->
       <div
-        class="overflow-x-auto rounded-xl border border-crush-border/30 bg-[#0c0c10]/40 backdrop-blur-md shadow-2xl shadow-crush-orange/5"
+        class="overflow-x-auto rounded-xl border border-border bg-card shadow-2xl shadow-black/[0.03] dark:shadow-crush-orange/5 transition-all duration-300"
       >
         <table class="w-full border-collapse text-sm text-left">
           <!-- Table Header -->
           <thead>
             <tr
-              class="border-b border-crush-border/40 bg-crush-dark/50 select-none text-xs font-semibold uppercase tracking-wider text-crush-textMuted"
+              class="border-b border-border bg-muted/40 dark:bg-crush-dark/50 select-none text-xs font-semibold uppercase tracking-wider text-muted-foreground dark:text-crush-textMuted"
             >
               <th class="px-6 py-4 w-12 text-center">
                 <!-- Custom checkbox header design -->
                 <div class="flex items-center justify-center">
                   <span
-                    class="h-3.5 w-3.5 rounded border border-crush-border/80 bg-crush-black/50 block relative"
+                    class="h-3.5 w-3.5 rounded border border-border bg-muted dark:border-crush-border/80 dark:bg-crush-black/50 block relative"
                   >
                     <span
                       class="absolute inset-0.5 bg-crush-orange rounded-[1px] opacity-25"
@@ -170,7 +170,9 @@ const SECURITY_ROWS: ComparisonRow[] = [
                   <span
                     class="h-2 w-2 rounded-full bg-crush-orange shadow-[0_0_8px_rgba(224,85,64,0.6)] animate-pulse-glow"
                   ></span>
-                  <span class="text-sm font-bold text-white tracking-wide normal-case">Crush</span>
+                  <span class="text-sm font-bold text-crush-text tracking-wide normal-case"
+                    >Crush</span
+                  >
                 </div>
               </th>
               <th class="px-6 py-4">
@@ -178,7 +180,7 @@ const SECURITY_ROWS: ComparisonRow[] = [
                   <span
                     class="h-2 w-2 rounded-full bg-docker-blue shadow-[0_0_8px_rgba(13,183,237,0.6)]"
                   ></span>
-                  <span class="text-sm font-bold text-white tracking-wide normal-case"
+                  <span class="text-sm font-bold text-crush-text tracking-wide normal-case"
                     >Docker Desktop</span
                   >
                 </div>
@@ -188,10 +190,10 @@ const SECURITY_ROWS: ComparisonRow[] = [
           </thead>
 
           <!-- Table Body -->
-          <tbody class="divide-y divide-crush-border/20">
+          <tbody class="divide-y divide-border/30">
             <!-- PERFORMANCE SECTION -->
             <tr
-              class="bg-crush-dark/60 text-[10px] font-bold uppercase tracking-widest text-crush-orangeLight select-none border-t border-b border-crush-border/30"
+              class="bg-muted/80 dark:bg-crush-dark/60 text-[10px] font-bold uppercase tracking-widest text-crush-orange select-none border-t border-b border-border"
             >
               <td
                 colspan="6"
@@ -201,19 +203,21 @@ const SECURITY_ROWS: ComparisonRow[] = [
               </td>
             </tr>
             @for (row of performanceRows; track row.feature) {
-              <tr class="hover:bg-crush-surface/30 transition-all duration-200 group">
+              <tr
+                class="hover:bg-muted/40 dark:hover:bg-crush-surface/30 border-b border-border/30 dark:border-crush-border/20 transition-all duration-200 group"
+              >
                 <!-- Checkbox Row Selector -->
                 <td class="px-6 py-4 text-center">
                   <div class="flex items-center justify-center select-none">
                     <span
-                      class="h-3.5 w-3.5 rounded border border-crush-border/60 bg-crush-black/40 block hover:border-crush-orange/40 transition-colors"
+                      class="h-3.5 w-3.5 rounded border border-border bg-muted dark:border-crush-border/60 dark:bg-crush-black/40 block hover:border-crush-orange/40 transition-colors"
                     ></span>
                   </div>
                 </td>
 
                 <!-- Feature -->
                 <td
-                  class="px-6 py-4 font-semibold text-crush-text group-hover:text-white transition-colors"
+                  class="px-6 py-4 font-semibold text-crush-text group-hover:text-crush-orange transition-colors"
                 >
                   {{ row.feature }}
                 </td>
@@ -231,13 +235,13 @@ const SECURITY_ROWS: ComparisonRow[] = [
                 <td class="px-6 py-4 font-medium">
                   @if (row.winner === 'crush') {
                     <span
-                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shadow-sm animate-fade-in font-mono"
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20 shadow-sm animate-fade-in font-mono"
                     >
                       {{ row.crush }}
                     </span>
                   } @else {
                     <span
-                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-crush-surface/40 text-crush-textMuted border border-crush-border/30"
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-muted/60 dark:bg-crush-surface/40 text-muted-foreground dark:text-crush-textMuted border border-border dark:border-crush-border/30"
                     >
                       {{ row.crush }}
                     </span>
@@ -248,13 +252,13 @@ const SECURITY_ROWS: ComparisonRow[] = [
                 <td class="px-6 py-4 font-medium">
                   @if (row.winner === 'docker') {
                     <span
-                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20 shadow-sm animate-fade-in font-mono"
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/20 shadow-sm animate-fade-in font-mono"
                     >
                       {{ row.docker }}
                     </span>
                   } @else {
                     <span
-                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-crush-surface/40 text-crush-textMuted border border-crush-border/30 font-mono"
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-muted/60 dark:bg-crush-surface/40 text-muted-foreground dark:text-crush-textMuted border border-border dark:border-crush-border/30 font-mono"
                     >
                       {{ row.docker }}
                     </span>
@@ -265,7 +269,7 @@ const SECURITY_ROWS: ComparisonRow[] = [
                 <td class="px-6 py-4 text-center select-none w-28">
                   @if (row.status === 'done') {
                     <span
-                      class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                      class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20"
                     >
                       <svg viewBox="0 0 24 24" class="h-3 w-3 fill-none stroke-current stroke-2.5">
                         <polyline points="20 6 9 17 4 12" />
@@ -274,7 +278,7 @@ const SECURITY_ROWS: ComparisonRow[] = [
                     </span>
                   } @else {
                     <span
-                      class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                      class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-500/20"
                     >
                       <svg
                         viewBox="0 0 24 24"
@@ -298,7 +302,7 @@ const SECURITY_ROWS: ComparisonRow[] = [
 
             <!-- FEATURE SECTION -->
             <tr
-              class="bg-crush-dark/60 text-[10px] font-bold uppercase tracking-widest text-crush-orangeLight select-none border-t border-b border-crush-border/30"
+              class="bg-muted/80 dark:bg-crush-dark/60 text-[10px] font-bold uppercase tracking-widest text-crush-orange select-none border-t border-b border-border"
             >
               <td
                 colspan="6"
@@ -308,19 +312,21 @@ const SECURITY_ROWS: ComparisonRow[] = [
               </td>
             </tr>
             @for (row of featureRows; track row.feature) {
-              <tr class="hover:bg-crush-surface/30 transition-all duration-200 group">
+              <tr
+                class="hover:bg-muted/40 dark:hover:bg-crush-surface/30 border-b border-border/30 dark:border-crush-border/20 transition-all duration-200 group"
+              >
                 <!-- Checkbox Row Selector -->
                 <td class="px-6 py-4 text-center">
                   <div class="flex items-center justify-center select-none">
                     <span
-                      class="h-3.5 w-3.5 rounded border border-crush-border/60 bg-crush-black/40 block hover:border-crush-orange/40 transition-colors"
+                      class="h-3.5 w-3.5 rounded border border-border bg-muted dark:border-crush-border/60 dark:bg-crush-black/40 block hover:border-crush-orange/40 transition-colors"
                     ></span>
                   </div>
                 </td>
 
                 <!-- Feature -->
                 <td
-                  class="px-6 py-4 font-semibold text-crush-text group-hover:text-white transition-colors"
+                  class="px-6 py-4 font-semibold text-crush-text group-hover:text-crush-orange transition-colors"
                 >
                   {{ row.feature }}
                 </td>
@@ -338,13 +344,13 @@ const SECURITY_ROWS: ComparisonRow[] = [
                 <td class="px-6 py-4 font-medium">
                   @if (row.winner === 'crush') {
                     <span
-                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shadow-sm animate-fade-in font-mono"
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20 shadow-sm animate-fade-in font-mono"
                     >
                       {{ row.crush }}
                     </span>
                   } @else {
                     <span
-                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-crush-surface/40 text-crush-textMuted border border-crush-border/30"
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-muted/60 dark:bg-crush-surface/40 text-muted-foreground dark:text-crush-textMuted border border-border dark:border-crush-border/30"
                     >
                       {{ row.crush }}
                     </span>
@@ -355,13 +361,13 @@ const SECURITY_ROWS: ComparisonRow[] = [
                 <td class="px-6 py-4 font-medium">
                   @if (row.winner === 'docker') {
                     <span
-                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20 shadow-sm animate-fade-in font-mono"
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/20 shadow-sm animate-fade-in font-mono"
                     >
                       {{ row.docker }}
                     </span>
                   } @else {
                     <span
-                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-crush-surface/40 text-crush-textMuted border border-crush-border/30 font-mono"
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-muted/60 dark:bg-crush-surface/40 text-muted-foreground dark:text-crush-textMuted border border-border dark:border-crush-border/30 font-mono"
                     >
                       {{ row.docker }}
                     </span>
@@ -372,7 +378,7 @@ const SECURITY_ROWS: ComparisonRow[] = [
                 <td class="px-6 py-4 text-center select-none w-28">
                   @if (row.status === 'done') {
                     <span
-                      class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                      class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20"
                     >
                       <svg viewBox="0 0 24 24" class="h-3 w-3 fill-none stroke-current stroke-2.5">
                         <polyline points="20 6 9 17 4 12" />
@@ -381,7 +387,7 @@ const SECURITY_ROWS: ComparisonRow[] = [
                     </span>
                   } @else {
                     <span
-                      class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                      class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-500/20"
                     >
                       <svg
                         viewBox="0 0 24 24"
@@ -405,7 +411,7 @@ const SECURITY_ROWS: ComparisonRow[] = [
 
             <!-- SECURITY SECTION -->
             <tr
-              class="bg-crush-dark/60 text-[10px] font-bold uppercase tracking-widest text-crush-orangeLight select-none border-t border-b border-crush-border/30"
+              class="bg-muted/80 dark:bg-crush-dark/60 text-[10px] font-bold uppercase tracking-widest text-crush-orange select-none border-t border-b border-border"
             >
               <td
                 colspan="6"
@@ -415,19 +421,21 @@ const SECURITY_ROWS: ComparisonRow[] = [
               </td>
             </tr>
             @for (row of securityRows; track row.feature) {
-              <tr class="hover:bg-crush-surface/30 transition-all duration-200 group">
+              <tr
+                class="hover:bg-muted/40 dark:hover:bg-crush-surface/30 border-b border-border/30 dark:border-crush-border/20 transition-all duration-200 group"
+              >
                 <!-- Checkbox Row Selector -->
                 <td class="px-6 py-4 text-center">
                   <div class="flex items-center justify-center select-none">
                     <span
-                      class="h-3.5 w-3.5 rounded border border-crush-border/60 bg-crush-black/40 block hover:border-crush-orange/40 transition-colors"
+                      class="h-3.5 w-3.5 rounded border border-border bg-muted dark:border-crush-border/60 dark:bg-crush-black/40 block hover:border-crush-orange/40 transition-colors"
                     ></span>
                   </div>
                 </td>
 
                 <!-- Feature -->
                 <td
-                  class="px-6 py-4 font-semibold text-crush-text group-hover:text-white transition-colors"
+                  class="px-6 py-4 font-semibold text-crush-text group-hover:text-crush-orange transition-colors"
                 >
                   {{ row.feature }}
                 </td>
@@ -445,13 +453,13 @@ const SECURITY_ROWS: ComparisonRow[] = [
                 <td class="px-6 py-4 font-medium">
                   @if (row.winner === 'crush') {
                     <span
-                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 shadow-sm animate-fade-in font-mono"
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20 shadow-sm animate-fade-in font-mono"
                     >
                       {{ row.crush }}
                     </span>
                   } @else {
                     <span
-                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-crush-surface/40 text-crush-textMuted border border-crush-border/30"
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-muted/60 dark:bg-crush-surface/40 text-muted-foreground dark:text-crush-textMuted border border-border dark:border-crush-border/30"
                     >
                       {{ row.crush }}
                     </span>
@@ -462,13 +470,13 @@ const SECURITY_ROWS: ComparisonRow[] = [
                 <td class="px-6 py-4 font-medium">
                   @if (row.winner === 'docker') {
                     <span
-                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-blue-500/10 text-blue-400 border border-blue-500/20 shadow-sm animate-fade-in font-mono"
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-bold bg-blue-50 dark:bg-blue-500/10 text-blue-600 dark:text-blue-400 border border-blue-200 dark:border-blue-500/20 shadow-sm animate-fade-in font-mono"
                     >
                       {{ row.docker }}
                     </span>
                   } @else {
                     <span
-                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-crush-surface/40 text-crush-textMuted border border-crush-border/30 font-mono"
+                      class="inline-flex items-center px-2.5 py-1 rounded-lg text-xs font-semibold bg-muted/60 dark:bg-crush-surface/40 text-muted-foreground dark:text-crush-textMuted border border-border dark:border-crush-border/30 font-mono"
                     >
                       {{ row.docker }}
                     </span>
@@ -479,7 +487,7 @@ const SECURITY_ROWS: ComparisonRow[] = [
                 <td class="px-6 py-4 text-center select-none w-28">
                   @if (row.status === 'done') {
                     <span
-                      class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"
+                      class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-50 dark:bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border border-emerald-200 dark:border-emerald-500/20"
                     >
                       <svg viewBox="0 0 24 24" class="h-3 w-3 fill-none stroke-current stroke-2.5">
                         <polyline points="20 6 9 17 4 12" />
@@ -488,7 +496,7 @@ const SECURITY_ROWS: ComparisonRow[] = [
                     </span>
                   } @else {
                     <span
-                      class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20"
+                      class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[10px] font-semibold bg-amber-50 dark:bg-amber-500/10 text-amber-600 dark:text-amber-400 border border-amber-200 dark:border-amber-500/20"
                     >
                       <svg
                         viewBox="0 0 24 24"

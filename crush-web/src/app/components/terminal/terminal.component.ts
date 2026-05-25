@@ -143,7 +143,7 @@ const MODE_DELAY: Record<Mode, number> = {
   imports: [CommonModule],
   template: `
     <div
-      class="code-block overflow-hidden transition-all duration-500 shadow-2xl"
+      class="always-dark code-block overflow-hidden transition-all duration-500 shadow-2xl"
       [class.glow-docker-blue]="currentMode() === 'docker'"
       [class.glow-orange]="currentMode() !== 'docker'"
     >

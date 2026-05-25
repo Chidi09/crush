@@ -61,7 +61,7 @@ const METHODS: InstallMethod[] = [
     <div class="w-full max-w-3xl mx-auto space-y-6">
       <!-- Premium Glass Segmented Control / Tabs -->
       <div
-        class="flex flex-wrap justify-center gap-2 p-1.5 rounded-xl border border-crush-border/40 bg-crush-dark/40 backdrop-blur-md"
+        class="always-dark flex flex-wrap justify-center gap-2 p-1.5 rounded-xl border border-crush-border/40 bg-crush-dark/40 backdrop-blur-md"
       >
         @for (method of methods; track method.label) {
           <button
@@ -92,7 +92,7 @@ const METHODS: InstallMethod[] = [
 
       <!-- Professional macOS-Style Developer Terminal -->
       <div
-        class="group relative rounded-xl border border-crush-border/50 bg-crush-black/85 shadow-2xl shadow-crush-orange/5 overflow-hidden transition-all duration-300 hover:border-crush-orange/30"
+        class="always-dark group relative rounded-xl border border-crush-border/50 bg-crush-black/85 shadow-2xl shadow-crush-orange/5 overflow-hidden transition-all duration-300 hover:border-crush-orange/30"
       >
         <!-- Terminal Header -->
         <div

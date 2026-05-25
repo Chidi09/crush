@@ -20,6 +20,8 @@ import {
   lucideShield,
   lucideTerminal,
   lucideContrast,
+  lucideSun,
+  lucideMoon,
 } from '@ng-icons/lucide';
 
 export const appConfig: ApplicationConfig = {
@@ -46,6 +48,8 @@ export const appConfig: ApplicationConfig = {
       lucideShield,
       lucideTerminal,
       lucideContrast,
+      lucideSun,
+      lucideMoon,
     }),
   ],
 };

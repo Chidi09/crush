@@ -126,7 +126,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
         <div class="grid gap-8 md:grid-cols-3">
           <!-- Card 1: Sub-second starts -->
           <div
-            class="relative overflow-hidden rounded-2xl border border-crush-border/40 bg-gradient-to-b from-crush-surface/40 to-crush-surface/10 p-8 hover:border-crush-orange/30 hover:bg-crush-surface/20 hover:shadow-[0_0_30px_rgba(224,85,64,0.03)] transition-all duration-300 group flex flex-col justify-between"
+            class="relative overflow-hidden rounded-2xl border border-crush-border/70 dark:border-crush-border/40 bg-card p-8 hover:border-crush-orange/30 hover:bg-crush-surface/5 shadow-xl shadow-black/[0.03] dark:shadow-none transition-all duration-300 group flex flex-col justify-between"
           >
             <!-- Corner Glow -->
             <div
@@ -164,7 +164,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
 
             <!-- Dynamic UI Graphic -->
             <div
-              class="mt-6 rounded-xl border border-crush-border/40 bg-crush-black/50 p-4 font-mono text-xs select-none relative overflow-hidden group-hover:border-crush-orange/20 transition-all duration-300"
+              class="always-dark mt-6 rounded-xl border border-crush-border/40 bg-crush-black/50 p-4 font-mono text-xs select-none relative overflow-hidden group-hover:border-crush-orange/20 transition-all duration-300"
             >
               <div
                 class="flex items-center justify-between mb-3 border-b border-crush-border/30 pb-2"
@@ -200,7 +200,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
 
           <!-- Card 2: Windows native -->
           <div
-            class="relative overflow-hidden rounded-2xl border border-crush-border/40 bg-gradient-to-b from-crush-surface/40 to-crush-surface/10 p-8 hover:border-crush-orange/30 hover:bg-crush-surface/20 hover:shadow-[0_0_30px_rgba(224,85,64,0.03)] transition-all duration-300 group flex flex-col justify-between"
+            class="relative overflow-hidden rounded-2xl border border-crush-border/70 dark:border-crush-border/40 bg-card p-8 hover:border-crush-orange/30 hover:bg-crush-surface/5 shadow-xl shadow-black/[0.03] dark:shadow-none transition-all duration-300 group flex flex-col justify-between"
           >
             <!-- Corner Glow -->
             <div
@@ -232,7 +232,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
 
             <!-- Dynamic UI Graphic -->
             <div
-              class="mt-6 rounded-xl border border-crush-border/40 bg-crush-black/50 p-4 font-mono text-xs select-none relative overflow-hidden group-hover:border-crush-orange/20 transition-all duration-300"
+              class="always-dark mt-6 rounded-xl border border-crush-border/40 bg-crush-black/50 p-4 font-mono text-xs select-none relative overflow-hidden group-hover:border-crush-orange/20 transition-all duration-300"
             >
               <div
                 class="flex items-center justify-between mb-3 border-b border-crush-border/30 pb-2"
@@ -267,7 +267,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
 
           <!-- Card 3: AI diagnosis -->
           <div
-            class="relative overflow-hidden rounded-2xl border border-crush-border/40 bg-gradient-to-b from-crush-surface/40 to-crush-surface/10 p-8 hover:border-crush-orange/30 hover:bg-crush-surface/20 hover:shadow-[0_0_30px_rgba(224,85,64,0.03)] transition-all duration-300 group flex flex-col justify-between"
+            class="relative overflow-hidden rounded-2xl border border-crush-border/70 dark:border-crush-border/40 bg-card p-8 hover:border-crush-orange/30 hover:bg-crush-surface/5 shadow-xl shadow-black/[0.03] dark:shadow-none transition-all duration-300 group flex flex-col justify-between"
           >
             <!-- Corner Glow -->
             <div
@@ -304,7 +304,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
 
             <!-- Dynamic UI Graphic -->
             <div
-              class="mt-6 rounded-xl border border-crush-border/40 bg-crush-black/50 p-4 font-mono text-xs select-none relative overflow-hidden group-hover:border-crush-orange/20 transition-all duration-300"
+              class="always-dark mt-6 rounded-xl border border-crush-border/40 bg-crush-black/50 p-4 font-mono text-xs select-none relative overflow-hidden group-hover:border-crush-orange/20 transition-all duration-300"
             >
               <div
                 class="flex items-center justify-between mb-3 border-b border-crush-border/30 pb-2"
@@ -381,7 +381,9 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
         <!-- Interactive Showcase Layout -->
         <div class="grid grid-cols-1 lg:grid-cols-12 gap-8 items-stretch select-none">
           <!-- Left side: Selectors (5 columns on large screen) -->
-          <div class="lg:col-span-5 flex flex-col gap-2.5 max-h-[580px] overflow-y-auto pr-2 scrollbar-thin">
+          <div
+            class="lg:col-span-5 flex flex-col gap-2.5 max-h-[580px] overflow-y-auto pr-2 scrollbar-thin"
+          >
             @for (stack of stacks; track stack.name; let idx = $index) {
               <button
                 (click)="selectedStack.set(idx)"
@@ -396,20 +398,35 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
                 <div
                   class="h-9 w-9 rounded-lg flex items-center justify-center shrink-0 transition-transform duration-300 group-hover:scale-105"
                   [style.background]="stack.color + '15'"
-                  [style.border]="'1px solid ' + (selectedStack() === idx ? stack.color : stack.color + '33')"
+                  [style.border]="
+                    '1px solid ' + (selectedStack() === idx ? stack.color : stack.color + '33')
+                  "
                 >
-                  <svg viewBox="0 0 24 24" class="h-4.5 w-4.5 fill-current" [style.color]="stack.color">
+                  <svg
+                    viewBox="0 0 24 24"
+                    class="h-4.5 w-4.5 fill-current"
+                    [style.color]="stack.color"
+                  >
                     <path [attr.d]="stack.iconPath" />
                   </svg>
                 </div>
                 <!-- Content text -->
                 <div class="space-y-1">
                   <div class="flex items-center gap-2">
-                    <h4 class="text-sm font-bold transition-colors" [ngClass]="selectedStack() === idx ? 'text-white' : 'text-crush-textMuted group-hover:text-white'">
+                    <h4
+                      class="text-sm font-bold transition-colors"
+                      [ngClass]="
+                        selectedStack() === idx
+                          ? 'text-white'
+                          : 'text-crush-textMuted group-hover:text-white'
+                      "
+                    >
                       {{ stack.name }}
                     </h4>
                     @if (selectedStack() === idx) {
-                      <span class="h-1.5 w-1.5 rounded-full bg-crush-orange shadow-[0_0_8px_rgba(224,85,64,0.8)] animate-pulse"></span>
+                      <span
+                        class="h-1.5 w-1.5 rounded-full bg-crush-orange shadow-[0_0_8px_rgba(224,85,64,0.8)] animate-pulse"
+                      ></span>
                     }
                   </div>
                   <p class="text-[11px] text-crush-textMuted leading-relaxed line-clamp-2">
@@ -431,13 +448,28 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
               >
                 <!-- Window Controls Dots -->
                 <div class="flex items-center gap-1.5">
-                  <span class="h-3 w-3 rounded-full bg-[#ff5f56] border border-[#e0443e] block"></span>
-                  <span class="h-3 w-3 rounded-full bg-[#ffbd2e] border border-[#dea123] block"></span>
-                  <span class="h-3 w-3 rounded-full bg-[#27c93f] border border-[#1aab29] block"></span>
+                  <span
+                    class="h-3 w-3 rounded-full bg-[#ff5f56] border border-[#e0443e] block"
+                  ></span>
+                  <span
+                    class="h-3 w-3 rounded-full bg-[#ffbd2e] border border-[#dea123] block"
+                  ></span>
+                  <span
+                    class="h-3 w-3 rounded-full bg-[#27c93f] border border-[#1aab29] block"
+                  ></span>
                 </div>
                 <!-- Window Title -->
-                <div class="text-[10px] text-crush-textMuted tracking-wider flex items-center gap-1.5 font-sans font-semibold">
-                  <svg viewBox="0 0 24 24" class="h-3 w-3 fill-none stroke-current stroke-2.5 text-crush-orangeLight"><path d="M18 3a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3 3 3 0 0 0 3-3V6a3 3 0 0 0-3-3zM6 21a3 3 0 0 0 3-3V6a3 3 0 0 0-3-3 3 3 0 0 0-3 3v12a3 3 0 0 0 3 3z"/></svg>
+                <div
+                  class="text-[10px] text-crush-textMuted tracking-wider flex items-center gap-1.5 font-sans font-semibold"
+                >
+                  <svg
+                    viewBox="0 0 24 24"
+                    class="h-3 w-3 fill-none stroke-current stroke-2.5 text-crush-orangeLight"
+                  >
+                    <path
+                      d="M18 3a3 3 0 0 0-3 3v12a3 3 0 0 0 3 3 3 3 0 0 0 3-3V6a3 3 0 0 0-3-3zM6 21a3 3 0 0 0 3-3V6a3 3 0 0 0-3-3 3 3 0 0 0-3 3v12a3 3 0 0 0 3 3z"
+                    />
+                  </svg>
                   crush-term — {{ stacks[selectedStack()].name }}
                 </div>
                 <!-- Spacing block -->
@@ -445,21 +477,30 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
               </div>
 
               <!-- Terminal Output Display Body -->
-              <div class="p-6 overflow-y-auto flex-1 font-mono text-left select-text relative min-h-[360px]">
+              <div
+                class="p-6 overflow-y-auto flex-1 font-mono text-left select-text relative min-h-[360px]"
+              >
                 <!-- Glowing dynamic accent reflection inside terminal -->
-                <div 
+                <div
                   class="absolute inset-0 pointer-events-none opacity-[0.03] transition-all duration-700 blur-[80px]"
-                  [style.background]="'radial-gradient(circle at 50% 50%, ' + stacks[selectedStack()].color + ', transparent)'"
+                  [style.background]="
+                    'radial-gradient(circle at 50% 50%, ' +
+                    stacks[selectedStack()].color +
+                    ', transparent)'
+                  "
                 ></div>
                 <!-- Terminal logs pre-wrap block -->
-                <pre class="relative z-10 text-crush-text whitespace-pre-wrap"><code [innerHTML]="stacks[selectedStack()].terminal"></code></pre>
+                <pre
+                  class="relative z-10 text-crush-text whitespace-pre-wrap"
+                ><code [innerHTML]="stacks[selectedStack()].terminal"></code></pre>
               </div>
             </div>
           </div>
         </div>
 
         <p class="mt-8 text-center text-xs text-crush-textMuted select-none">
-          Any language that compiles to a native binary or runs on a POSIX-compatible runtime works out of the box.
+          Any language that compiles to a native binary or runs on a POSIX-compatible runtime works
+          out of the box.
           <a
             routerLink="/docs/stacks"
             class="text-crush-orange hover:text-crush-orangeLight transition-colors ml-1 font-semibold"
@@ -490,7 +531,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
 
         <div class="grid gap-6 md:grid-cols-2 mb-8">
           <div
-            class="rounded-2xl border border-crush-border/40 bg-crush-surface/20 p-7 hover:border-crush-orange/30 transition-colors duration-200"
+            class="rounded-2xl border border-crush-border/70 dark:border-crush-border/40 bg-card p-7 hover:border-crush-orange/30 hover:bg-crush-surface/5 shadow-lg shadow-black/[0.02] dark:shadow-none transition-colors duration-200"
           >
             <div
               class="flex h-10 w-10 items-center justify-center rounded-xl bg-crush-orange/10 border border-crush-orange/20 text-crush-orangeLight mb-5"
@@ -515,7 +556,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
             </p>
           </div>
           <div
-            class="rounded-2xl border border-crush-border/40 bg-crush-surface/20 p-7 hover:border-crush-orange/30 transition-colors duration-200"
+            class="rounded-2xl border border-crush-border/70 dark:border-crush-border/40 bg-card p-7 hover:border-crush-orange/30 hover:bg-crush-surface/5 shadow-lg shadow-black/[0.02] dark:shadow-none transition-colors duration-200"
           >
             <div
               class="flex h-10 w-10 items-center justify-center rounded-xl bg-crush-orange/10 border border-crush-orange/20 text-crush-orangeLight mb-5"
@@ -545,7 +586,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
         </div>
 
         <div
-          class="rounded-2xl border border-crush-border/40 bg-crush-black/60 p-6 font-mono text-xs select-none"
+          class="always-dark rounded-2xl border border-crush-border/40 bg-crush-black/60 p-6 font-mono text-xs select-none"
         >
           <div class="mb-4 text-[10px] font-bold uppercase tracking-wider text-crush-textMuted">
             Process architecture comparison
@@ -709,7 +750,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
         <div class="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
           @for (cloud of clouds; track cloud.name) {
             <div
-              class="rounded-lg border border-crush-border/30 bg-crush-surface/20 px-5 py-4 flex items-center gap-4 hover:border-crush-orange/30 transition-colors group"
+              class="rounded-lg border border-crush-border/70 dark:border-crush-border/30 bg-card px-5 py-4 flex items-center gap-4 hover:border-crush-orange/30 hover:bg-crush-surface/5 shadow-md shadow-black/[0.02] dark:shadow-none transition-colors group"
             >
               <svg
                 role="img"
@@ -793,7 +834,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
             <div class="group py-2">
               <button
                 (click)="toggleFaq(idx)"
-                class="flex w-full items-center justify-between py-4 text-left font-semibold text-white hover:text-crush-orangeLight transition-colors duration-200 select-none outline-none group"
+                class="flex w-full items-center justify-between py-4 text-left font-semibold text-crush-text hover:text-crush-orangeLight transition-colors duration-200 select-none outline-none group"
               >
                 <span class="text-sm sm:text-base tracking-wide flex items-center gap-3">
                   <!-- Bullet/State indicator -->
@@ -802,7 +843,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
                     [ngClass]="
                       activeFaq() === idx
                         ? 'bg-crush-orange scale-125 shadow-[0_0_8px_rgba(224,85,64,0.8)]'
-                        : 'bg-crush-border/80 group-hover:bg-white'
+                        : 'bg-crush-border/80 group-hover:bg-crush-text'
                     "
                   ></span>
                   {{ faq.q }}
@@ -811,7 +852,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
                 <!-- Rotating Chevron -->
                 <svg
                   viewBox="0 0 24 24"
-                  class="h-5 w-5 fill-none stroke-current stroke-2 text-crush-textMuted group-hover:text-white transition-transform duration-300"
+                  class="h-5 w-5 fill-none stroke-current stroke-2 text-crush-textMuted group-hover:text-crush-text transition-transform duration-300"
                   [ngClass]="activeFaq() === idx ? 'rotate-180 text-crush-orange' : 'rotate-0'"
                 >
                   <polyline points="6 9 12 15 18 9" />
@@ -844,7 +885,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
 
       <div class="mx-auto max-w-4xl px-4 sm:px-6 lg:px-8 relative">
         <div
-          class="relative overflow-hidden rounded-3xl border border-crush-border/40 bg-gradient-to-b from-crush-surface/40 to-crush-surface/10 p-12 sm:p-16 text-center shadow-2xl hover:border-crush-orange/30 transition-all duration-500 group"
+          class="relative overflow-hidden rounded-3xl border border-crush-border/70 dark:border-crush-border/40 bg-card p-12 sm:p-16 text-center shadow-2xl shadow-black/[0.04] dark:shadow-none hover:border-crush-orange/30 transition-all duration-500 group"
         >
           <!-- Glass effect top-right glow -->
           <div
