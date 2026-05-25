@@ -139,19 +139,94 @@ const SEARCH_ITEMS: SearchItem[] = [
 
         <!-- Right Section: Interactive Actions (SpartanUI style) -->
         <div class="flex items-center gap-3 ml-auto">
-          <!-- Premium Search Dialog Button -->
-          <button
-            (click)="searchOpen.set(true); searchQuery.set('')"
-            class="hidden md:flex items-center justify-between gap-8 pl-3.5 pr-2.5 py-1.5 rounded-lg border border-crush-border/40 bg-crush-dark/40 hover:border-crush-orange/40 hover:bg-crush-surface/30 text-white transition-all duration-300 relative h-9 w-40 lg:w-56 select-none outline-none"
-          >
-            <span class="text-xs font-medium tracking-wide">Search docs...</span>
-            <div
-              class="flex items-center gap-0.5 px-1.5 py-0.5 rounded border border-crush-border/60 bg-crush-surface/50 text-[10px] font-mono select-none"
+          <!-- Premium Search Dialog Button Wrapper -->
+          <div class="relative">
+            <button
+              (click)="searchOpen.set(!searchOpen()); searchQuery.set('')"
+              class="hidden md:flex items-center justify-between gap-8 pl-3.5 pr-2.5 py-1.5 rounded-lg border border-crush-border/40 bg-crush-dark/40 hover:border-crush-orange/40 hover:bg-crush-surface/30 text-white transition-all duration-300 relative h-9 w-40 lg:w-56 select-none outline-none z-50"
             >
-              <span>Ctrl</span>
-              <span class="text-[9px] font-sans">K</span>
-            </div>
-          </button>
+              <span class="text-xs font-medium tracking-wide">Search docs...</span>
+              <div
+                class="flex items-center gap-0.5 px-1.5 py-0.5 rounded border border-crush-border/60 bg-crush-surface/50 text-[10px] font-mono select-none"
+              >
+                <span>Ctrl</span>
+                <span class="text-[9px] font-sans">K</span>
+              </div>
+            </button>
+
+            <!-- Search Dropdown Box (Appearing right below the button) -->
+            @if (searchOpen()) {
+              <!-- Invisible backdrop to catch clicks outside the dropdown -->
+              <div 
+                class="fixed inset-0 z-40 bg-transparent cursor-default"
+                (click)="searchOpen.set(false)"
+              ></div>
+
+              <div 
+                class="absolute right-0 top-full mt-2 w-72 lg:w-80 rounded-2xl border border-crush-border/40 bg-[#0a0a0f]/95 shadow-2xl p-2 flex flex-col max-h-[70vh] overflow-hidden select-none border-t-crush-border/60 z-50 animate-fade-slide-up"
+                (click)="$event.stopPropagation()"
+              >
+                <!-- Search Header -->
+                <div class="flex items-center gap-2 px-2 py-2 border-b border-crush-border/30">
+                  <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 fill-none stroke-current stroke-2 text-crush-textMuted"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
+                  <input 
+                    #searchInput
+                    type="text" 
+                    class="w-full bg-transparent text-xs text-white placeholder-crush-textMuted outline-none" 
+                    placeholder="Search docs..." 
+                    [value]="searchQuery()"
+                    (input)="searchQuery.set(searchInput.value)"
+                    (keydown.escape)="searchOpen.set(false)"
+                    autofocus
+                  />
+                  <button 
+                    (click)="searchOpen.set(false)"
+                    class="text-[9px] font-mono border border-crush-border/60 bg-crush-surface/50 text-crush-textMuted px-1 py-0.5 rounded hover:text-white"
+                  >
+                    ESC
+                  </button>
+                </div>
+
+                <!-- Search Results -->
+                <div class="flex-1 overflow-y-auto p-1 space-y-3 scrollbar-thin max-h-[320px]">
+                  @if (filteredItems().length === 0) {
+                    <div class="py-6 text-center text-[11px] text-crush-textMuted select-none">
+                      No results found for "<span class="text-white font-semibold">{{ searchQuery() }}</span>"
+                    </div>
+                  } @else {
+                    @for (group of getGroupedResults(); track group.category) {
+                      <div class="space-y-1">
+                        <!-- Category label -->
+                        <div class="px-2 py-1 text-[8px] font-bold uppercase tracking-widest text-crush-orangeLight font-sans">
+                          {{ group.category }}
+                        </div>
+                        <!-- Items list -->
+                        @for (item of group.items; track item.title) {
+                          <a
+                            [routerLink]="item.route"
+                            (click)="searchOpen.set(false)"
+                            class="flex items-center gap-2 px-2 py-1.5 rounded-lg border border-transparent bg-transparent hover:border-crush-border/20 hover:bg-crush-surface/20 text-left group transition-all duration-150"
+                          >
+                            <div class="h-5 w-5 rounded border border-crush-border/40 bg-crush-dark/40 flex items-center justify-center text-crush-textMuted group-hover:text-crush-orange group-hover:border-crush-orange/40 transition-colors">
+                              <svg viewBox="0 0 24 24" class="h-3 w-3 fill-none stroke-current stroke-2.5"><polyline points="9 18 15 12 9 6"/></svg>
+                            </div>
+                            <div class="flex flex-col">
+                              <span class="text-[11px] font-semibold text-white group-hover:text-crush-orangeLight transition-colors leading-tight">
+                                {{ item.title }}
+                              </span>
+                              <span class="text-[9px] text-crush-textMuted leading-tight mt-0.5">
+                                {{ item.description }}
+                              </span>
+                            </div>
+                          </a>
+                        }
+                      </div>
+                    }
+                  }
+                </div>
+              </div>
+            }
+          </div>
 
           <!-- Divider -->
           <span class="hidden md:inline-block w-px h-4 bg-crush-border/40"></span>
@@ -285,78 +360,6 @@ const SEARCH_ITEMS: SearchItem[] = [
           >
             Get Started
           </a>
-        </div>
-      }
-
-      <!-- Search Dialog Popup Overlay -->
-      @if (searchOpen()) {
-        <div 
-          class="fixed inset-0 z-50 bg-[#020204]/80 backdrop-blur-md flex items-center justify-center p-4 sm:p-6"
-          (click)="searchOpen.set(false)"
-        >
-          <div 
-            class="relative w-full max-w-lg rounded-2xl border border-crush-border/40 bg-[#0a0a0f]/95 shadow-2xl p-2 flex flex-col max-h-[80vh] overflow-hidden select-none border-t-crush-border/60"
-            (click)="$event.stopPropagation()"
-          >
-            <!-- Search Header -->
-            <div class="flex items-center gap-3 px-3 py-3 border-b border-crush-border/30">
-              <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-2 text-crush-textMuted"><circle cx="11" cy="11" r="8"/><line x1="21" y1="21" x2="16.65" y2="16.65"/></svg>
-              <input 
-                #searchInput
-                type="text" 
-                class="w-full bg-transparent text-sm text-white placeholder-crush-textMuted outline-none" 
-                placeholder="Type a command or search docs..." 
-                [value]="searchQuery()"
-                (input)="searchQuery.set(searchInput.value)"
-                (keydown.escape)="searchOpen.set(false)"
-                autofocus
-              />
-              <button 
-                (click)="searchOpen.set(false)"
-                class="text-[10px] font-mono border border-crush-border/60 bg-crush-surface/50 text-crush-textMuted px-1.5 py-0.5 rounded hover:text-white"
-              >
-                ESC
-              </button>
-            </div>
-
-            <!-- Search Results -->
-            <div class="flex-1 overflow-y-auto p-2 space-y-4 scrollbar-thin max-h-[400px]">
-              @if (filteredItems().length === 0) {
-                <div class="py-12 text-center text-xs text-crush-textMuted select-none">
-                  No results found for "<span class="text-white font-semibold">{{ searchQuery() }}</span>"
-                </div>
-              } @else {
-                @for (group of getGroupedResults(); track group.category) {
-                  <div class="space-y-1">
-                    <!-- Category label -->
-                    <div class="px-3 py-1 text-[9px] font-bold uppercase tracking-widest text-crush-orangeLight font-sans">
-                      {{ group.category }}
-                    </div>
-                    <!-- Items list -->
-                    @for (item of group.items; track item.title) {
-                      <a
-                        [routerLink]="item.route"
-                        (click)="searchOpen.set(false)"
-                        class="flex items-center gap-3 px-3 py-2 rounded-lg border border-transparent bg-transparent hover:border-crush-border/20 hover:bg-crush-surface/20 text-left group transition-all duration-150"
-                      >
-                        <div class="h-6 w-6 rounded border border-crush-border/40 bg-crush-dark/40 flex items-center justify-center text-crush-textMuted group-hover:text-crush-orange group-hover:border-crush-orange/40 transition-colors">
-                          <svg viewBox="0 0 24 24" class="h-3.5 w-3.5 fill-none stroke-current stroke-2.5"><polyline points="9 18 15 12 9 6"/></svg>
-                        </div>
-                        <div class="flex flex-col">
-                          <span class="text-xs font-semibold text-white group-hover:text-crush-orangeLight transition-colors">
-                            {{ item.title }}
-                          </span>
-                          <span class="text-[10px] text-crush-textMuted mt-0.5">
-                            {{ item.description }}
-                          </span>
-                        </div>
-                      </a>
-                    }
-                  </div>
-                }
-              }
-            </div>
-          </div>
         </div>
       }
     </nav>
