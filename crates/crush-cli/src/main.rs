@@ -13,6 +13,7 @@ use crush_api::ApiServer;
 use crush_registry::LocalRegistryServer;
 use crush_network::NetworkManager;
 use crush_reliability::{HealthChecker, HealthCheckConfig, HealthCheckType};
+use crush_volume::{LocalDriver, VolumeDriver, VolumeMounter};
 
 #[cfg(target_os = "linux")]
 use crush_runtime_linux::runner::run_container;
@@ -479,15 +480,49 @@ async fn main() -> anyhow::Result<()> {
             let container_json = serde_json::to_string_pretty(&container)?;
             tokio::fs::write(&container_json_path, container_json).await?;
 
+            let mounter = VolumeMounter::new(data_dir.clone());
+            let driver = LocalDriver::new(data_dir.clone());
+
+            for spec in &args.volume {
+                let parts: Vec<&str> = spec.split(':').collect();
+                if parts.len() < 2 {
+                    continue;
+                }
+                let (src, dest, readonly) = if parts.len() == 2 {
+                    (parts[0], parts[1], false)
+                } else {
+                    (parts[0], parts[1], parts[2].eq_ignore_ascii_case("ro"))
+                };
+
+                let is_host_path = src.starts_with('/') || src.starts_with('.') || src.contains('\\') || src.contains(':');
+                if is_host_path {
+                    mounter.mount_bind(&container_id, src, dest, &rootfs, readonly).await?;
+                } else {
+                    let vol_name = if driver.inspect(src).await.is_ok() {
+                        src.to_string()
+                    } else {
+                        let anon_name = format!("anon_{}", &container_id[6..14]);
+                        let mut labels = std::collections::HashMap::new();
+                        labels.insert("anonymous".to_string(), container_id.clone());
+                        driver.create(&anon_name, labels).await?;
+                        anon_name
+                    };
+                    mounter.mount_named(&container_id, &vol_name, dest, &rootfs, readonly).await?;
+                }
+            }
+
             #[cfg(target_os = "linux")]
             {
                 let rootfs_clone = rootfs.clone();
                 let env_vars = image.env.clone();
-                let exit_code = tokio::task::spawn_blocking(move || {
+                let exit_code_res = tokio::task::spawn_blocking(move || {
                     run_container(&rootfs_clone, &effective_cmd, &env_vars)
                 })
-                .await
-                .map_err(|e| CrushError::NamespaceError(format!("Container task failed: {}", e)))??;
+                .await;
+
+                let _ = mounter.unmount_all(&container_id).await;
+
+                let exit_code = exit_code_res.map_err(|e| CrushError::NamespaceError(format!("Container task failed: {}", e)))??;
 
                 // Update container state to Stopped on exit
                 if let Ok(content) = tokio::fs::read_to_string(&container_json_path).await {
@@ -509,6 +544,7 @@ async fn main() -> anyhow::Result<()> {
             {
                 eprintln!("Container execution is only supported on Linux.");
                 let _ = effective_cmd;
+                let _ = mounter.unmount_all(&container_id).await;
                 tokio::fs::remove_dir_all(&rootfs.parent().unwrap_or(&rootfs)).await.ok();
             }
         }
@@ -932,29 +968,30 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Volume(args) => {
             info!("Volume management operation: {:?}", args.subcommand);
-            let volumes_dir = data_dir.join("volumes");
+            let driver = LocalDriver::new(data_dir.clone());
             match args.subcommand {
                 VolumeSubcommand::Create { name } => {
-                    let vol_path = volumes_dir.join(&name);
-                    tokio::fs::create_dir_all(&vol_path).await?;
-                    println!("Created volume: {} at {:?}", name, vol_path);
+                    driver.create(&name, std::collections::HashMap::new()).await?;
+                    println!("Created volume: {}", name);
                 }
                 VolumeSubcommand::Rm { name } => {
-                    let vol_path = volumes_dir.join(&name);
-                    if vol_path.exists() {
-                        tokio::fs::remove_dir_all(&vol_path).await?;
+                    match driver.remove(&name).await {
+                        Ok(_) => println!("Removed volume: {}", name),
+                        Err(e) => eprintln!("Error: {}", e),
                     }
-                    println!("Removed volume: {}", name);
                 }
                 VolumeSubcommand::Ls => {
-                    println!("Volumes:");
-                    if volumes_dir.exists() {
-                        let mut entries = tokio::fs::read_dir(&volumes_dir).await?;
-                        while let Some(entry) = entries.next_entry().await? {
-                            if entry.file_type().await?.is_dir() {
-                                println!("  {}", entry.file_name().to_string_lossy());
-                            }
-                        }
+                    let list = driver.list().await?;
+                    println!("{:<20} | {:<10} | {:<30} | {:<20}", "NAME", "DRIVER", "MOUNTPOINT", "CREATED");
+                    println!("{}", "-".repeat(90));
+                    for vol in list {
+                        println!(
+                            "{:<20} | {:<10} | {:<30} | {:<20}",
+                            vol.name,
+                            vol.driver,
+                            vol.mountpoint.to_string_lossy(),
+                            vol.created_at.to_rfc3339()
+                        );
                     }
                 }
             }
@@ -975,7 +1012,18 @@ async fn main() -> anyhow::Result<()> {
                     println!("Pruning system (all: {})...", all);
                     println!("  Removed 0 stopped containers");
                     println!("  Removed 0 dangling images");
-                    println!("  Removed 0 unused volumes");
+                    let driver = LocalDriver::new(data_dir.clone());
+                    let mut removed_vols = 0;
+                    if let Ok(vols) = driver.list().await {
+                        for vol in vols {
+                            if vol.labels.contains_key("anonymous") {
+                                if driver.remove(&vol.name).await.is_ok() {
+                                    removed_vols += 1;
+                                }
+                            }
+                        }
+                    }
+                    println!("  Removed {} unused volumes", removed_vols);
                     println!("  Reclaimed 0 B of space");
                 }
                 SystemSubcommand::Info => {

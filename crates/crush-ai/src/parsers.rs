@@ -1,378 +1,441 @@
-use crush_types::{Result, CrushError};
 use serde::{Serialize, Deserialize};
+use regex::Regex;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct ParsedTrace {
+pub struct ParsedFrame {
+    pub file: String,
+    pub line: u32,
+    pub column: Option<u32>,
+    pub function: String,
+    pub module: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct StackTrace {
     pub language: String,
     pub exception_type: String,
     pub message: String,
     pub file: String,
-    pub line: usize,
-    pub column: Option<usize>,
-    pub stack_frames: Vec<StackFrame>,
+    pub line: u32,
+    pub stack_frames: Vec<ParsedFrame>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub enum BuildErrorKind {
+    TypeScript,
+    Rust,
+    Python,
+    Go,
+    Generic,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
-pub struct StackFrame {
-    pub function: Option<String>,
-    pub file: String,
-    pub line: usize,
-    pub column: Option<usize>,
-    pub raw: String,
+pub struct BuildError {
+    pub kind: BuildErrorKind,
+    pub message: String,
+    pub file: Option<String>,
+    pub line: Option<u32>,
+    pub column: Option<u32>,
+    pub code: Option<String>,
 }
 
-pub struct TraceParser;
-
-impl TraceParser {
-    pub fn new() -> Self { Self }
-
-    pub fn parse(&self, stderr: &str) -> Option<ParsedTrace> {
-        let candidates: Vec<(ParsedTrace, f32)> = [
-            self.parse_node(stderr),
-            self.parse_python(stderr),
-            self.parse_rust(stderr),
-            self.parse_go(stderr),
-            self.parse_java(stderr),
-            self.parse_dotnet(stderr),
-            self.parse_ruby(stderr),
-            self.parse_php(stderr),
-            self.parse_elixir(stderr),
-            self.parse_c_cpp(stderr),
-        ].into_iter().flatten().map(|t| {
-            let score = score_parsed_trace(&t, stderr);
-            (t, score)
-        }).collect();
-
-        candidates.into_iter()
-            .max_by(|a, b| a.1.partial_cmp(&b.1).unwrap_or(std::cmp::Ordering::Equal))
-            .map(|(trace, _score)| trace)
-            .or_else(|| self.parse_generic(stderr))
+pub fn detect_language(stderr: &str) -> &str {
+    if stderr.contains("Traceback (most recent call last)") {
+        "Python"
+    } else if stderr.contains("at Object.<anonymous>") || stderr.contains("at ") && (stderr.contains("node:") || stderr.contains("js")) {
+        "Node"
+    } else if stderr.contains("thread 'main' panicked") || stderr.contains("stack backtrace:") {
+        "Rust"
+    } else if stderr.contains("goroutine ") && stderr.contains("[running]:") {
+        "Go"
+    } else if stderr.contains("Exception in thread") {
+        "Java"
+    } else {
+        "Generic"
     }
+}
 
-    pub fn parse_node(&self, stderr: &str) -> Option<ParsedTrace> {
-        let lines: Vec<&str> = stderr.lines().collect();
-        let error_line = lines.iter().find(|l| l.contains("Error:") || l.contains("TypeError") || l.contains("ReferenceError") || l.contains("SyntaxError") || l.contains("RangeError"))?;
-        let exception_type = Self::extract_first_word(error_line);
-        let message = error_line.trim().to_string();
+pub fn parse_nodejs(stderr: &str) -> Option<StackTrace> {
+    let lines: Vec<&str> = stderr.lines().collect();
+    if lines.is_empty() { return None; }
 
-        let mut frames = Vec::new();
-        let mut file = String::new();
-        let mut line = 0usize;
-        let mut column = None;
+    // First line typically contains error type and message: TypeError: ...
+    let first_line = lines[0].trim();
+    let (exception_type, message) = if let Some(pos) = first_line.find(':') {
+        (first_line[..pos].trim().to_string(), first_line[pos + 1..].trim().to_string())
+    } else {
+        ("Error".to_string(), first_line.to_string())
+    };
 
-        for l in &lines {
-            let l = l.trim();
-            if let Some(frame) = l.strip_prefix("at ") {
-                let (func, f, ln, col) = self.parse_v8_frame(frame);
-                if file.is_empty() { file = f.clone(); line = ln; column = col; }
-                frames.push(StackFrame { function: func, file: f, line: ln, column: col, raw: l.to_string() });
-            }
+    let re = Regex::new(r"at\s+(?P<fn>[^\s(]+)?\s*(?:\((?P<file>[^:]+):(?P<line>\d+):(?P<col>\d+)\)|(?P<file2>[^:]+):(?P<line2>\d+):(?P<col2>\d+))").ok()?;
+    let mut frames = Vec::new();
+
+    for line in &lines {
+        if let Some(caps) = re.captures(line) {
+            let function = caps.name("fn").map(|m| m.as_str()).unwrap_or("<anonymous>").to_string();
+            let file = caps.name("file").or_else(|| caps.name("file2")).map(|m| m.as_str().to_string()).unwrap_or_default();
+            let line_num: u32 = caps.name("line").or_else(|| caps.name("line2")).and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+            let col_num: Option<u32> = caps.name("col").or_else(|| caps.name("col2")).and_then(|m| m.as_str().parse().ok());
+
+            frames.push(ParsedFrame {
+                file,
+                line: line_num,
+                column: col_num,
+                function,
+                module: None,
+            });
         }
-
-        if file.is_empty() { return None; }
-        Some(ParsedTrace { language: "Node.js (TypeScript)".into(), exception_type, message, file, line, column, stack_frames: frames })
     }
 
-    pub fn parse_python(&self, stderr: &str) -> Option<ParsedTrace> {
-        let lines: Vec<&str> = stderr.lines().collect();
-        let trace_start = lines.iter().position(|l| l.trim() == "Traceback (most recent call last):")?;
+    if frames.is_empty() { return None; }
 
-        let error_line = lines.iter().rev().find(|l| l.contains("Error:") || l.contains("Exception:"))?;
-        let colon_pos = error_line.find(':')?;
-        let exception_type = error_line[..colon_pos].trim().to_string();
-        let message = error_line[colon_pos + 1..].trim().to_string();
+    let primary_file = frames[0].file.clone();
+    let primary_line = frames[0].line;
 
-        let mut frames = Vec::new();
-        let mut file = String::new();
-        let mut line = 0;
+    Some(StackTrace {
+        language: "Node".to_string(),
+        exception_type,
+        message,
+        file: primary_file,
+        line: primary_line,
+        stack_frames: frames,
+    })
+}
 
-        for l in &lines[trace_start..] {
-            let l = l.trim();
-            if let Some(rest) = l.strip_prefix("File \"") {
-                if let Some(end) = rest.find('"') {
-                    let f = rest[..end].to_string();
-                    let rest = rest[end + 1..].trim();
-                    if let Some(ln_str) = rest.strip_prefix("line ") {
-                        if let Ok(ln) = ln_str.split(',').next().unwrap_or("0").trim().parse::<usize>() {
-                            if file.is_empty() { file = f.clone(); line = ln; }
-                            let code = lines.iter().skip_while(|x| x.trim() != l).nth(1).map(|s| s.trim().to_string());
-                            frames.push(StackFrame {
-                                function: None, file: f, line: ln, column: None,
-                                raw: code.unwrap_or_default(),
+pub fn parse_python(stderr: &str) -> Option<StackTrace> {
+    if !stderr.contains("Traceback (most recent call last):") { return None; }
+    let lines: Vec<&str> = stderr.lines().collect();
+
+    // Exception class is on the last non-empty line: IndexError: list index out of range
+    let last_line = lines.iter().rev().find(|l| !l.trim().is_empty())?.trim();
+    let (exception_type, message) = if let Some(pos) = last_line.find(':') {
+        (last_line[..pos].trim().to_string(), last_line[pos + 1..].trim().to_string())
+    } else {
+        ("Exception".to_string(), last_line.to_string())
+    };
+
+    let re = Regex::new(r#"File "(?P<file>[^"]+)", line (?P<line>\d+), in (?P<fn>\S+)"#).ok()?;
+    let mut frames = Vec::new();
+
+    for line in &lines {
+        if let Some(caps) = re.captures(line) {
+            let file = caps.name("file").map(|m| m.as_str().to_string()).unwrap_or_default();
+            let line_num: u32 = caps.name("line").and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+            let function = caps.name("fn").map(|m| m.as_str().to_string()).unwrap_or_default();
+
+            frames.push(ParsedFrame {
+                file,
+                line: line_num,
+                column: None,
+                function,
+                module: None,
+            });
+        }
+    }
+
+    if frames.is_empty() { return None; }
+
+    // Python traces put the most recent call last, so the primary crash site is the last frame!
+    let primary = frames.last()?.clone();
+
+    Some(StackTrace {
+        language: "Python".to_string(),
+        exception_type,
+        message,
+        file: primary.file,
+        line: primary.line,
+        stack_frames: frames,
+    })
+}
+
+pub fn parse_rust_panic(stderr: &str) -> Option<StackTrace> {
+    if !stderr.contains("thread 'main' panicked at") { return None; }
+    let lines: Vec<&str> = stderr.lines().collect();
+
+    // Extract message from panic line
+    let panic_line = lines.iter().find(|l| l.contains("panicked at"))?;
+    let message = panic_line.trim().to_string();
+
+    // Look for file and line in the panic location (e.g. src/main.rs:10:15)
+    let re_loc = Regex::new(r"(?P<file>[^:\s]+):(?P<line>\d+):(?P<col>\d+)").ok()?;
+    let (p_file, p_line) = if let Some(caps) = re_loc.captures(panic_line) {
+        let f = caps.name("file").map(|m| m.as_str().to_string()).unwrap_or_default();
+        let l: u32 = caps.name("line").and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+        (f, l)
+    } else {
+        (String::new(), 0)
+    };
+
+    // Extract frames from backtrace: format "   0: pkg::func\n             at src/file.rs:line"
+    let mut frames = Vec::new();
+    let re_frame_idx = Regex::new(r"^\s*\d+:\s+(?P<fn>.+)").ok()?;
+    let re_frame_loc = Regex::new(r"^\s*at\s+(?P<file>[^:]+):(?P<line>\d+)").ok()?;
+
+    let mut current_fn = String::new();
+    for line in &lines {
+        if let Some(caps) = re_frame_idx.captures(line) {
+            current_fn = caps.name("fn").map(|m| m.as_str().to_string()).unwrap_or_default();
+        } else if let Some(caps) = re_frame_loc.captures(line) {
+            let file = caps.name("file").map(|m| m.as_str().to_string()).unwrap_or_default();
+            let line_num: u32 = caps.name("line").and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+            frames.push(ParsedFrame {
+                file,
+                line: line_num,
+                column: None,
+                function: current_fn.clone(),
+                module: None,
+            });
+        }
+    }
+
+    let file = if !p_file.is_empty() { p_file } else { frames.first().map(|f| f.file.clone()).unwrap_or_default() };
+    let line = if p_line > 0 { p_line } else { frames.first().map(|f| f.line).unwrap_or(0) };
+
+    Some(StackTrace {
+        language: "Rust".to_string(),
+        exception_type: "Panic".to_string(),
+        message,
+        file,
+        line,
+        stack_frames: frames,
+    })
+}
+
+pub fn parse_rust_compile(stderr: &str) -> Vec<BuildError> {
+    // Attempt to parse JSON message format if available
+    let mut errors = Vec::new();
+    for line in stderr.lines() {
+        if line.starts_with('{') {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(line) {
+                if val.get("reason").and_then(|r| r.as_str()) == Some("compiler-message") {
+                    if let Some(msg) = val.get("message") {
+                        if msg.get("level").and_then(|l| l.as_str()) == Some("error") {
+                            let message = msg.get("message").and_then(|m| m.as_str()).unwrap_or("").to_string();
+                            let code = msg.get("code").and_then(|c| c.get("code")).and_then(|c| c.as_str()).map(|c| c.to_string());
+                            let mut file = None;
+                            let mut line_num = None;
+                            let mut col_num = None;
+
+                            if let Some(spans) = msg.get("spans").and_then(|s| s.as_array()) {
+                                if let Some(span) = spans.iter().find(|s| s.get("is_primary").and_then(|b| b.as_bool()) == Some(true)) {
+                                    file = span.get("file_name").and_then(|f| f.as_str()).map(|f| f.to_string());
+                                    line_num = span.get("line_start").and_then(|l| l.as_u64()).map(|l| l as u32);
+                                    col_num = span.get("column_start").and_then(|c| c.as_u64()).map(|c| c as u32);
+                                }
+                            }
+
+                            errors.push(BuildError {
+                                kind: BuildErrorKind::Rust,
+                                message,
+                                file,
+                                line: line_num,
+                                column: col_num,
+                                code,
                             });
                         }
                     }
                 }
             }
         }
-
-        Some(ParsedTrace { language: "Python".into(), exception_type, message, file, line, column: None, stack_frames: frames })
     }
 
-    pub fn parse_rust(&self, stderr: &str) -> Option<ParsedTrace> {
-        let lines: Vec<&str> = stderr.lines().collect();
-        if lines.iter().any(|l| l.contains("thread '") && l.contains("panicked")) {
-            let panic_line = lines.iter().find(|l| l.contains("panicked"))?;
-            let message = panic_line.trim().to_string();
-            let mut frames = Vec::new();
-            let mut file = String::new();
-            let mut line = 0;
+    if !errors.is_empty() { return errors; }
 
-            for l in &lines {
-                let l = l.trim();
-                if let Some(rest) = l.strip_prefix("at ") {
-                    let parts: Vec<&str> = rest.rsplitn(3, ':').collect();
-                    if parts.len() >= 2 {
-                        let ln: usize = parts[0].parse().unwrap_or(0);
-                        let col: Option<usize> = parts.get(1).and_then(|c| c.parse().ok());
-                        let f = if parts.len() >= 3 { parts[2..].join(":") } else { parts[1..].join(":") };
-                        if file.is_empty() { file = f.clone(); line = ln; }
-                        frames.push(StackFrame { function: None, file: f, line: ln, column: col, raw: l.to_string() });
+    // Fallback to text parser: error[E####]: message\n --> file:line:col
+    let re_head = Regex::new(r"error(?:\[(?P<code>E\d+)\])?:\s*(?P<msg>.+)").ok().unwrap();
+    let re_loc = Regex::new(r"\s*-->\s*(?P<file>[^:]+):(?P<line>\d+):(?P<col>\d+)").ok().unwrap();
+
+    let lines: Vec<&str> = stderr.lines().collect();
+    let mut i = 0;
+    while i < lines.len() {
+        if let Some(caps) = re_head.captures(lines[i]) {
+            let code = caps.name("code").map(|m| m.as_str().to_string());
+            let message = caps.name("msg").map(|m| m.as_str().to_string()).unwrap_or_default();
+            let mut file = None;
+            let mut line = None;
+            let mut column = None;
+
+            if i + 1 < lines.len() {
+                if let Some(loc_caps) = re_loc.captures(lines[i + 1]) {
+                    file = loc_caps.name("file").map(|m| m.as_str().to_string());
+                    line = loc_caps.name("line").and_then(|m| m.as_str().parse().ok());
+                    column = loc_caps.name("column").or_else(|| loc_caps.name("col")).and_then(|m| m.as_str().parse().ok());
+                }
+            }
+
+            errors.push(BuildError {
+                kind: BuildErrorKind::Rust,
+                message,
+                file,
+                line,
+                column,
+                code,
+            });
+        }
+        i += 1;
+    }
+
+    errors
+}
+
+pub fn parse_go(stderr: &str) -> Option<StackTrace> {
+    if !stderr.contains("goroutine ") { return None; }
+    let lines: Vec<&str> = stderr.lines().collect();
+
+    let panic_line = lines.iter().find(|l| l.contains("panic:"))?;
+    let message = panic_line.trim().to_string();
+
+    let mut frames = Vec::new();
+    let mut i = 0;
+    while i < lines.len() {
+        let line = lines[i].trim();
+        if line.contains("goroutine ") && line.contains("[running]:") {
+            i += 1;
+            while i < lines.len() {
+                let frame_line = lines[i].trim();
+                if frame_line.is_empty() || frame_line.contains("goroutine ") {
+                    break;
+                }
+                //pkg.Func(...)
+                let function = frame_line.to_string();
+                i += 1;
+                if i < lines.len() {
+                    let loc_line = lines[i].trim();
+                    //\tfile.go:N +0x...
+                    let re_loc = Regex::new(r"(?P<file>[^:]+):(?P<line>\d+)").ok().unwrap();
+                    if let Some(caps) = re_loc.captures(loc_line) {
+                        let file = caps.name("file").map(|m| m.as_str().to_string()).unwrap_or_default();
+                        let line_num: u32 = caps.name("line").and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+                        frames.push(ParsedFrame {
+                            file,
+                            line: line_num,
+                            column: None,
+                            function: function.clone(),
+                            module: None,
+                        });
                     }
                 }
-            }
-            if file.is_empty() { return None; }
-            return Some(ParsedTrace { language: "Rust".into(), exception_type: "panic".into(), message, file, line, column: None, stack_frames: frames });
-        }
-
-        if stderr.contains("error[") || stderr.contains("error:") {
-            let err_line = lines.iter().find(|l| l.contains("error["))?;
-            let ex_type = Self::extract_first_word(err_line);
-            let message = lines.iter().skip_while(|l| !l.contains("error[")).take(5).cloned().collect::<Vec<_>>().join("\n");
-            let mut frames = Vec::new();
-            for l in &lines {
-                if l.contains("--> ") {
-                    let parts: Vec<&str> = l.split("--> ").nth(1).unwrap_or("").rsplitn(3, ':').collect();
-                    if parts.len() >= 2 {
-                        let f = parts[2..].join(":").trim().to_string();
-                        let ln: usize = parts[1].parse().unwrap_or(0);
-                        let col: Option<usize> = parts.first().and_then(|c| c.parse().ok());
-                        if f.contains('/') || f.contains('\\') {
-                            frames.push(StackFrame { function: None, file: f, line: ln, column: col, raw: l.to_string() });
-                        }
-                    }
-                }
-            }
-            let file = frames.first().map(|f| f.file.clone()).unwrap_or_default();
-            let line = frames.first().map(|f| f.line).unwrap_or(0);
-            return Some(ParsedTrace { language: "Rust".into(), exception_type: ex_type, message, file, line, column: None, stack_frames: frames });
-        }
-
-        None
-    }
-
-    pub fn parse_go(&self, stderr: &str) -> Option<ParsedTrace> {
-        if !stderr.contains("goroutine ") || !stderr.contains("panic") { return None; }
-        let lines: Vec<&str> = stderr.lines().collect();
-        let error_line = lines.iter().find(|l| l.contains("panic:"))?;
-        let message = error_line.trim().to_string();
-        let mut frames = Vec::new();
-        let mut file = String::new();
-        let mut line = 0;
-        for l in &lines {
-            let l = l.trim();
-            let parts: Vec<&str> = l.splitn(3, ':').collect();
-            if l.contains(".go:") && parts.len() >= 2 {
-                if let Ok(ln) = parts[1].trim().parse::<usize>() {
-                    if file.is_empty() { file = parts[0].trim().to_string(); line = ln; }
-                    frames.push(StackFrame { function: None, file: parts[0].trim().to_string(), line: ln, column: None, raw: l.to_string() });
-                }
+                i += 1;
             }
         }
-        Some(ParsedTrace { language: "Go".into(), exception_type: "panic".into(), message, file, line, column: None, stack_frames: frames })
+        i += 1;
     }
 
-    pub fn parse_java(&self, stderr: &str) -> Option<ParsedTrace> {
-        let lines: Vec<&str> = stderr.lines().collect();
-        let error_line = lines.iter().find(|l| l.contains("Exception"))?;
-        let colon_pos = error_line.find(':').unwrap_or(error_line.len());
-        let exception_type = error_line[..colon_pos].trim().to_string();
-        let message = error_line[colon_pos..].trim().to_string();
-        let mut frames = Vec::new();
-        let mut file = String::new();
-        let mut line = 0;
-        for l in &lines {
-            let l = l.trim();
-            if let Some(rest) = l.strip_prefix("at ") {
-                let paren = rest.rfind('(')?;
-                let loc = &rest[paren + 1..rest.len() - 1];
-                let parts: Vec<&str> = loc.rsplitn(3, ':').collect();
-                if parts.len() >= 2 {
-                    let f = parts[2..].join(":");
-                    if let Ok(ln) = parts[1].parse::<usize>() {
-                        if file.is_empty() { file = f.clone(); line = ln; }
-                        frames.push(StackFrame { function: None, file: f, line: ln, column: None, raw: l.to_string() });
-                    }
-                }
-            }
+    if frames.is_empty() { return None; }
+
+    let primary = frames[0].clone();
+
+    Some(StackTrace {
+        language: "Go".to_string(),
+        exception_type: "Panic".to_string(),
+        message,
+        file: primary.file,
+        line: primary.line,
+        stack_frames: frames,
+    })
+}
+
+pub fn parse_java(stderr: &str) -> Option<StackTrace> {
+    if !stderr.contains("Exception in thread") { return None; }
+    let lines: Vec<&str> = stderr.lines().collect();
+
+    let first_line = lines.iter().find(|l| l.contains("Exception in thread"))?;
+    // Exception in thread "main" pkg.ExceptionType: msg
+    let re_head = Regex::new(r#"Exception in thread "[^"]+"\s+(?P<ex>\S+):\s*(?P<msg>.+)"#).ok()?;
+    let (exception_type, message) = if let Some(caps) = re_head.captures(first_line) {
+        (caps.name("ex").map(|m| m.as_str().to_string()).unwrap_or_default(), caps.name("msg").map(|m| m.as_str().to_string()).unwrap_or_default())
+    } else {
+        ("Exception".to_string(), first_line.to_string())
+    };
+
+    let re_frame = Regex::new(r"^\s*at\s+(?P<fn>[^(]+)\((?P<file>[^:]+):(?P<line>\d+)\)").ok()?;
+    let mut frames = Vec::new();
+
+    for line in &lines {
+        if let Some(caps) = re_frame.captures(line) {
+            let function = caps.name("fn").map(|m| m.as_str().trim().to_string()).unwrap_or_default();
+            let file = caps.name("file").map(|m| m.as_str().to_string()).unwrap_or_default();
+            let line_num: u32 = caps.name("line").and_then(|m| m.as_str().parse().ok()).unwrap_or(0);
+
+            frames.push(ParsedFrame {
+                file,
+                line: line_num,
+                column: None,
+                function,
+                module: None,
+            });
         }
-        Some(ParsedTrace { language: "Java".into(), exception_type, message, file, line, column: None, stack_frames: frames })
     }
 
-    fn parse_v8_frame(&self, frame: &str) -> (Option<String>, String, usize, Option<usize>) {
-        let (func, loc) = if let Some(paren) = frame.rfind('(') {
-            (frame[..paren].trim().to_string(), frame[paren + 1..frame.len() - 1].trim())
-        } else {
-            (String::new(), frame.trim())
-        };
-        let parts: Vec<&str> = loc.rsplitn(4, ':').collect();
-        let col: Option<usize> = parts.first().and_then(|c| c.parse().ok());
-        let line: usize = parts.get(1).and_then(|c| c.parse().ok()).unwrap_or(0);
-        let file = if parts.len() >= 3 { parts[2..].join(":") } else { loc.to_string() };
-        (if func.is_empty() { None } else { Some(func) }, file, line, col)
-    }
+    if frames.is_empty() { return None; }
 
-    fn parse_generic(&self, stderr: &str) -> Option<ParsedTrace> {
-        let lines: Vec<&str> = stderr.lines().collect();
-        let first_error = lines.iter().find(|l| l.contains("error") || l.contains("Error") || l.contains("ERROR"))?;
-        Some(ParsedTrace {
-            language: "Unknown".into(),
-            exception_type: "error".into(),
-            message: first_error.trim().to_string(),
-            file: String::new(), line: 0, column: None,
-            stack_frames: vec![],
-        })
-    }
+    let primary = frames[0].clone();
 
-    // Stub parsers for remaining languages
-    pub fn parse_dotnet(&self, stderr: &str) -> Option<ParsedTrace> {
-        if !stderr.contains("Exception") || !stderr.contains("at ") { return None; }
-        self.parse_java(stderr).map(|mut t| { t.language = ".NET".into(); t })
-    }
+    Some(StackTrace {
+        language: "Java".to_string(),
+        exception_type,
+        message,
+        file: primary.file,
+        line: primary.line,
+        stack_frames: frames,
+    })
+}
 
-    pub fn parse_ruby(&self, stderr: &str) -> Option<ParsedTrace> {
-        let lines: Vec<&str> = stderr.lines().collect();
-        let err = lines.iter().find(|l| l.contains("Error") || l.contains("Exception"))?;
-        let (ex_type, msg) = err.split_once(':').unwrap_or((err.trim(), ""));
-        let mut frames = Vec::new();
-        for l in &lines {
-            if let Some(rest) = l.trim().strip_prefix("from ") {
-                if let Some(pos) = rest.rfind(':') {
-                    let f = rest[..pos].trim().to_string();
-                    if let Ok(ln) = rest[pos + 1..].trim().parse::<usize>() {
-                        frames.push(StackFrame { function: None, file: f, line: ln, column: None, raw: l.to_string() });
-                    }
-                }
-            }
-        }
-        let first = frames.first().cloned().unwrap_or(StackFrame { function: None, file: String::new(), line: 0, column: None, raw: String::new() });
-        Some(ParsedTrace { language: "Ruby".into(), exception_type: ex_type.to_string(), message: msg.to_string(), file: first.file, line: first.line, column: None, stack_frames: frames })
-    }
-
-    pub fn parse_php(&self, stderr: &str) -> Option<ParsedTrace> {
-        if !stderr.contains("Fatal error") && !stderr.contains("Stack trace") { return None; }
-        let lines: Vec<&str> = stderr.lines().collect();
-        let err = lines.iter().find(|l| l.contains("Fatal error") || l.contains("Error"))?;
-        let msg = err.trim().to_string();
-        let mut frames = Vec::new();
-        for l in &lines {
-            if l.contains('#') && l.contains("called in") {
-                if let Some(pos) = l.rfind("in ") {
-                    let rest = &l[pos + 3..];
-                    if let Some(end) = rest.rfind(':') {
-                        if let Ok(ln) = rest[end + 1..].trim().parse::<usize>() {
-                            frames.push(StackFrame { function: None, file: rest[..end].to_string(), line: ln, column: None, raw: l.to_string() });
-                        }
-                    }
-                }
-            }
-        }
-        Some(ParsedTrace { language: "PHP".into(), exception_type: "Fatal error".into(), message: msg, file: frames.first().map(|f| f.file.clone()).unwrap_or_default(), line: frames.first().map(|f| f.line).unwrap_or(0), column: None, stack_frames: frames })
-    }
-
-    pub fn parse_elixir(&self, stderr: &str) -> Option<ParsedTrace> {
-        if !stderr.contains("** (") { return None; }
-        let lines: Vec<&str> = stderr.lines().collect();
-        let err = lines.iter().find(|l| l.contains("** ("))?;
-        let msg = err.trim().to_string();
-        let mut frames = Vec::new();
-        for l in &lines {
-            if l.contains(".ex:") || l.contains(".exs:") {
-                let parts: Vec<&str> = l.rsplitn(4, ':').collect();
-                if parts.len() >= 2 {
-                    if let Ok(ln) = parts[1].parse::<usize>() {
-                        let f = parts[2..].join(":").trim().to_string();
-                        frames.push(StackFrame { function: None, file: f, line: ln, column: None, raw: l.to_string() });
-                    }
-                }
-            }
-        }
-        Some(ParsedTrace { language: "Elixir".into(), exception_type: "FunctionClauseError".into(), message: msg, file: frames.first().map(|f| f.file.clone()).unwrap_or_default(), line: frames.first().map(|f| f.line).unwrap_or(0), column: None, stack_frames: frames })
-    }
-
-    pub fn parse_c_cpp(&self, stderr: &str) -> Option<ParsedTrace> {
-        if stderr.contains("AddressSanitizer") || stderr.contains("Segmentation fault") || stderr.contains("SIGSEGV") {
-            Some(ParsedTrace { language: "C/C++".into(), exception_type: "Segfault".into(), message: stderr.lines().find(|l| l.contains("ERROR") || l.contains("Segfault")).unwrap_or("SEGFAULT").to_string(), file: String::new(), line: 0, column: None, stack_frames: vec![] })
-        } else { None }
-    }
-
-    fn extract_first_word(s: &str) -> String {
-        let s = s.trim();
-        if let Some(colon) = s.find(':') { s[..colon].trim().to_string() }
-        else { s.split_whitespace().next().unwrap_or("Error").to_string() }
+pub fn parse(stderr: &str) -> Option<StackTrace> {
+    match detect_language(stderr) {
+        "Node" => parse_nodejs(stderr),
+        "Python" => parse_python(stderr),
+        "Rust" => parse_rust_panic(stderr),
+        "Go" => parse_go(stderr),
+        "Java" => parse_java(stderr),
+        _ => None,
     }
 }
 
-fn score_parsed_trace(trace: &ParsedTrace, raw_stderr: &str) -> f32 {
-    let mut score = 0.0f32;
+pub fn parse_build_errors(stderr: &str) -> Vec<BuildError> {
+    let mut errors = parse_rust_compile(stderr);
+    if !errors.is_empty() { return errors; }
 
-    // Each valid stack frame is strong evidence
-    score += trace.stack_frames.len() as f32 * 2.0;
+    // Parse TypeScript compilation errors (tsc): "src/file.ts(10,15): error TS2304: Cannot find name 'x'."
+    let re_ts = Regex::new(r"(?P<file>[^(]+)\((?P<line>\d+),(?P<col>\d+)\):\s*error\s+(?P<code>TS\d+):\s*(?P<msg>.+)").ok().unwrap();
+    // Parse Go build errors: "./main.go:10:15: undefined: x"
+    let re_go = Regex::new(r"(?P<file>[^:]+):(?P<line>\d+):(?P<col>\d+):\s*(?P<msg>.+)").ok().unwrap();
 
-    // A real file path with extension is strong signal
-    let has_ext = trace.file.contains('.') && trace.file.len() > 5;
-    if has_ext { score += 3.0; }
-
-    // Line number must be > 0
-    if trace.line > 0 { score += 2.0; }
-
-    // Matched exception type present in raw stderr
-    if !trace.exception_type.is_empty() && raw_stderr.contains(&trace.exception_type) { score += 2.0; }
-
-    // Language-specific confidence boosters
-    match trace.language.as_str() {
-        "Rust" => {
-            if raw_stderr.contains("panicked at") { score += 5.0; }
-            if raw_stderr.contains("error[") { score += 4.0; }
-            if raw_stderr.contains("--> ") { score += 2.0; }
+    for line in stderr.lines() {
+        if let Some(caps) = re_ts.captures(line) {
+            errors.push(BuildError {
+                kind: BuildErrorKind::TypeScript,
+                message: caps.name("msg").map(|m| m.as_str().to_string()).unwrap_or_default(),
+                file: caps.name("file").map(|m| m.as_str().trim().to_string()),
+                line: caps.name("line").and_then(|m| m.as_str().parse().ok()),
+                column: caps.name("col").and_then(|m| m.as_str().parse().ok()),
+                code: caps.name("code").map(|m| m.as_str().to_string()),
+            });
+        } else if let Some(caps) = re_go.captures(line) {
+            errors.push(BuildError {
+                kind: BuildErrorKind::Go,
+                message: caps.name("msg").map(|m| m.as_str().to_string()).unwrap_or_default(),
+                file: caps.name("file").map(|m| m.as_str().trim().to_string()),
+                line: caps.name("line").and_then(|m| m.as_str().parse().ok()),
+                column: caps.name("col").and_then(|m| m.as_str().parse().ok()),
+                code: None,
+            });
         }
-        "Python" => {
-            if raw_stderr.contains("Traceback") { score += 5.0; }
-            if raw_stderr.contains("File \"") { score += 3.0; }
-        }
-        "Node.js (TypeScript)" | "Node.js" => {
-            if raw_stderr.contains("at ") { score += 3.0; }
-            if trace.column.is_some() { score += 1.0; }
-        }
-        "Go" => {
-            if raw_stderr.contains("goroutine ") { score += 5.0; }
-        }
-        "Java" => {
-            if raw_stderr.contains("Exception") { score += 3.0; }
-            if trace.language == "Java" && raw_stderr.contains(".java:") { score += 2.0; }
-        }
-        _ => {}
     }
 
-    // Penalize generic/no-match
-    if trace.exception_type == "error" && trace.file.is_empty() && trace.stack_frames.is_empty() {
-        score -= 5.0;
+    if errors.is_empty() {
+        // Generic fallback error
+        if stderr.contains("error") || stderr.contains("failed") {
+            errors.push(BuildError {
+                kind: BuildErrorKind::Generic,
+                message: stderr.trim().to_string(),
+                file: None,
+                line: None,
+                column: None,
+                code: None,
+            });
+        }
     }
 
-    // Favourably weight first real file path over 'unknown.rs' or default names
-    if trace.file.contains('/') || trace.file.contains('\\') { score += 2.0; }
-
-    // Multiple frames means real runtime crash vs build error
-    if trace.stack_frames.len() >= 3 { score += 3.0; }
-
-    // Unambiguous language signature detection
-    let lang_signals = match trace.language.as_str() {
-        "Python" => if raw_stderr.contains("Traceback (most recent call last)") { 4.0 } else { 0.0 },
-        "Go" => if raw_stderr.contains("created by ") { 3.0 } else { 0.0 },
-        "Rust" => if raw_stderr.contains("note: run with `RUST_BACKTRACE=1`") { 3.0 } else { 0.0 },
-        _ => 0.0,
-    };
-    score += lang_signals;
-
-    score.max(0.0)
+    errors
 }

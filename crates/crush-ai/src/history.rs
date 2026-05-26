@@ -1,117 +1,110 @@
-use std::path::{Path, PathBuf};
-use std::fs;
-use std::io::Write;
-use crush_types::{Result, CrushError};
+use std::path::PathBuf;
+use std::fs::{OpenOptions, File};
+use std::io::{BufRead, BufReader, Write};
+use serde::{Serialize, Deserialize};
+use sha2::{Sha256, Digest};
 
-#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
-pub struct ErrorRecord {
-    pub timestamp: String,
-    pub error_type: String,
-    pub message_hash: String,
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ErrorEvent {
+    pub id: String,
+    pub timestamp: chrono::DateTime<chrono::Utc>,
     pub language: String,
+    pub exception_type: String,
     pub file: String,
-    pub line: usize,
-    pub count: u32,
+    pub line: u32,
     pub resolved: bool,
-    pub fix_applied: bool,
 }
 
-pub struct ErrorHistory {
-    log_dir: PathBuf,
-    records: Vec<ErrorRecord>,
-}
-
-impl ErrorHistory {
-    pub fn new(base_dir: &Path) -> Self {
-        let log_dir = base_dir.join("errors");
-        fs::create_dir_all(&log_dir).ok();
-        let records = Self::load_records(&log_dir);
-        Self { log_dir, records }
-    }
-
-    pub fn log(&mut self, error_type: &str, language: &str, file: &str, line: usize) -> ErrorRecord {
-        let hash = self.compute_hash(error_type, file, line);
-
-        if let Some(existing) = self.records.iter_mut().find(|r| r.message_hash == hash) {
-            existing.count += 1;
-            existing.timestamp = chrono::Utc::now().to_rfc3339();
-            return existing.clone();
-        }
-
-        let record = ErrorRecord {
-            timestamp: chrono::Utc::now().to_rfc3339(),
-            error_type: error_type.to_string(),
-            message_hash: hash.clone(),
-            language: language.to_string(),
-            file: file.to_string(),
-            line,
-            count: 1,
-            resolved: false,
-            fix_applied: false,
-        };
-
-        self.records.push(record.clone());
-        self.persist(&record).ok();
-        record
-    }
-
-    pub fn mark_resolved(&mut self, hash: &str) {
-        if let Some(record) = self.records.iter_mut().find(|r| r.message_hash == hash) {
-            record.resolved = true;
-        }
-    }
-
-    pub fn recent(&self, limit: usize) -> Vec<&ErrorRecord> {
-        let mut sorted: Vec<_> = self.records.iter().collect();
-        sorted.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
-        sorted.truncate(limit);
-        sorted
-    }
-
-    pub fn frequency(&self) -> Vec<(&str, u32)> {
-        let mut freq: std::collections::HashMap<&str, u32> = std::collections::HashMap::new();
-        for r in &self.records {
-            *freq.entry(&r.error_type).or_insert(0) += r.count;
-        }
-        let mut v: Vec<_> = freq.into_iter().collect();
-        v.sort_by(|a, b| b.1.cmp(&a.1));
-        v
-    }
-
-    fn compute_hash(&self, error_type: &str, file: &str, line: usize) -> String {
-        use sha2::{Sha256, Digest};
+impl ErrorEvent {
+    pub fn generate_id(language: &str, file: &str, line: u32) -> String {
         let mut hasher = Sha256::new();
-        hasher.update(error_type.as_bytes());
+        hasher.update(language.as_bytes());
         hasher.update(file.as_bytes());
         hasher.update(line.to_string().as_bytes());
         hex::encode(hasher.finalize())
     }
+}
 
-    fn persist(&self, record: &ErrorRecord) -> Result<()> {
-        let path = self.log_dir.join(format!("{}.json", record.message_hash));
-        let data = serde_json::to_string(record)
-            .map_err(|e| CrushError::ImageError(e.to_string()))?;
-        let mut file = fs::File::create(&path)
-            .map_err(|e| CrushError::StorageError(e.to_string()))?;
-        writeln!(file, "{}", data)
-            .map_err(|e| CrushError::StorageError(e.to_string()))?;
-        Ok(())
+#[derive(Debug, Clone)]
+pub struct ErrorHistory {
+    pub file_path: PathBuf,
+}
+
+impl ErrorHistory {
+    pub fn new(data_dir: PathBuf) -> Self {
+        let errors_dir = data_dir.join("errors");
+        let _ = std::fs::create_dir_all(&errors_dir);
+        let file_path = errors_dir.join("history.jsonl");
+        Self { file_path }
     }
 
-    fn load_records(dir: &Path) -> Vec<ErrorRecord> {
-        let mut records = Vec::new();
-        if let Ok(entries) = fs::read_dir(dir) {
-            for entry in entries.flatten() {
-                let path = entry.path();
-                if path.extension().map_or(false, |e| e == "json") {
-                    if let Ok(content) = fs::read_to_string(&path) {
-                        if let Ok(record) = serde_json::from_str::<ErrorRecord>(&content) {
-                            records.push(record);
-                        }
-                    }
+    fn read_all(&self) -> Vec<ErrorEvent> {
+        let mut list = Vec::new();
+        if !self.file_path.exists() {
+            return list;
+        }
+        if let Ok(file) = File::open(&self.file_path) {
+            let reader = BufReader::new(file);
+            for line in reader.lines().flatten() {
+                if let Ok(event) = serde_json::from_str::<ErrorEvent>(&line) {
+                    list.push(event);
                 }
             }
         }
-        records
+        list
+    }
+
+    fn write_all(&self, events: &[ErrorEvent]) -> std::io::Result<()> {
+        let mut file = File::create(&self.file_path)?;
+        for event in events {
+            let serialized = serde_json::to_string(event)?;
+            writeln!(file, "{}", serialized)?;
+        }
+        Ok(())
+    }
+
+    pub fn record(&self, mut event: ErrorEvent) {
+        let all = self.read_all();
+        // check if same id already present and unresolved (dedup)
+        let dup = all.iter().any(|e| e.id == event.id && !e.resolved);
+        if dup {
+            return;
+        }
+
+        if event.id.is_empty() {
+            event.id = ErrorEvent::generate_id(&event.language, &event.file, event.line);
+        }
+
+        if let Ok(mut file) = OpenOptions::new()
+            .create(true)
+            .append(true)
+            .open(&self.file_path)
+        {
+            if let Ok(serialized) = serde_json::to_string(&event) {
+                let _ = writeln!(file, "{}", serialized);
+            }
+        }
+    }
+
+    pub fn mark_resolved(&self, id: &str) {
+        let mut all = self.read_all();
+        let mut modified = false;
+        for event in &mut all {
+            if event.id == id {
+                event.resolved = true;
+                modified = true;
+            }
+        }
+        if modified {
+            let _ = self.write_all(&all);
+        }
+    }
+
+    pub fn recent(&self, limit: usize) -> Vec<ErrorEvent> {
+        let mut all = self.read_all();
+        // Sort descending by timestamp
+        all.sort_by(|a, b| b.timestamp.cmp(&a.timestamp));
+        all.truncate(limit);
+        all
     }
 }

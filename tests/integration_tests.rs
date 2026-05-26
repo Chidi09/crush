@@ -4,7 +4,7 @@ use crush_types::*;
 use crush_build::{StackDetector, BuildEngine};
 use crush_image::ImageStore;
 use crush_compat::{DockerfileParser, ComposeLoader};
-use crush_ai::{TraceParser, DiagnosticEngine};
+use crush_ai::AiEngine;
 use crush_network::NetworkManager;
 
 #[tokio::test]
@@ -246,15 +246,18 @@ services:
 
 #[tokio::test]
 async fn test_diagnostic_engine_fallback() {
-    let parser = TraceParser::new();
+    let tmp = std::env::temp_dir().join("crush_integration_test").join(&format!("test_{}", std::process::id()));
+    let _ = std::fs::remove_dir_all(&tmp);
+    std::fs::create_dir_all(&tmp).unwrap();
+
+    let engine = AiEngine::new(None, tmp.clone());
     let stderr = "TypeError: Cannot read property 'x' of null\n    at Object.run (app.js:10:5)";
 
-    let trace = parser.parse_stderr(stderr).unwrap();
-    let engine = DiagnosticEngine::new(None);
-    let diagnosis = engine.diagnose(&trace).await.unwrap();
+    let diagnosis = engine.diagnose_stderr(stderr, None, None).await.unwrap();
+    assert!(diagnosis.trace.is_some());
+    assert_eq!(diagnosis.trace.unwrap().exception_type, "TypeError");
 
-    assert!(diagnosis.root_cause.contains("TypeError"));
-    assert!(diagnosis.confidence > 0.0);
+    let _ = std::fs::remove_dir_all(&tmp);
 }
 
 #[test]

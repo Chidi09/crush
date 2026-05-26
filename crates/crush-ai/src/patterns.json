@@ -1,0 +1,62 @@
+[
+  {
+    "language": "Node",
+    "pattern": "Cannot find module '([^']+)'",
+    "root_cause": "node_module_not_found",
+    "fix_description": "The specified Node.js module is not installed. Try running `npm install <module>` or adding it to package.json."
+  },
+  {
+    "language": "Python",
+    "pattern": "ModuleNotFoundError: No module named '([^']+)'",
+    "root_cause": "python_import_error",
+    "fix_description": "The Python module is missing. Try installing it via `pip install <module>` or checking your virtual environment."
+  },
+  {
+    "language": "Rust",
+    "pattern": "panicked at 'called `Option::unwrap\\(\\)` on a `None` value'",
+    "root_cause": "rust_unwrap_panic",
+    "fix_description": "A `.unwrap()` call failed on a None value. Use safe pattern matching (if let or match) or `.unwrap_or()`."
+  },
+  {
+    "language": "Rust",
+    "pattern": "cannot borrow `([^`]+)` as mutable because it is also borrowed as immutable",
+    "root_cause": "rust_borrow_conflict",
+    "fix_description": "Rust borrow checker error. Ensure immutable borrows scope ends before mutable borrow begins."
+  },
+  {
+    "language": "Go",
+    "pattern": "panic: runtime error: invalid memory address or nil pointer dereference",
+    "root_cause": "go_nil_pointer",
+    "fix_description": "A nil pointer was dereferenced in Go. Check for nil references before accessing methods or fields."
+  },
+  {
+    "language": "Generic",
+    "pattern": "address already in use|bind: address already in use",
+    "root_cause": "port_already_in_use",
+    "fix_description": "The target port is already bound by another process. Identify and kill that process or choose another port."
+  },
+  {
+    "language": "Generic",
+    "pattern": "Permission denied|permission denied",
+    "root_cause": "permission_denied",
+    "fix_description": "The process lacks sufficient permission to access the file, socket, or capability. Run with elevated privileges or check permissions."
+  },
+  {
+    "language": "Generic",
+    "pattern": "Out of memory|Killed|OOM|oom-kill",
+    "root_cause": "oom_killed",
+    "fix_description": "The container or process was killed due to Out Of Memory. Increase the container memory limit or optimize memory usage."
+  },
+  {
+    "language": "Generic",
+    "pattern": "environment variable '([^']+)' not set|Missing environment variable",
+    "root_cause": "missing_env_var",
+    "fix_description": "A required environment variable is not defined. Set the environment variable before running the program."
+  },
+  {
+    "language": "Generic",
+    "pattern": "No such file or directory|file not found",
+    "root_cause": "file_not_found",
+    "fix_description": "The specified file path does not exist. Double check the file path and directory structure."
+  }
+]

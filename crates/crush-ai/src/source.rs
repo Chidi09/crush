@@ -1,77 +1,80 @@
-use std::path::{Path, PathBuf};
-use std::fs;
-use crush_types::{Result, CrushError};
+use serde::{Serialize, Deserialize};
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct SourceContext {
-    pub file: PathBuf,
-    pub line: usize,
-    pub column: Option<usize>,
-    pub context_lines: Vec<SourceLine>,
-    pub git_blame: Option<String>,
+    pub file: String,
+    pub line: u32,
+    pub before: Vec<String>,
+    pub target_line: String,
+    pub after: Vec<String>,
+    pub column_indicator: Option<String>,
 }
 
-#[derive(Debug)]
-pub struct SourceLine {
-    pub line_number: usize,
-    pub content: String,
-    pub is_target: bool,
-    pub highlighted: String,
+impl SourceContext {
+    pub fn format(&self) -> String {
+        let mut out = String::new();
+        let start_line = self.line.saturating_sub(self.before.len() as u32);
+
+        for (i, line) in self.before.iter().enumerate() {
+            out.push_str(&format!("  {:4} | {}\n", start_line + i as u32, line));
+        }
+
+        out.push_str(&format!(">>>{:4} | {}\n", self.line, self.target_line));
+
+        if let Some(ref ind) = self.column_indicator {
+            out.push_str(&format!("       | {}\n", ind));
+        }
+
+        for (i, line) in self.after.iter().enumerate() {
+            out.push_str(&format!("  {:4} | {}\n", self.line + 1 + i as u32, line));
+        }
+
+        out
+    }
 }
 
-pub struct SourceExtractor;
+pub fn extract_context(file: &str, line: u32, radius: usize) -> Option<SourceContext> {
+    extract_context_with_column(file, line, None, radius)
+}
 
-impl SourceExtractor {
-    pub fn new() -> Self { Self }
-
-    pub fn extract(file: &Path, line: usize, column: Option<usize>, context: usize) -> Option<SourceContext> {
-        if !file.exists() { return None; }
-        let content = fs::read_to_string(file).ok()?;
-        let lines: Vec<&str> = content.lines().collect();
-        if line == 0 || line > lines.len() { return None; }
-
-        let start = line.saturating_sub(context + 1);
-        let end = (line + context).min(lines.len());
-
-        let mut context_lines = Vec::new();
-        for i in start..end {
-            let ln = i + 1;
-            let is_target = ln == line;
-            let raw = lines.get(i).unwrap_or(&"").to_string();
-
-            let highlighted = if is_target && column.is_some() {
-                let col = column.unwrap_or(1).saturating_sub(1);
-                let indicator = " ".repeat(col) + "^~~~";
-                format!("{}", raw)
-            } else {
-                raw.clone()
-            };
-
-            context_lines.push(SourceLine {
-                line_number: ln,
-                content: raw,
-                is_target,
-                highlighted,
-            });
-        }
-
-        let git_blame = Self::git_blame(file, line);
-
-        Some(SourceContext { file: file.to_path_buf(), line, column, context_lines, git_blame })
+pub fn extract_context_with_column(file: &str, line: u32, column: Option<u32>, radius: usize) -> Option<SourceContext> {
+    let path = std::path::Path::new(file);
+    if !path.exists() {
+        return None;
+    }
+    let content = std::fs::read_to_string(path).ok()?;
+    let lines: Vec<&str> = content.lines().collect();
+    if line == 0 || line as usize > lines.len() {
+        return None;
     }
 
-    fn git_blame(file: &Path, line: usize) -> Option<String> {
-        let output = std::process::Command::new("git")
-            .args(["blame", "-L", &format!("{},{}", line, line), "--porcelain", &file.to_string_lossy()])
-            .output().ok()?;
-        if output.status.success() {
-            let out = String::from_utf8_lossy(&output.stdout);
-            for line in out.lines() {
-                if line.starts_with("author ") {
-                    return Some(format!("last change by {}", line.trim_start_matches("author ")));
-                }
-            }
-        }
-        None
+    let target_idx = (line - 1) as usize;
+    let target_line = lines[target_idx].to_string();
+
+    let start = target_idx.saturating_sub(radius);
+    let end = (target_idx + radius).min(lines.len() - 1);
+
+    let mut before = Vec::new();
+    for i in start..target_idx {
+        before.push(lines[i].to_string());
     }
+
+    let mut after = Vec::new();
+    for i in (target_idx + 1)..=end {
+        after.push(lines[i].to_string());
+    }
+
+    let column_indicator = column.map(|col| {
+        let spaces = " ".repeat((col.saturating_sub(1)) as usize);
+        format!("{}^~~~", spaces)
+    });
+
+    Some(SourceContext {
+        file: file.to_string(),
+        line,
+        before,
+        target_line,
+        after,
+        column_indicator,
+    })
 }
