@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use crush_types::{Result, CrushError, Container, ContainerStatus, RuntimeBackend};
+use crush_types::{Result, CrushError, Container, ContainerStatus, RuntimeBackend, StorageBackend};
 use crush_image::db::ImageDatabase;
 
 #[cfg(unix)]

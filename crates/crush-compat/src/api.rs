@@ -1,7 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use crush_types::{Result, CrushError, Container, ContainerStatus};
+use crush_types::{Result, CrushError, Container, ContainerStatus, StorageBackend};
 
 const DOCKER_API_VERSION: &str = "v1.41";
 

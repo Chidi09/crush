@@ -853,6 +853,7 @@ dependencies = [
  "crush-image",
  "crush-types",
  "dirs",
+ "libc",
  "serde",
  "serde_json",
  "tokio",
