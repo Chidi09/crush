@@ -89,14 +89,55 @@ impl RegistryClient {
         if self.auth.get_auth_header(registry).is_some() {
             return Ok(());
         }
+        // Pre-auth for Docker Hub using known token endpoint
+        if AuthHandler::detect_registry_type(registry) == "dockerhub" {
+            let token = self.auth.authenticate_dockerhub(image).await?;
+            self.auth.store_token(registry, token);
+        }
+        Ok(())
+    }
 
-        match AuthHandler::detect_registry_type(registry) {
-            "dockerhub" => {
-                let token = self.auth.authenticate_dockerhub(image).await?;
-                let _ = token;
-                Ok(())
+    async fn fetch_bearer_token(&self, www_auth: &str) -> Result<String> {
+        // Parse: Bearer realm="https://...",service="...",scope="..."
+        let params = www_auth.trim_start_matches("Bearer ");
+        let mut realm = String::new();
+        let mut service = String::new();
+        let mut scope = String::new();
+
+        for part in params.split(',') {
+            let part = part.trim();
+            if let Some(v) = part.strip_prefix("realm=\"") {
+                realm = v.trim_end_matches('"').to_string();
+            } else if let Some(v) = part.strip_prefix("service=\"") {
+                service = v.trim_end_matches('"').to_string();
+            } else if let Some(v) = part.strip_prefix("scope=\"") {
+                scope = v.trim_end_matches('"').to_string();
             }
-            _ => Ok(()),
+        }
+
+        if realm.is_empty() {
+            return Err(CrushError::ImageError("No realm in WWW-Authenticate".to_string()));
+        }
+
+        let url = format!("{}?service={}&scope={}",
+            realm,
+            url::form_urlencoded::byte_serialize(service.as_bytes()).collect::<String>(),
+            url::form_urlencoded::byte_serialize(scope.as_bytes()).collect::<String>(),
+        );
+        let resp = self.http.get(&url).send().await
+            .map_err(|e| CrushError::ImageError(format!("Token endpoint failed: {}", e)))?;
+        let json: serde_json::Value = resp.json().await
+            .map_err(|e| CrushError::ImageError(format!("Token response parse failed: {}", e)))?;
+
+        let token = json["token"].as_str()
+            .or_else(|| json["access_token"].as_str())
+            .unwrap_or("")
+            .to_string();
+
+        if token.is_empty() {
+            Err(CrushError::ImageError("Empty token in auth response".to_string()))
+        } else {
+            Ok(token)
         }
     }
 
@@ -126,12 +167,36 @@ impl RegistryClient {
             .await
             .map_err(|e| CrushError::ImageError(format!("Manifest fetch failed: {}", e)))?;
 
-        if !resp.status().is_success() {
-            if resp.status().as_u16() == 401 {
-                return Err(CrushError::ImageError(format!(
-                    "Authentication required for {}/{}. Try `docker login` first.", registry, image
-                )));
+        // Standard OCI auth: if 401, parse WWW-Authenticate, fetch bearer token, retry
+        if resp.status().as_u16() == 401 {
+            let www_auth = resp.headers()
+                .get("www-authenticate")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+
+            if let Some(www_auth) = www_auth {
+                if let Ok(token) = self.fetch_bearer_token(&www_auth).await {
+                    self.auth.store_token(registry, token);
+                    let resp2 = self.build_request(&url, registry)
+                        .header("Accept", Self::accept_header())
+                        .send()
+                        .await
+                        .map_err(|e| CrushError::ImageError(format!("Manifest fetch failed: {}", e)))?;
+                    if resp2.status().is_success() {
+                        return resp2.json().await
+                            .map_err(|e| CrushError::ImageError(format!("Manifest parse failed: {}", e)));
+                    }
+                    return Err(CrushError::ImageError(format!(
+                        "Registry returned HTTP {} after auth retry", resp2.status()
+                    )));
+                }
             }
+            return Err(CrushError::ImageError(format!(
+                "Authentication required for {}/{}. Try `crush registry login` first.", registry, image
+            )));
+        }
+
+        if !resp.status().is_success() {
             return Err(CrushError::ImageError(format!(
                 "Registry returned HTTP {} for manifest", resp.status()
             )));

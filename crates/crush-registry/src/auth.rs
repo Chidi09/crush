@@ -62,6 +62,19 @@ impl AuthHandler {
         None
     }
 
+    pub fn store_token(&mut self, registry: &str, token: String) {
+        let expiry = std::time::SystemTime::now()
+            .duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() + 3600;
+        self.tokens.insert(registry.to_string(), RegistryAuth {
+            registry: registry.to_string(),
+            token: Some(token),
+            username: None,
+            password: None,
+            identity_token: None,
+            token_expiry: expiry,
+        });
+    }
+
     pub async fn authenticate_dockerhub(&mut self, image: &str) -> Result<String> {
         let url = format!("https://auth.docker.io/token?service=registry.docker.io&scope=repository:{}:pull", image);
         let client = reqwest::Client::new();
