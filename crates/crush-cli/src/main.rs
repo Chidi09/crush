@@ -6,7 +6,7 @@ use tracing_subscriber::EnvFilter;
 use crush_types::*;
 use crush_build::{StackDetector, BuildEngine};
 use crush_image::ImageStore;
-use crush_compat::{DockerfileParser, ComposeLoader};
+use crush_compat::{DockerfileParser, ComposeLoader, DockerInstruction};
 use crush_ai::AiEngine;
 use crush_tui::TuiApp;
 
@@ -2044,7 +2044,7 @@ async fn copy_project_into_rootfs(src: &Path, dest: &Path) -> std::io::Result<()
     Ok(())
 }
 
-async fn run_compose_up(compose_path: &Path, data_dir: &Path, store: &ImageStore) -> Result<()> {
+async fn run_compose_up(compose_path: &Path, data_dir: &Path, store: &ImageStore) -> anyhow::Result<()> {
     use crush_compat::{ComposeParser};
 
     let parser = ComposeParser::new();
