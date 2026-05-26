@@ -14,6 +14,9 @@ use crush_registry::LocalRegistryServer;
 use crush_network::NetworkManager;
 use crush_reliability::{HealthChecker, HealthCheckConfig, HealthCheckType};
 use crush_volume::{LocalDriver, VolumeDriver, VolumeMounter};
+mod runtime;
+use runtime::StatelessEngine;
+use std::sync::Arc;
 
 #[cfg(target_os = "linux")]
 use crush_runtime_linux::runner::run_container;
@@ -99,6 +102,14 @@ enum Commands {
     Health(HealthArgs),
     #[command(about = "Generate shell completion scripts")]
     Completions(CompletionsArgs),
+    #[command(hide = true)]
+    InternalRun(InternalRunArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct InternalRunArgs {
+    #[arg(help = "Container ID to run")]
+    pub id: String,
 }
 
 #[derive(Args, Debug)]
@@ -459,30 +470,10 @@ async fn main() -> anyhow::Result<()> {
                 vec!["/bin/sh".to_string()]
             };
 
-            println!("Running: {}", effective_cmd.join(" "));
-
-            let container = Container {
-                id: container_id.clone(),
-                name: container_name.clone(),
-                image: image.tag.clone(),
-                status: ContainerStatus::Running,
-                pid: Some(std::process::id()),
-                created_at: SystemTime::now(),
-                started_at: Some(SystemTime::now()),
-                ports: vec![],
-                mounts: vec![],
-                memory_limit_bytes: args.memory.map(|m| m * 1024 * 1024),
-                cpu_shares: args.cpu,
-            };
-
-            let container_dir = data_dir.join("containers").join(&container_id);
-            let container_json_path = container_dir.join("container.json");
-            let container_json = serde_json::to_string_pretty(&container)?;
-            tokio::fs::write(&container_json_path, container_json).await?;
-
-            let mounter = VolumeMounter::new(data_dir.clone());
             let driver = LocalDriver::new(data_dir.clone());
-
+            
+            // Resolve mounts to proper MountConfigs
+            let mut resolved_mounts = Vec::new();
             for spec in &args.volume {
                 let parts: Vec<&str> = spec.split(':').collect();
                 if parts.len() < 2 {
@@ -495,8 +486,8 @@ async fn main() -> anyhow::Result<()> {
                 };
 
                 let is_host_path = src.starts_with('/') || src.starts_with('.') || src.contains('\\') || src.contains(':');
-                if is_host_path {
-                    mounter.mount_bind(&container_id, src, dest, &rootfs, readonly).await?;
+                let host_path = if is_host_path {
+                    PathBuf::from(src)
                 } else {
                     let vol_name = if driver.inspect(src).await.is_ok() {
                         src.to_string()
@@ -507,45 +498,85 @@ async fn main() -> anyhow::Result<()> {
                         driver.create(&anon_name, labels).await?;
                         anon_name
                     };
-                    mounter.mount_named(&container_id, &vol_name, dest, &rootfs, readonly).await?;
-                }
+                    driver.path(&vol_name).await?
+                };
+
+                resolved_mounts.push(MountConfig {
+                    host_path,
+                    container_path: PathBuf::from(dest),
+                    read_only: readonly,
+                    is_tmpfs: false,
+                });
             }
 
-            #[cfg(target_os = "linux")]
-            {
-                let rootfs_clone = rootfs.clone();
-                let env_vars = image.env.clone();
-                let exit_code_res = tokio::task::spawn_blocking(move || {
-                    run_container(&rootfs_clone, &effective_cmd, &env_vars)
-                })
-                .await;
+            let container = Container {
+                id: container_id.clone(),
+                name: container_name.clone(),
+                image: image.tag.clone(),
+                status: ContainerStatus::Creating,
+                pid: None,
+                created_at: SystemTime::now(),
+                started_at: None,
+                ports: vec![],
+                mounts: resolved_mounts,
+                memory_limit_bytes: args.memory.map(|m| m * 1024 * 1024),
+                cpu_shares: args.cpu,
+            };
 
-                let _ = mounter.unmount_all(&container_id).await;
+            let container_dir = data_dir.join("containers").join(&container_id);
+            let container_json_path = container_dir.join("container.json");
+            
+            let backend = StatelessEngine::new(data_dir.clone());
+            backend.create(&container, &container_dir).await?;
 
-                let exit_code = exit_code_res.map_err(|e| CrushError::NamespaceError(format!("Container task failed: {}", e)))??;
+            // Save config.json containing the command and env
+            let config_json = serde_json::json!({
+                "cmd": effective_cmd,
+                "env": image.env.clone(),
+            });
+            let config_json_path = container_dir.join("config.json");
+            let config_json_str = serde_json::to_string_pretty(&config_json)?;
+            tokio::fs::write(&config_json_path, config_json_str).await?;
 
-                // Update container state to Stopped on exit
+            if args.detach {
+                backend.start(&container_id).await?;
+                println!("{}", container_id);
+            } else {
+                // Foreground/synchronous execution: spawn crush internal-run <id> synchronously
+                let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("crush"));
+                let mut cmd = std::process::Command::new(current_exe);
+                cmd.arg("internal-run").arg(&container_id);
+
+                let mut child = cmd.spawn()
+                    .map_err(|e| CrushError::Internal(anyhow::anyhow!("Failed to spawn foreground container: {}", e)))?;
+                
+                let pid = child.id();
+                let mut c_upd = container.clone();
+                c_upd.status = ContainerStatus::Running;
+                c_upd.pid = Some(pid);
+                c_upd.started_at = Some(SystemTime::now());
+                let serialized = serde_json::to_string_pretty(&c_upd)?;
+                tokio::fs::write(&container_json_path, serialized).await?;
+
+                let status = child.wait()
+                    .map_err(|e| CrushError::Internal(anyhow::anyhow!("Failed to wait for foreground container: {}", e)))?;
+
+                // On exit, set status to Stopped
                 if let Ok(content) = tokio::fs::read_to_string(&container_json_path).await {
-                    if let Ok(mut c) = serde_json::from_str::<Container>(&content) {
-                        c.status = ContainerStatus::Stopped;
-                        c.pid = None;
-                        if let Ok(serialized) = serde_json::to_string_pretty(&c) {
-                            let _ = tokio::fs::write(&container_json_path, serialized).await;
+                    if let Ok(mut c_exit) = serde_json::from_str::<Container>(&content) {
+                        c_exit.status = ContainerStatus::Stopped;
+                        c_exit.pid = None;
+                        if let Ok(serialized_exit) = serde_json::to_string_pretty(&c_exit) {
+                            let _ = tokio::fs::write(&container_json_path, serialized_exit).await;
                         }
                     }
                 }
 
-                if exit_code != 0 {
-                    std::process::exit(exit_code);
+                if let Some(code) = status.code() {
+                    if code != 0 {
+                        std::process::exit(code);
+                    }
                 }
-            }
-
-            #[cfg(not(target_os = "linux"))]
-            {
-                eprintln!("Container execution is only supported on Linux.");
-                let _ = effective_cmd;
-                let _ = mounter.unmount_all(&container_id).await;
-                tokio::fs::remove_dir_all(&rootfs.parent().unwrap_or(&rootfs)).await.ok();
             }
         }
         Commands::Ps(args) => {
@@ -1054,14 +1085,29 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Daemon(args) => {
-            info!("Starting Docker compatibility daemon on socket: {}", args.socket);
             let socket_path = PathBuf::from(&args.socket);
-            let server = crush_compat::DockerApiServer::new(socket_path, data_dir);
-            server.start().await?;
+            
+            // Initialize the stateless engine backend
+            let backend = Arc::new(StatelessEngine::new(data_dir.clone()));
+
+            // Compat API server
+            info!("Starting Docker compatibility daemon on socket: {}", args.socket);
+            let compat_server = crush_compat::DockerApiServer::new(socket_path.clone(), data_dir.clone(), backend.clone());
+            compat_server.start().await?;
+
+            // Standalone API server
+            let api_socket_path = socket_path.parent().unwrap_or(&socket_path).join("crush-api.sock");
+            info!("Starting Standalone API daemon on socket: {}", api_socket_path.display());
+            let api_server = crush_api::ApiServer::new(api_socket_path.clone(), data_dir.clone(), backend.clone());
+            api_server.serve_unix_socket().await?;
+
             println!("Docker compatibility socket running at: {}", args.socket);
+            println!("Standalone API socket running at: {}", api_socket_path.display());
             println!("Press Ctrl+C to stop.");
             tokio::signal::ctrl_c().await?;
-            server.stop().await?;
+            
+            compat_server.stop().await?;
+            api_server.stop().await?;
             println!("Daemon stopped.");
         }
         Commands::Health(args) => {
@@ -1085,6 +1131,74 @@ async fn main() -> anyhow::Result<()> {
             let mut cmd = Cli::command();
             let name = cmd.get_name().to_string();
             generate(args.shell, &mut cmd, name, &mut std::io::stdout());
+        }
+        Commands::InternalRun(args) => {
+            let container_dir = data_dir.join("containers").join(&args.id);
+            let container_json_path = container_dir.join("container.json");
+            let config_json_path = container_dir.join("config.json");
+            
+            if !container_json_path.exists() {
+                eprintln!("Container {} not found.", args.id);
+                std::process::exit(1);
+            }
+
+            let content = std::fs::read_to_string(&container_json_path)?;
+            let c: Container = serde_json::from_str(&content)?;
+
+            let config_content = std::fs::read_to_string(&config_json_path)?;
+            #[derive(serde::Deserialize)]
+            struct ContainerConfig {
+                cmd: Vec<String>,
+                env: Vec<String>,
+            }
+            let config: ContainerConfig = serde_json::from_str(&config_content)?;
+
+            let rootfs = container_dir.join("rootfs");
+            let mounter = VolumeMounter::new(data_dir.clone());
+
+            for mount in &c.mounts {
+                let host_path_str = mount.host_path.to_string_lossy();
+                let container_path_str = mount.container_path.to_string_lossy();
+                if let Err(e) = mounter.mount_bind(&c.id, &host_path_str, &container_path_str, &rootfs, mount.read_only).await {
+                    eprintln!("Error mounting {}: {}", host_path_str, e);
+                    let _ = mounter.unmount_all(&c.id).await;
+                    std::process::exit(1);
+                }
+            }
+
+            #[cfg(target_os = "linux")]
+            {
+                let rootfs_clone = rootfs.clone();
+                let exit_code_res = tokio::task::spawn_blocking(move || {
+                    run_container(&rootfs_clone, &config.cmd, &config.env)
+                })
+                .await;
+
+                let _ = mounter.unmount_all(&c.id).await;
+
+                let exit_code = exit_code_res.map_err(|e| CrushError::NamespaceError(format!("Container task failed: {}", e)))??;
+
+                // Update container state to Stopped on exit
+                if let Ok(content) = tokio::fs::read_to_string(&container_json_path).await {
+                    if let Ok(mut c_upd) = serde_json::from_str::<Container>(&content) {
+                        c_upd.status = ContainerStatus::Stopped;
+                        c_upd.pid = None;
+                        if let Ok(serialized) = serde_json::to_string_pretty(&c_upd) {
+                            let _ = tokio::fs::write(&container_json_path, serialized).await;
+                        }
+                    }
+                }
+
+                if exit_code != 0 {
+                    std::process::exit(exit_code);
+                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                eprintln!("Container execution is only supported on Linux.");
+                let _ = mounter.unmount_all(&c.id).await;
+                tokio::fs::remove_dir_all(&rootfs.parent().unwrap_or(&rootfs)).await.ok();
+            }
         }
     }
 

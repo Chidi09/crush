@@ -1,17 +1,14 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
-use tokio::io::AsyncReadExt;
-use crush_types::{Result, CrushError, Container, ContainerStatus, Protocol, PortMapping};
-
-#[cfg(unix)]
-use libc;
+use crush_types::{Result, CrushError, Container, ContainerStatus};
 
 const DOCKER_API_VERSION: &str = "v1.41";
 
 pub struct DockerApiServer {
     socket_path: PathBuf,
     data_dir: PathBuf,
+    backend: Arc<dyn crush_types::RuntimeBackend>,
     running: Arc<Mutex<bool>>,
 }
 
@@ -46,10 +43,11 @@ struct DockerImageSummary {
 }
 
 impl DockerApiServer {
-    pub fn new(socket_path: PathBuf, data_dir: PathBuf) -> Self {
+    pub fn new(socket_path: PathBuf, data_dir: PathBuf, backend: Arc<dyn crush_types::RuntimeBackend>) -> Self {
         Self {
             socket_path,
             data_dir,
+            backend,
             running: Arc::new(Mutex::new(false)),
         }
     }
@@ -57,7 +55,6 @@ impl DockerApiServer {
     pub async fn start(&self) -> Result<()> {
         let _ = tokio::fs::remove_file(&self.socket_path).await;
         
-        // Ensure socket directory exists
         if let Some(parent) = self.socket_path.parent() {
             let _ = tokio::fs::create_dir_all(parent).await;
         }
@@ -72,6 +69,7 @@ impl DockerApiServer {
         
         let running = self.running.clone();
         let data_dir = self.data_dir.clone();
+        let backend = self.backend.clone();
         
         tokio::spawn(async move {
             loop {
@@ -81,7 +79,8 @@ impl DockerApiServer {
                 match listener.accept().await {
                     Ok((stream, _)) => {
                         let dir = data_dir.clone();
-                        tokio::spawn(async move { handle_api_connection(stream, dir).await.ok(); });
+                        let b = backend.clone();
+                        tokio::spawn(async move { handle_api_connection(stream, dir, b).await.ok(); });
                     }
                     Err(e) => {
                         eprintln!("API error: {}", e);
@@ -104,7 +103,7 @@ impl DockerApiServer {
 }
 
 async fn handle_api_connection(
-    mut stream: tokio::net::UnixStream, data_dir: PathBuf,
+    mut stream: tokio::net::UnixStream, data_dir: PathBuf, backend: Arc<dyn crush_types::RuntimeBackend>,
 ) -> Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
     let mut reader = BufReader::new(&mut stream);
@@ -134,7 +133,7 @@ async fn handle_api_connection(
     let mut body = vec![0u8; content_length];
     if content_length > 0 { reader.read_exact(&mut body).await.map_err(|e| CrushError::ApiError(e.to_string()))?; }
 
-    let (status, resp_body) = route(&data_dir, method, path, &body).await;
+    let (status, resp_body) = route(&data_dir, &backend, method, path, &body).await;
     let response = format!(
         "HTTP/1.1 {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\n\r\n{}",
         status, resp_body.len(), resp_body
@@ -143,7 +142,9 @@ async fn handle_api_connection(
     Ok(())
 }
 
-async fn route(data_dir: &PathBuf, method: &str, path: &str, body: &[u8]) -> (&'static str, String) {
+async fn route(
+    data_dir: &PathBuf, backend: &Arc<dyn crush_types::RuntimeBackend>, method: &str, path: &str, body: &[u8],
+) -> (&'static str, String) {
     let p = path.trim_start_matches(&format!("/{}", DOCKER_API_VERSION));
 
     match (method, p) {
@@ -289,10 +290,31 @@ async fn route(data_dir: &PathBuf, method: &str, path: &str, body: &[u8]) -> (&'
             let id = format!("crush_{:016x}", std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_nanos());
             
+            let img_tag = req_body.image.unwrap_or_else(|| "unknown".to_string());
+            let mut effective_cmd = vec!["/bin/sh".to_string()];
+            let mut env_vars = Vec::new();
+
+            if let Ok(db) = crush_image::db::ImageDatabase::new(&data_dir.join("images")) {
+                if let Ok(Some(img)) = db.get_image_by_tag(&img_tag).await {
+                    if !img.entrypoint.is_empty() {
+                        effective_cmd = img.entrypoint.clone();
+                        effective_cmd.extend(img.cmd.iter().cloned());
+                    } else if !img.cmd.is_empty() {
+                        effective_cmd = img.cmd.clone();
+                    }
+                    env_vars = img.env.clone();
+                    
+                    let rootfs = data_dir.join("containers").join(&id).join("rootfs");
+                    let _ = std::fs::create_dir_all(&rootfs);
+                    let store = crush_image::ImageStore::new(data_dir.clone());
+                    let _ = store.extract_layers(&img.id, &rootfs).await;
+                }
+            }
+
             let container = Container {
                 id: id.clone(),
                 name: format!("crush_{}", &id[..8]),
-                image: req_body.image.unwrap_or_else(|| "unknown".to_string()),
+                image: img_tag,
                 status: ContainerStatus::Creating,
                 pid: None,
                 created_at: std::time::SystemTime::now(),
@@ -304,10 +326,17 @@ async fn route(data_dir: &PathBuf, method: &str, path: &str, body: &[u8]) -> (&'
             };
 
             let container_dir = data_dir.join("containers").join(&id);
-            let _ = std::fs::create_dir_all(&container_dir);
-            let json_path = container_dir.join("container.json");
-            if let Ok(serialized) = serde_json::to_string_pretty(&container) {
-                let _ = std::fs::write(&json_path, serialized);
+            if backend.create(&container, &container_dir).await.is_err() {
+                return ("500 Internal Error", r#"{"message":"Failed to create container"}"#.to_string());
+            }
+
+            // Save config.json for internal-run to pick up
+            let config_json = serde_json::json!({
+                "cmd": effective_cmd,
+                "env": env_vars,
+            });
+            if let Ok(serialized) = serde_json::to_string_pretty(&config_json) {
+                let _ = std::fs::write(container_dir.join("config.json"), serialized);
             }
 
             ("201 Created", format!(r#"{{"Id":"{}","Warnings":[]}}"#, id))
@@ -318,26 +347,27 @@ async fn route(data_dir: &PathBuf, method: &str, path: &str, body: &[u8]) -> (&'
             if parts.len() >= 3 {
                 let id = parts[2];
                 let containers_dir = data_dir.join("containers");
+                let mut found = None;
                 if containers_dir.exists() {
                     if let Ok(mut entries) = std::fs::read_dir(&containers_dir) {
                         while let Some(Ok(entry)) = entries.next() {
                             let json_path = entry.path().join("container.json");
                             if json_path.exists() {
                                 if let Ok(content) = std::fs::read_to_string(&json_path) {
-                                    if let Ok(mut c) = serde_json::from_str::<Container>(&content) {
+                                    if let Ok(c) = serde_json::from_str::<Container>(&content) {
                                         if c.id == id || c.name == id {
-                                            c.status = ContainerStatus::Running;
-                                            c.pid = Some(rand_pid());
-                                            c.started_at = Some(std::time::SystemTime::now());
-                                            if let Ok(serialized) = serde_json::to_string_pretty(&c) {
-                                                let _ = std::fs::write(&json_path, serialized);
-                                            }
-                                            return ("204 No Content", String::new());
+                                            found = Some(c.id);
+                                            break;
                                         }
                                     }
                                 }
                             }
                         }
+                    }
+                }
+                if let Some(actual_id) = found {
+                    if backend.start(&actual_id).await.is_ok() {
+                        return ("204 No Content", String::new());
                     }
                 }
             }
@@ -349,31 +379,27 @@ async fn route(data_dir: &PathBuf, method: &str, path: &str, body: &[u8]) -> (&'
             if parts.len() >= 3 {
                 let id = parts[2];
                 let containers_dir = data_dir.join("containers");
+                let mut found = None;
                 if containers_dir.exists() {
                     if let Ok(mut entries) = std::fs::read_dir(&containers_dir) {
                         while let Some(Ok(entry)) = entries.next() {
                             let json_path = entry.path().join("container.json");
                             if json_path.exists() {
                                 if let Ok(content) = std::fs::read_to_string(&json_path) {
-                                    if let Ok(mut c) = serde_json::from_str::<Container>(&content) {
+                                    if let Ok(c) = serde_json::from_str::<Container>(&content) {
                                         if c.id == id || c.name == id {
-                                            if let Some(pid) = c.pid {
-                                                #[cfg(unix)]
-                                                {
-                                                    unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL); }
-                                                }
-                                            }
-                                            c.status = ContainerStatus::Stopped;
-                                            c.pid = None;
-                                            if let Ok(serialized) = serde_json::to_string_pretty(&c) {
-                                                let _ = std::fs::write(&json_path, serialized);
-                                            }
-                                            return ("204 No Content", String::new());
+                                            found = Some(c.id);
+                                            break;
                                         }
                                     }
                                 }
                             }
                         }
+                    }
+                }
+                if let Some(actual_id) = found {
+                    if backend.stop(&actual_id, 10).await.is_ok() {
+                        return ("204 No Content", String::new());
                     }
                 }
             }
@@ -385,6 +411,7 @@ async fn route(data_dir: &PathBuf, method: &str, path: &str, body: &[u8]) -> (&'
             if parts.len() >= 3 {
                 let id = parts[2];
                 let containers_dir = data_dir.join("containers");
+                let mut found = None;
                 if containers_dir.exists() {
                     if let Ok(mut entries) = std::fs::read_dir(&containers_dir) {
                         while let Some(Ok(entry)) = entries.next() {
@@ -393,13 +420,18 @@ async fn route(data_dir: &PathBuf, method: &str, path: &str, body: &[u8]) -> (&'
                                 if let Ok(content) = std::fs::read_to_string(&json_path) {
                                     if let Ok(c) = serde_json::from_str::<Container>(&content) {
                                         if c.id == id || c.name == id {
-                                            let _ = std::fs::remove_dir_all(entry.path());
-                                            return ("204 No Content", String::new());
+                                            found = Some(c.id);
+                                            break;
                                         }
                                     }
                                 }
                             }
                         }
+                    }
+                }
+                if let Some(actual_id) = found {
+                    if backend.delete(&actual_id).await.is_ok() {
+                        return ("204 No Content", String::new());
                     }
                 }
             }
@@ -435,12 +467,4 @@ async fn route(data_dir: &PathBuf, method: &str, path: &str, body: &[u8]) -> (&'
 
         _ => ("404 Not Found", r#"{"message":"not found"}"#.to_string()),
     }
-}
-
-fn rand_pid() -> u32 {
-    let nanos = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .unwrap_or_default()
-        .as_nanos();
-    (nanos as u32 % 65535) + 1
 }
