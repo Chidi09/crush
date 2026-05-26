@@ -2179,7 +2179,7 @@ async fn main() -> anyhow::Result<()> {
                     let containers_dir = data_dir.join("containers");
                     if containers_dir.exists() {
                         if let Ok(entries) = std::fs::read_dir(&containers_dir) {
-                            for entry in entries.filter_map(Result::ok) {
+                            for entry in entries.flatten() {
                                 if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
                                     let json_path = entry.path().join("container.json");
                                     if json_path.exists() {
