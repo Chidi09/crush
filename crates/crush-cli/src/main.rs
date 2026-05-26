@@ -504,6 +504,7 @@ async fn main() -> anyhow::Result<()> {
             let mut current_net = {
                 let orchestrator = crush_network::NetworkOrchestrator::new(data_dir.clone());
                 let ports = vec![PortMapping {
+                    host_ip: "0.0.0.0".to_string(),
                     host_port: stack.default_port,
                     container_port: stack.default_port,
                     protocol: Protocol::Tcp,
@@ -632,6 +633,7 @@ async fn main() -> anyhow::Result<()> {
                 let green_net = {
                     let orchestrator = crush_network::NetworkOrchestrator::new(data_dir.clone());
                     let ports = vec![PortMapping {
+                        host_ip: "0.0.0.0".to_string(),
                         host_port: stack.default_port,
                         container_port: stack.default_port,
                         protocol: Protocol::Tcp,
