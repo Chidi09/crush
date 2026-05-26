@@ -77,7 +77,21 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
               </svg>
             </a>
             <a
-              href="https://github.com/crushcontainer/crush"
+              href="https://github.com/Chidi09/crush/releases/download/v0.1.0/crush-0.1.0-windows-x86_64.exe"
+              class="inline-flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm font-semibold text-white bg-crush-surface border border-crush-border hover:bg-crush-surface/80 hover:border-crush-orange/50 hover:text-white transition-colors duration-200 select-none outline-none shadow-lg shadow-crush-orange/5"
+            >
+              Download CLI (Windows)
+              <svg
+                viewBox="0 0 24 24"
+                class="h-4 w-4 fill-none stroke-current stroke-2"
+              >
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
+                <polyline points="7 10 12 15 17 10" />
+                <line x1="12" y1="15" x2="12" y2="3" />
+              </svg>
+            </a>
+            <a
+              href="https://github.com/Chidi09/crush"
               target="_blank"
               rel="noopener"
               class="inline-flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm font-semibold text-crush-text bg-transparent border border-crush-border hover:bg-crush-surface/50 hover:text-white hover:border-crush-border/80 transition-colors duration-200 select-none outline-none"

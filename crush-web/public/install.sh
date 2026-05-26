@@ -1,7 +1,7 @@
 #!/bin/sh
 set -eu
 
-REPO="crushcontainer/crush"
+REPO="Chidi09/crush"
 INSTALL_DIR="${INSTALL_DIR:-/usr/local/bin}"
 VERSION="${VERSION:-latest}"
 

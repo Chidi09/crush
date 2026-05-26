@@ -5,7 +5,7 @@ param(
 
 $ErrorActionPreference = "Stop"
 
-$repo = "crushcontainer/crush"
+$repo = "Chidi09/crush"
 $arch = if ([Environment]::Is64BitOperatingSystem) { "x86_64" } else { "i686" }
 
 if ($Version -eq "latest") {

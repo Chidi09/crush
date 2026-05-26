@@ -88,7 +88,7 @@ import { HlmIconComponent } from '@spartan-ng/ui-icon-helm';
             <ul class="mt-4 space-y-3">
               <li>
                 <a
-                  href="https://github.com/crushcontainer/crush"
+                  href="https://github.com/Chidi09/crush"
                   target="_blank"
                   rel="noopener"
                   class="text-sm text-crush-textMuted hover:text-crush-orange transition-colors inline-flex items-center gap-1"
@@ -110,7 +110,7 @@ import { HlmIconComponent } from '@spartan-ng/ui-icon-helm';
             <ul class="mt-4 space-y-3">
               <li>
                 <a
-                  href="https://github.com/crushcontainer/crush/blob/main/LICENSE"
+                  href="https://github.com/Chidi09/crush/blob/main/LICENSE"
                   target="_blank"
                   rel="noopener"
                   class="text-sm text-crush-textMuted hover:text-crush-orange transition-colors"

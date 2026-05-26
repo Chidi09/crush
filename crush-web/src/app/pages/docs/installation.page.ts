@@ -155,7 +155,7 @@ import { InstallBlockComponent } from '../../components/install-block/install-bl
               Static pre-compiled binaries are built for every commit and release tag. Download
               packages directly from the official
               <a
-                href="https://github.com/crushcontainer/crush/releases"
+                href="https://github.com/Chidi09/crush/releases"
                 target="_blank"
                 rel="noopener"
                 class="text-crush-orange hover:text-crush-orangeLight transition-colors font-semibold"
