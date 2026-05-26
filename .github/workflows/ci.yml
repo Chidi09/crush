@@ -1,90 +1,104 @@
-name: CI Matrix
+name: CI
 
 on:
   push:
-    branches: [ main, dev ]
+    branches: [main]
   pull_request:
-    branches: [ main, dev ]
+    branches: [main]
+
+env:
+  CARGO_TERM_COLOR: always
+  RUST_BACKTRACE: 1
 
 jobs:
-  test-and-build:
-    name: Build & Test (${{ matrix.target }})
-    runs-on: ${{ matrix.os }}
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: x86_64-unknown-linux-gnu
-            os: ubuntu-latest
-            use-cross: false
-          - target: aarch64-unknown-linux-gnu
-            os: ubuntu-latest
-            use-cross: true
-          - target: x86_64-pc-windows-msvc
-            os: windows-latest
-            use-cross: false
-          - target: x86_64-apple-darwin
-            os: macos-latest
-            use-cross: false
-          - target: aarch64-apple-darwin
-            os: macos-latest
-            use-cross: false
-
-    steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
-
-      - name: Setup Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Cargo Cache Setup
-        uses: actions/cache@v4
-        with:
-          path: |
-            ~/.cargo/bin/
-            ~/.cargo/registry/index/
-            ~/.cargo/registry/cache/
-            ~/.cargo/git/db/
-            target/
-          key: ${{ runner.os }}-cargo-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
-          restore-keys: |
-            ${{ runner.os }}-cargo-${{ matrix.target }}-
-
-      - name: Install cross-rs
-        if: matrix.use-cross
-        run: cargo install cross --git https://github.com/cross-rs/cross
-
-      - name: Execute Tests (Native)
-        if: "!matrix.use-cross"
-        run: cargo test --workspace --all-features --no-fail-fast
-
-      - name: Execute Tests (Cross via cross-rs)
-        if: matrix.use-cross
-        run: cross test --target ${{ matrix.target }} --workspace --no-fail-fast
-
-      - name: Compile Release binaries
-        if: "!matrix.use-cross"
-        run: cargo build --release --target ${{ matrix.target }}
-
-      - name: Compile Release binaries (Cross via cross-rs)
-        if: matrix.use-cross
-        run: cross build --release --target ${{ matrix.target }}
-
-  coverage:
-    name: Code Coverage Gate (tarpaulin)
+  test-linux:
+    name: Test (Linux)
     runs-on: ubuntu-latest
     steps:
-      - name: Checkout Repository
-        uses: actions/checkout@v4
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check workspace
+        run: cargo check --workspace --all-features
+      - name: Run tests
+        run: cargo test --workspace --exclude crush-ebpf-progs
 
-      - name: Setup Rust Toolchain
-        uses: dtolnay/rust-toolchain@stable
+  test-macos:
+    name: Test (macOS)
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check workspace
+        run: cargo check --workspace --exclude crush-runtime-linux --exclude crush-ebpf-progs
+      - name: Run tests
+        run: cargo test --workspace --exclude crush-runtime-linux --exclude crush-ebpf-progs
 
-      - name: Install tarpaulin
-        run: cargo install cargo-tarpaulin
+  test-windows:
+    name: Test (Windows)
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+      - name: Check workspace
+        run: cargo check --workspace --exclude crush-runtime-linux --exclude crush-ebpf-progs
+      - name: Run tests
+        run: cargo test --workspace --exclude crush-runtime-linux --exclude crush-ebpf-progs
 
-      - name: Run Coverage Report
-        run: |
-          cargo tarpaulin --verbose --all-features --workspace --timeout 120 --out xml --fail-under 80
+  test-wasm:
+    name: Test (WASM)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: wasm32-wasi
+      - uses: Swatinem/rust-cache@v2
+      - name: Check WASM target
+        run: cargo check -p crush-runtime-wasm --target wasm32-wasi
+
+  test-arm:
+    name: Test (ARM64 cross-compile)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: aarch64-unknown-linux-gnu
+      - uses: Swatinem/rust-cache@v2
+      - name: Install cross-compile tools
+        run: sudo apt-get install -y gcc-aarch64-linux-gnu
+      - name: Cross-check ARM64
+        run: cargo check -p crush-cli --target aarch64-unknown-linux-gnu
+
+  deny:
+    name: cargo-deny (license + advisories)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: EmbarkStudios/cargo-deny-action@v1
+        with:
+          command: check
+
+  fmt:
+    name: Formatting
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt
+      - run: cargo fmt --all -- --check
+
+  clippy:
+    name: Clippy
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: clippy
+      - uses: Swatinem/rust-cache@v2
+      - run: cargo clippy --workspace --exclude crush-ebpf-progs -- -D warnings

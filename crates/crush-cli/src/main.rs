@@ -7,11 +7,12 @@ use crush_types::*;
 use crush_build::{StackDetector, BuildEngine};
 use crush_image::ImageStore;
 use crush_compat::{DockerfileParser, ComposeLoader};
-use crush_ai::{TraceParser, DiagnosticEngine};
+use crush_ai::AiEngine;
 use crush_tui::TuiApp;
 use crush_api::ApiServer;
 use crush_registry::LocalRegistryServer;
 use crush_network::NetworkManager;
+use crush_reliability::{HealthChecker, HealthCheckConfig, HealthCheckType};
 
 #[cfg(target_os = "linux")]
 use crush_runtime_linux::runner::run_container;
@@ -39,6 +40,8 @@ struct Cli {
 enum Commands {
     #[command(about = "Auto-detect project stack, build an optimized image, and run it")]
     Default,
+    #[command(about = "Detect and print the project stack without building")]
+    Detect,
     #[command(about = "Explicitly build an image from a project root or Crushfile")]
     Build(BuildArgs),
     #[command(about = "Watch the project directory and hot-swap code on file changes")]
@@ -91,12 +94,24 @@ enum Commands {
     Update(UpdateArgs),
     #[command(about = "Start the Docker compatibility daemon serving over /var/run/crush.sock")]
     Daemon(DaemonArgs),
+    #[command(about = "Run health checks on a container")]
+    Health(HealthArgs),
+    #[command(about = "Auto-detect project stack and print inferred configuration")]
+    Detect,
+    #[command(about = "Generate shell completion scripts")]
+    Completions(CompletionsArgs),
 }
 
 #[derive(Args, Debug)]
 pub struct DaemonArgs {
     #[arg(short, long, help = "Unix socket path to bind", default_value = "/var/run/crush.sock")]
     pub socket: String,
+}
+
+#[derive(Args, Debug)]
+struct CompletionsArgs {
+    #[arg(help = "Shell to generate completions for", value_enum)]
+    shell: clap_complete::Shell,
 }
 
 #[derive(Args, Debug)]
@@ -337,6 +352,18 @@ struct UpdateArgs {
     check_only: bool,
 }
 
+#[derive(Args, Debug)]
+struct HealthArgs {
+    #[arg(help = "Container ID or name")]
+    id: String,
+    #[arg(long, help = "Health check command", default_value = "echo ok")]
+    cmd: String,
+    #[arg(long, help = "Timeout in seconds", default_value_t = 5)]
+    timeout: u64,
+    #[arg(long, help = "Retry count", default_value_t = 3)]
+    retries: u32,
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -362,6 +389,18 @@ async fn main() -> anyhow::Result<()> {
             let engine = BuildEngine::new(cache_dir);
             let digest = engine.execute_layered_build(&project_root, &stack).await?;
             println!("Build complete: digest={}", digest);
+        }
+        Commands::Detect => {
+            info!("Detecting project stack...");
+            let detector = StackDetector::new();
+            let project_root = std::env::current_dir()?;
+            let stack = detector.detect(&project_root).await?;
+            println!("Detected stack");
+            println!("  Language:   {}", stack.language);
+            println!("  Confidence: {:.0}%", stack.confidence * 100.0);
+            println!("  Build cmd:  {}", stack.build_command);
+            println!("  Entrypoint: {}", stack.entry_point);
+            println!("  Port:       {}", stack.default_port);
         }
         Commands::Build(args) => {
             info!("Building image: {} (platforms: {:?})", args.tag, args.platform);
@@ -633,29 +672,66 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Debug(args) => {
             info!("AI diagnosis debugger interactive session on container: {}", args.id);
-            let parser = TraceParser::new();
-            let sample_stderr = "TypeError: Cannot read properties of undefined (reading 'split')\n    at Object.handleRequest (src/server.ts:42:18)\n    at next (node_modules/express/lib/router/index.js:275:10)";
-
-            if let Some(trace) = parser.parse(sample_stderr) {
-                println!("\nParsed error trace:");
-                println!("  Language: {}", trace.language);
-                println!("  Exception: {}", trace.exception_type);
-                println!("  Message: {}", trace.message);
-                println!("  File: {}:{}", trace.file, trace.line);
-                println!("  Stack frames: {}", trace.stack_frames.len());
-
-                let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
-                let engine = DiagnosticEngine::new(api_key);
-                let diagnosis = engine.diagnose(&trace, None).await?;
-                println!("\nAI Diagnosis:");
-                println!("  Root cause: {}", diagnosis.root_cause);
-                println!("  Fix: {}", diagnosis.fix_description);
-                println!("  Confidence: {:.2}", diagnosis.confidence);
-                if let Some(patch) = &diagnosis.proposed_patch {
-                    println!("  Proposed patch:\n{}", patch);
+            // Find container directory by ID or name
+            let containers_dir = data_dir.join("containers");
+            let mut stderr_content: Option<String> = None;
+            let mut container_dir_found: Option<PathBuf> = None;
+            if containers_dir.exists() {
+                let mut entries = tokio::fs::read_dir(&containers_dir).await?;
+                while let Some(entry) = entries.next_entry().await? {
+                    let json_path = entry.path().join("container.json");
+                    if json_path.exists() {
+                        if let Ok(content) = tokio::fs::read_to_string(&json_path).await {
+                            if let Ok(c) = serde_json::from_str::<Container>(&content) {
+                                if c.id == args.id || c.name == args.id {
+                                    container_dir_found = Some(entry.path());
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
+            }
+            if let Some(ref cdir) = container_dir_found {
+                let stderr_path = cdir.join("stderr.log");
+                if stderr_path.exists() {
+                    stderr_content = tokio::fs::read_to_string(&stderr_path).await.ok();
+                }
+            }
+            let stderr = stderr_content.as_deref().unwrap_or("");
+            if stderr.is_empty() {
+                println!("No stderr log found for container {}. Nothing to diagnose.", args.id);
             } else {
-                println!("No parseable error trace found for container {}", args.id);
+                let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
+                let mut engine = AiEngine::new(api_key, data_dir.clone());
+                let project_root = std::env::current_dir().ok();
+                let full = engine.diagnose_stderr(
+                    stderr,
+                    None,
+                    project_root.as_deref(),
+                ).await?;
+                println!("\n=== AI Debug Diagnosis for container {} ===", args.id);
+                if let Some(ref trace) = full.trace {
+                    println!("  Language:  {}", trace.language);
+                    println!("  Exception: {}", trace.exception_type);
+                    println!("  Message:   {}", trace.message);
+                    println!("  File:      {}:{}", trace.file, trace.line);
+                    println!("  Frames:    {}", trace.stack_frames.len());
+                }
+                if let Some(ref diag) = full.diagnosis {
+                    println!("\n  Root cause:  {}", diag.root_cause);
+                    println!("  Fix:         {}", diag.fix_description);
+                    println!("  Confidence:  {:.2}", diag.confidence);
+                    if let Some(ref patch) = diag.proposed_patch {
+                        println!("  Patch:\n{}", patch);
+                    }
+                }
+                for be in &full.build_errors {
+                    println!("  Build error [{}]: {} at {}:{}", be.kind, be.message, be.file, be.line);
+                }
+                if full.trace.is_none() && full.diagnosis.is_none() && full.build_errors.is_empty() {
+                    println!("  No structured error found. Raw stderr:\n{}", stderr);
+                }
             }
         }
         Commands::Inspect(args) => {
@@ -939,6 +1015,34 @@ async fn main() -> anyhow::Result<()> {
             tokio::signal::ctrl_c().await?;
             server.stop().await?;
             println!("Daemon stopped.");
+        }
+        Commands::Health(args) => {
+            info!("Running health check on container: {}", args.id);
+            let cmd_parts: Vec<String> = args.cmd.split_whitespace().map(|s| s.to_string()).collect();
+            let config = HealthCheckConfig {
+                check_type: HealthCheckType::Exec { command: cmd_parts },
+                interval_secs: 30,
+                timeout_secs: args.timeout,
+                retries: args.retries,
+                start_period_secs: 0,
+                start_interval_secs: 5,
+            };
+            let checker = HealthChecker::new(config);
+            let status = checker.check().await;
+            println!("Health status for {}: {:?}", args.id, status);
+        }
+        Commands::Detect => {
+            let detector = StackDetector::new();
+            let project_root = std::env::current_dir()?;
+            let stack = detector.detect(&project_root).await?;
+            println!("{}", serde_json::to_string_pretty(&stack)?);
+        }
+        Commands::Completions(args) => {
+            use clap::CommandFactory;
+            use clap_complete::generate;
+            let mut cmd = Cli::command();
+            let name = cmd.get_name().to_string();
+            generate(args.shell, &mut cmd, name, &mut std::io::stdout());
         }
     }
 

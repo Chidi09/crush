@@ -24,8 +24,10 @@ crush-tui = { workspace = true }
 crush-api = { workspace = true }
 crush-registry = { workspace = true }
 crush-network = { workspace = true }
+crush-reliability = { workspace = true }
 dirs = "5.0"
 libc = "0.2"
+clap_complete = "4.5"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 crush-runtime-linux = { workspace = true }

@@ -20,6 +20,10 @@ use limits::WasmResourceLimits;
 use network::WasmNetworkProxy;
 use image::WasmImage;
 
+/// Default fuel budget for each WASM module execution (10 billion instructions).
+pub const DEFAULT_FUEL: u64 = 10_000_000_000;
+
+
 pub use router::{RuntimeRouter, ContainerRuntime};
 
 pub struct WasmRuntime {
@@ -131,6 +135,9 @@ impl RuntimeBackend for WasmRuntime {
 
         let mut store = Store::new(self.engine.engine(), host_ctx);
         self.limits.apply_to_store(&mut store);
+        // Ensure the full per-execution fuel budget is set after any limit-level fuel.
+        set_execution_fuel(&mut store, DEFAULT_FUEL);
+
 
         let linker = ComponentLoader::create_linker(self.engine.engine())?;
 
@@ -209,4 +216,17 @@ fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = sha2::Sha256::new();
     hasher.update(data);
     hex::encode(hasher.finalize())
+}
+
+/// Returns the default fuel budget applied to every WASM module execution.
+/// Fuel maps roughly to the number of Wasm instructions a guest may execute.
+pub fn max_fuel() -> u64 {
+    DEFAULT_FUEL
+}
+
+/// Sets the execution fuel on a store before running a WASM module.
+/// Call this immediately before `linker.instantiate()` / `func.call()` to give
+/// the guest a fresh instruction budget.
+pub fn set_execution_fuel(store: &mut Store<HostContext>, fuel: u64) {
+    store.set_fuel(fuel).ok();
 }

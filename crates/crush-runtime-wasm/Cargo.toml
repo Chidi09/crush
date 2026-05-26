@@ -14,7 +14,7 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 crush-types = { workspace = true }
-wasmtime = { version = "45.0", features = ["async", "cranelift", "component-model"] }
+wasmtime = { version = "45.0", features = ["async", "cranelift", "component-model", "fuel"] }
 wasmtime-wasi = "45.0"
 wasmtime-wasi-http = "45.0"
 cap-std = "4.0"
