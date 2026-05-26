@@ -16,6 +16,7 @@ async-trait = { workspace = true }
 crush-types = { workspace = true }
 nix = { version = "0.28", features = ["net", "sched"] }
 libc = "0.2"
+tracing = { workspace = true }
 ipnetwork = "0.20"
 pnet = "0.35"
 rtnetlink = "0.14"
