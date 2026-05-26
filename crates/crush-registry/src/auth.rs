@@ -28,12 +28,13 @@ impl AuthHandler {
             "dockerhub"
         } else if registry.contains("ghcr.io") {
             "ghcr"
+        } else if registry.contains("azurecr.io") {
+            // Must come before the ecr. check: "azurecr.io" contains the substring "ecr."
+            "acr"
         } else if registry.contains("ecr.") || registry.contains("amazonaws.com") {
             "ecr"
         } else if registry.contains("gcr.io") || registry.contains("pkg.dev") {
             "gcr"
-        } else if registry.contains("azurecr.io") {
-            "acr"
         } else if registry.contains("harbor") || registry.contains("core.harbor") {
             "harbor"
         } else {
