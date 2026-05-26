@@ -15,6 +15,7 @@ anyhow = { workspace = true }
 async-trait = { workspace = true }
 crush-types = { workspace = true }
 libc = "0.2"
+chrono = { version = "0.4", features = ["serde"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 nix = { version = "0.28", features = ["fs", "mount", "user"] }
@@ -24,5 +25,4 @@ hex = { workspace = true }
 tar = { workspace = true }
 flate2 = { workspace = true }
 zstd = { workspace = true }
-chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.13", features = ["v4"] }
