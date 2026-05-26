@@ -16,7 +16,10 @@ async-trait = { workspace = true }
 crush-types = { workspace = true }
 libloading = "0.8"
 uuid = { version = "1.8", features = ["v4", "serde"] }
-reqwest = { workspace = true }
+walkdir = "2"
+which = "6"
+sha2 = { workspace = true }
+hex = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.52", features = [
@@ -37,5 +40,6 @@ windows-sys = { version = "0.52", features = [
 hyper = { version = "1", features = ["http1", "client"] }
 hyper-util = { version = "0.1", features = ["client-legacy", "tokio"] }
 tower = { version = "0.4", features = ["util"] }
+http-body-util = "0.1"
 pin-project = "1.1"
 

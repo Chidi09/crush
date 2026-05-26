@@ -16,6 +16,12 @@ pub mod firecracker;
 pub mod creds;
 #[cfg(target_os = "windows")]
 pub mod service;
+#[cfg(target_os = "windows")]
+pub mod ext4_cache;
+#[cfg(target_os = "windows")]
+pub mod snapshot;
+#[cfg(target_os = "windows")]
+pub mod vm_pool;
 
 #[cfg(target_os = "windows")]
 mod windows_impl {
@@ -38,13 +44,34 @@ mod windows_impl {
         /// Dropping an entry closes the handle, which triggers JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         /// and terminates all processes in the job — this IS the stop() mechanism.
         job_handles: Arc<Mutex<HashMap<String, JobObject>>>,
+        data_dir: std::path::PathBuf,
+        pool: Arc<super::vm_pool::VmPool>,
     }
 
     impl WindowsRuntime {
         pub fn new() -> Self {
             let hcs = HcsManager::load().ok();
             let hns = HnsManager::load();
-            Self { hcs, hns, job_handles: Arc::new(Mutex::new(HashMap::new())) }
+            let data_dir = std::env::var("PROGRAMDATA")
+                .map(std::path::PathBuf::from)
+                .unwrap_or_else(|_| std::path::PathBuf::from(r"C:\ProgramData\Crush"));
+            std::fs::create_dir_all(&data_dir).ok();
+
+            let fc_binary = std::path::PathBuf::from(
+                std::env::var("CRUSH_FC_BINARY").unwrap_or_else(|_| r"C:\crush\boot\firecracker.exe".to_string())
+            );
+            let kernel_path = std::path::PathBuf::from(
+                std::env::var("CRUSH_FC_KERNEL").unwrap_or_else(|_| r"C:\crush\boot\vmlinux".to_string())
+            );
+            let pool = Arc::new(super::vm_pool::VmPool::new(&data_dir, fc_binary, kernel_path));
+
+            Self {
+                hcs,
+                hns,
+                job_handles: Arc::new(Mutex::new(HashMap::new())),
+                data_dir,
+                pool,
+            }
         }
 
         pub async fn start_with_config(
@@ -98,33 +125,17 @@ mod windows_impl {
             cmd: &[String],
             env: &[String],
             ports: &[crush_types::PortMapping],
+            image_digest: &str,
         ) -> anyhow::Result<()> {
-            use crate::firecracker::FirecrackerRunner;
+            // Warm the pool lazily on first call (non-blocking background warm)
+            let pool_clone_for_warm = self.pool.clone();
+            let digest_clone = image_digest.to_string();
+            tokio::spawn(async move {
+                let _ = pool_clone_for_warm.warm(&digest_clone).await;
+            });
 
-            let fc_binary = std::env::var("CRUSH_FC_BINARY")
-                .unwrap_or_else(|_| r"C:\crush\boot\firecracker.exe".to_string());
-            let kernel_path = std::env::var("CRUSH_FC_KERNEL")
-                .unwrap_or_else(|_| r"C:\crush\boot\vmlinux".to_string());
-
-            let socket_path = std::path::PathBuf::from(format!(
-                r"\\.\pipe\fc_{}",
-                &container_id[..12]
-            ));
-
-            // Convert rootfs to an ext4 image Firecracker can boot from
-            let rootfs_img = rootfs.with_extension("ext4");
-            FirecrackerRunner::pack_rootfs_to_ext4(rootfs, &rootfs_img)?;
-
-            let mut runner = FirecrackerRunner::new(
-                container_id.to_string(),
-                socket_path,
-                std::path::PathBuf::from(&fc_binary),
-                std::path::PathBuf::from(&kernel_path),
-                rootfs_img,
-            );
-
-            runner.boot(256, 2, cmd, env, ports).await?;
-            println!("[Firecracker] Linux container {} running", container_id);
+            let vm_id = self.pool.claim(image_digest, cmd, env, 256, ports).await?;
+            println!("[Windows] Linux container {} → VM {}", container_id, vm_id);
             Ok(())
         }
     }

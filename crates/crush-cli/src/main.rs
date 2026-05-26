@@ -1413,6 +1413,23 @@ async fn main() -> anyhow::Result<()> {
             println!("  Reference: {}", args.image);
             println!("  Digest: {}", image.digest);
             println!("  Layers: {}", image.layers.len());
+
+            // On Windows: pre-build ext4 drive so first `crush run` is instant
+            #[cfg(target_os = "windows")]
+            {
+                use crush_runtime_windows::ext4_cache::Ext4Cache;
+                let rootfs_staging = data_dir.join("staging").join(&image.id);
+                if !rootfs_staging.exists() {
+                    tokio::fs::create_dir_all(&rootfs_staging).await.ok();
+                    if store.extract_layers(&image.id, &rootfs_staging).await.is_ok() {
+                        let cache = Ext4Cache::new(&data_dir);
+                        match cache.build(&image.digest, &rootfs_staging) {
+                            Ok(path) => println!("  Cached ext4 drive: {}", path.display()),
+                            Err(e) => eprintln!("  [warn] ext4 cache build failed: {} (first run will be slower)", e),
+                        }
+                    }
+                }
+            }
         }
         Commands::Images(args) => {
             info!("Listing images (show intermediate: {})", args.all);
@@ -1967,7 +1984,16 @@ async fn main() -> anyhow::Result<()> {
                         .map_err(|e| CrushError::Internal(anyhow::anyhow!("Windows start failed: {}", e)))?;
                 } else {
                     // Linux container: Firecracker microVM path
-                    win_runtime.run_linux_container(&c.id, &rootfs, &config.cmd, &config.env, &c.ports).await
+                    let image_digest = store.database()
+                        .get_image_by_tag(&c.image).await
+                        .ok().flatten()
+                        .map(|img| img.digest.clone())
+                        .unwrap_or_else(|| c.image.clone());
+
+                    win_runtime.run_linux_container(
+                        &c.id, &rootfs, &config.cmd, &config.env, &c.ports,
+                        &image_digest,
+                    ).await
                         .map_err(|e| CrushError::Internal(anyhow::anyhow!("Firecracker start failed: {}", e)))?;
                 }
 

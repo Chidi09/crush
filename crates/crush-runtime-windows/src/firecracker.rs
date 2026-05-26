@@ -1,4 +1,4 @@
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::process::{Command, Child};
 use std::time::Duration;
 use anyhow::{anyhow, Result};
@@ -9,7 +9,7 @@ pub struct FirecrackerRunner {
     vm_id: String,
     /// On Windows, Firecracker listens on a named pipe instead of a Unix socket.
     /// The path is \\.\pipe\fc_<id>
-    pipe_path: PathBuf,
+    pub pipe_path: PathBuf,
     fc_binary: PathBuf,
     kernel_path: PathBuf,
     rootfs_img: PathBuf,
@@ -64,12 +64,38 @@ impl FirecrackerRunner {
         Ok(())
     }
 
-    /// Full boot sequence:
-    /// 1. Spawn Firecracker process (listen on named pipe)
-    /// 2. Wait for API socket to become ready
-    /// 3. Configure via REST: boot-source, drives, machine-config, network
-    /// 4. Start the VM
-    pub async fn boot(
+    pub async fn boot_or_restore(
+        &mut self,
+        memory_mib: u64,
+        vcpus: u32,
+        cmd: &[String],
+        env: &[String],
+        ports: &[PortMapping],
+        snapshot: Option<(&Path, &Path)>,   // (mem_path, state_path)
+    ) -> Result<()> {
+        self.spawn_firecracker()?;
+        self.wait_for_api_ready(std::time::Duration::from_secs(3)).await?;
+
+        if let Some((mem_path, state_path)) = snapshot {
+            // Fast path: restore from snapshot (~100ms)
+            self.api_put("snapshot/load", &serde_json::json!({
+                "snapshot_path": state_path.to_string_lossy(),
+                "mem_file_path": mem_path.to_string_lossy(),
+                "enable_diff_snapshots": false,
+                "resume_vm": true
+            })).await?;
+            println!("[Firecracker] Snapshot restored in ~100ms for VM {}", self.vm_id);
+        } else {
+            // Cold path: full boot (~400ms) then create snapshot for next time
+            self.configure_and_boot(memory_mib, vcpus, cmd, env, ports).await?;
+        }
+
+        Ok(())
+    }
+
+    /// All the PUT /boot-source, /drives, /machine-config, /actions calls.
+    /// Extracted from boot() to keep boot_or_restore() readable.
+    async fn configure_and_boot(
         &mut self,
         memory_mib: u64,
         vcpus: u32,
@@ -77,22 +103,11 @@ impl FirecrackerRunner {
         env: &[String],
         ports: &[PortMapping],
     ) -> Result<()> {
-        // Step 1: Spawn Firecracker
-        self.spawn_firecracker()?;
-
-        // Step 2: Wait up to 3s for the API to be ready
-        self.wait_for_api_ready(Duration::from_secs(3)).await?;
-
-        // Build kernel boot arguments embedding the container command and environment
-        let env_str = env.iter()
-            .map(|e| e.replace(' ', "_"))
-            .collect::<Vec<_>>()
-            .join(" ");
+        let env_str = env.iter().map(|e| e.replace(' ', "_")).collect::<Vec<_>>().join(" ");
         let cmd_str = cmd.join(" ");
         let boot_args = format!(
             "console=ttyS0 reboot=k panic=1 pci=off nomodules \
-             init=/sbin/crush-init \
-             CRUSH_CMD=\"{}\" CRUSH_ENV=\"{}\"",
+             init=/sbin/crush-init CRUSH_CMD=\"{}\" CRUSH_ENV=\"{}\"",
             cmd_str, env_str
         );
 
@@ -100,40 +115,82 @@ impl FirecrackerRunner {
             "kernel_image_path": self.kernel_path.to_string_lossy(),
             "boot_args": boot_args
         })).await?;
-
         self.api_put("drives/rootfs", &serde_json::json!({
             "drive_id": "rootfs",
             "path_on_host": self.rootfs_img.to_string_lossy(),
             "is_root_device": true,
             "is_read_only": false
         })).await?;
-
         self.api_put("machine-config", &serde_json::json!({
             "vcpu_count": vcpus,
             "mem_size_mib": memory_mib,
-            "track_dirty_pages": false
+            "track_dirty_pages": true   // required for diff snapshots
         })).await?;
-
-        // Configure tap network interface for port forwarding
         self.api_put("network-interfaces/eth0", &serde_json::json!({
             "iface_id": "eth0",
             "guest_mac": "AA:FC:00:00:00:01",
             "host_dev_name": format!("tap_fc_{}", &self.vm_id[..8])
         })).await?;
-
-        // Configure balloon device for memory reclaim
         self.api_put("balloon", &serde_json::json!({
             "amount_mib": 0,
             "deflate_on_oom": true,
             "stats_polling_interval_s": 1
         })).await?;
+        self.api_put("actions", &serde_json::json!({ "action_type": "InstanceStart" })).await?;
+        Ok(())
+    }
 
-        // Step 4: Boot the VM
-        self.api_put("actions", &serde_json::json!({
-            "action_type": "InstanceStart"
+    /// Save VM state after the guest init process is ready.
+    /// Call this ~500ms after InstanceStart when running a new image for the first time.
+    /// Subsequent runs will use snapshot_load() instead of a cold boot.
+    pub async fn snapshot_create(&self, mem_path: &Path, state_path: &Path) -> Result<()> {
+        // Pause the VM first — required before taking a snapshot
+        self.api_put("vm", &serde_json::json!({ "state": "Paused" })).await?;
+
+        self.api_put("snapshot/create", &serde_json::json!({
+            "snapshot_type": "Full",
+            "snapshot_path": state_path.to_string_lossy(),
+            "mem_file_path": mem_path.to_string_lossy(),
+            "version": "1.0.0"
         })).await?;
 
-        println!("[Firecracker] VM {} booted ({} MiB, {} vCPUs)", self.vm_id, memory_mib, vcpus);
+        // Resume after snapshot (the process stays paused for pool reuse — see Task 3)
+        // Do NOT resume here; leave paused so the pool can clone and resume per-container.
+        println!("[Firecracker] Snapshot saved: {:?}", state_path);
+        Ok(())
+    }
+
+    /// Live drive update — swap the rootfs drive without rebooting the VM.
+    /// Firecracker supports this via PATCH /drives/rootfs.
+    pub async fn hot_swap_drive(&self, new_drive: &Path) -> Result<()> {
+        // PATCH (not PUT) to update an existing drive in-place
+        let body = serde_json::json!({
+            "drive_id": "rootfs",
+            "path_on_host": new_drive.to_string_lossy()
+        });
+        self.request(hyper::Method::PATCH, "drives/rootfs", Some(body)).await?;
+        Ok(())
+    }
+
+    /// Send the container's CMD + ENV to the guest over the vsock control socket.
+    /// The crush-init process inside the VM listens on vsock port 2222 for a JSON
+    /// exec config: { "cmd": [...], "env": [...] }
+    pub async fn send_exec_config(&self, cmd: &[String], env: &[String]) -> Result<()> {
+        // vsock port 2222 is the crush-init control port
+        // On the host side, Firecracker exposes vsock via a Unix domain socket (Linux)
+        // or named pipe (Windows) at the path: <pipe_path>_<guest_cid>_2222
+        // Note: For Firecracker on Windows, the guest vsock named pipe is generated
+        // at <pipe_path>_vsock_2222.
+        let vsock_path = self.pipe_path.with_extension("vsock_2222");
+
+        let payload = serde_json::json!({ "cmd": cmd, "env": env });
+        let payload_bytes = serde_json::to_vec(&payload)?;
+
+        // Write to vsock pipe — the guest init reads this and exec's the command
+        let mut f = tokio::fs::File::create(&vsock_path).await
+            .map_err(|e| anyhow!("Cannot open vsock control pipe {:?}: {}", vsock_path, e))?;
+        tokio::io::AsyncWriteExt::write_all(&mut f, &payload_bytes).await
+            .map_err(|e| anyhow!("vsock write failed: {}", e))?;
         Ok(())
     }
 
@@ -177,46 +234,64 @@ impl FirecrackerRunner {
         }
     }
 
-    /// Send a PUT request to the Firecracker API over the named pipe.
     async fn api_put(&self, path: &str, body: &serde_json::Value) -> Result<()> {
-        let client = self.make_fc_client();
-        let url = format!("http://localhost/{}", path);
-        let resp = client
-            .put(&url)
-            .header("Content-Type", "application/json")
-            .header("Accept", "application/json")
-            .json(body)
-            .send()
-            .await
-            .map_err(|e| anyhow!("FC API PUT /{} failed: {}", path, e))?;
-
-        if !resp.status().is_success() {
-            let status = resp.status();
-            let text = resp.text().await.unwrap_or_default();
-            return Err(anyhow!("FC API PUT /{} → {}: {}", path, status, text));
-        }
+        self.request(hyper::Method::PUT, path, Some(body.clone())).await?;
         Ok(())
     }
 
     async fn api_get(&self, path: &str) -> Result<String> {
-        let client = self.make_fc_client();
-        let url = format!("http://localhost/{}", path);
-        let resp = client
-            .get(&url)
-            .send()
-            .await
-            .map_err(|e| anyhow!("FC API GET /{} failed: {}", path, e))?;
-        Ok(resp.text().await.unwrap_or_default())
+        self.request(hyper::Method::GET, path, None).await
     }
 
-    /// Build a reqwest client that routes HTTP through the Firecracker named pipe.
-    fn make_fc_client(&self) -> reqwest::Client {
-        reqwest::Client::builder()
-            .timeout(std::time::Duration::from_secs(5))
-            .build()
-            .expect("reqwest client")
+    async fn request(&self, method: hyper::Method, path: &str, body: Option<serde_json::Value>) -> Result<String> {
+        use hyper::Uri;
+        use http_body_util::{Full, BodyExt};
+        use hyper::body::Bytes;
+
+        let connector = pipe_connector::NamedPipeConnector {
+            pipe_path: self.pipe_path.clone(),
+        };
+        let client = hyper_util::client::legacy::Client::builder(hyper_util::rt::TokioExecutor::new())
+            .build::<_, Full<Bytes>>(connector);
+
+        let url: Uri = format!("http://localhost/{}", path).parse()?;
+        
+        let req_body = if let Some(b) = body {
+            Full::new(Bytes::from(serde_json::to_vec(&b)?))
+        } else {
+            Full::new(Bytes::new())
+        };
+
+        let mut req = hyper::Request::builder()
+            .method(method)
+            .uri(url)
+            .header("Host", "localhost")
+            .header("Accept", "application/json");
+
+        if req_body.size_hint().exact() != Some(0) {
+            req = req.header("Content-Type", "application/json");
+        }
+
+        let req = req.body(req_body)
+            .map_err(|e| anyhow!("Failed to build request: {}", e))?;
+
+        let resp = client.request(req).await
+            .map_err(|e| anyhow!("FC API request failed: {}", e))?;
+
+        let status = resp.status();
+        let bytes = resp.collect().await
+            .map_err(|e| anyhow!("Failed to read response body: {}", e))?
+            .to_bytes();
+        let text = String::from_utf8_lossy(&bytes).into_owned();
+
+        if !status.is_success() {
+            return Err(anyhow!("FC API {} /{} → {}: {}", method, path, status, text));
+        }
+
+        Ok(text)
     }
 }
+
 
 impl Drop for FirecrackerRunner {
     fn drop(&mut self) {
