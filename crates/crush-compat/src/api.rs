@@ -45,6 +45,63 @@ struct DockerImageSummary {
     Labels: Option<std::collections::HashMap<String, String>>,
 }
 
+#[pin_project::pin_project(project = AnyStreamProj)]
+enum AnyStream {
+    Unix(#[pin] tokio::net::UnixStream),
+    #[cfg(windows)]
+    Pipe(#[pin] tokio::net::windows::named_pipe::NamedPipeServer),
+}
+
+impl tokio::io::AsyncRead for AnyStream {
+    fn poll_read(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &mut tokio::io::ReadBuf<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.project() {
+            AnyStreamProj::Unix(stream) => stream.poll_read(cx, buf),
+            #[cfg(windows)]
+            AnyStreamProj::Pipe(stream) => stream.poll_read(cx, buf),
+        }
+    }
+}
+
+impl tokio::io::AsyncWrite for AnyStream {
+    fn poll_write(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+        buf: &[u8],
+    ) -> std::task::Poll<std::io::Result<usize>> {
+        match self.project() {
+            AnyStreamProj::Unix(stream) => stream.poll_write(cx, buf),
+            #[cfg(windows)]
+            AnyStreamProj::Pipe(stream) => stream.poll_write(cx, buf),
+        }
+    }
+
+    fn poll_flush(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.project() {
+            AnyStreamProj::Unix(stream) => stream.poll_flush(cx),
+            #[cfg(windows)]
+            AnyStreamProj::Pipe(stream) => stream.poll_flush(cx),
+        }
+    }
+
+    fn poll_shutdown(
+        self: std::pin::Pin<&mut Self>,
+        cx: &mut std::task::Context<'_>,
+    ) -> std::task::Poll<std::io::Result<()>> {
+        match self.project() {
+            AnyStreamProj::Unix(stream) => stream.poll_shutdown(cx),
+            #[cfg(windows)]
+            AnyStreamProj::Pipe(stream) => stream.poll_shutdown(cx),
+        }
+    }
+}
+
 impl DockerApiServer {
     pub fn new(socket_path: PathBuf, data_dir: PathBuf, backend: Arc<dyn crush_types::RuntimeBackend>) -> Self {
         Self {
@@ -56,6 +113,18 @@ impl DockerApiServer {
     }
 
     pub async fn start(&self) -> Result<()> {
+        #[cfg(unix)]
+        {
+            self.start_unix().await
+        }
+        #[cfg(windows)]
+        {
+            self.start_windows_pipe().await
+        }
+    }
+
+    #[cfg(unix)]
+    async fn start_unix(&self) -> Result<()> {
         let _ = tokio::fs::remove_file(&self.socket_path).await;
         
         if let Some(parent) = self.socket_path.parent() {
@@ -83,13 +152,69 @@ impl DockerApiServer {
                     Ok((stream, _)) => {
                         let dir = data_dir.clone();
                         let b = backend.clone();
-                        tokio::spawn(async move { handle_api_connection(stream, dir, b).await.ok(); });
+                        tokio::spawn(async move {
+                            handle_api_connection(AnyStream::Unix(stream), dir, b).await.ok();
+                        });
                     }
                     Err(e) => {
                         eprintln!("API error: {}", e);
                         break;
                     }
                 }
+            }
+        });
+        Ok(())
+    }
+
+    #[cfg(windows)]
+    async fn start_windows_pipe(&self) -> Result<()> {
+        use tokio::net::windows::named_pipe::ServerOptions;
+
+        let pipe_name = format!("\\\\.\\pipe\\{}",
+            self.socket_path.file_name()
+                .and_then(|n| n.to_str())
+                .unwrap_or("crush_engine"));
+
+        println!("Docker compat daemon on {}", pipe_name);
+
+        {
+            let mut s = self.running.lock().await;
+            *s = true;
+        }
+
+        let running = self.running.clone();
+        let data_dir = self.data_dir.clone();
+        let backend = self.backend.clone();
+
+        tokio::spawn(async move {
+            loop {
+                {
+                    if !*running.lock().await { break; }
+                }
+                
+                let mut options = ServerOptions::new();
+                options.first_pipe_instance(false);
+                
+                let server = match options.create(&pipe_name) {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("Named pipe create error: {}", e);
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        continue;
+                    }
+                };
+
+                if let Err(e) = server.connect().await {
+                    eprintln!("Pipe connect error: {}", e);
+                    continue;
+                }
+
+                let data_dir_clone = data_dir.clone();
+                let backend_clone = backend.clone();
+
+                tokio::spawn(async move {
+                    let _ = handle_api_connection(AnyStream::Pipe(server), data_dir_clone, backend_clone).await;
+                });
             }
         });
         Ok(())
@@ -106,7 +231,7 @@ impl DockerApiServer {
 }
 
 async fn handle_api_connection(
-    mut stream: tokio::net::UnixStream, data_dir: PathBuf, backend: Arc<dyn crush_types::RuntimeBackend>,
+    mut stream: AnyStream, data_dir: PathBuf, backend: Arc<dyn crush_types::RuntimeBackend>,
 ) -> Result<()> {
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, AsyncReadExt, BufReader};
     let mut reader = BufReader::new(&mut stream);

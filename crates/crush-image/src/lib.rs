@@ -88,6 +88,82 @@ impl ImageStore {
         let mut c = self.registry_client.lock().await;
         *c = client;
     }
+
+    pub async fn export_image(&self, tag: &str, output: &Path) -> Result<()> {
+        let image = match self.db.get_image_by_digest(tag).await? {
+            Some(img) => img,
+            None => self.db.get_image_by_tag(tag).await?
+                .ok_or_else(|| CrushError::ContainerNotFound(format!("Image {} not found", tag)))?,
+        };
+
+        // Create the output tarball
+        let file = std::fs::File::create(output)
+            .map_err(|e| CrushError::StorageError(format!("Failed to create export file: {}", e)))?;
+        let mut archive = tar::Builder::new(file);
+
+        // 1. Add layers as individual tar entries
+        let mut manifest_layers = Vec::new();
+        for (i, layer_digest) in image.layers.iter().enumerate() {
+            let layer_path = self.blobs.path_for_digest(layer_digest);
+            if layer_path.exists() {
+                let layer_filename = format!("layer_{}.tar", i);
+                let data = std::fs::read(&layer_path)
+                    .map_err(|e| CrushError::StorageError(format!("Failed to read layer: {}", e)))?;
+                
+                let mut header = tar::Header::new_gnu();
+                header.set_size(data.len() as u64);
+                header.set_mode(0o644);
+                archive.append_data(&mut header, &layer_filename, std::io::Cursor::new(data))
+                    .map_err(|e| CrushError::StorageError(format!("Failed to write layer to archive: {}", e)))?;
+                
+                manifest_layers.push(layer_filename);
+            }
+        }
+
+        // 2. Add config.json
+        let config_data = if let Some(ref cfg_digest) = image.config_digest {
+            self.blobs.read_blob(cfg_digest).unwrap_or_default()
+        } else {
+            // Generate a fallback config
+            serde_json::to_vec(&serde_json::json!({
+                "config": {
+                    "Cmd": image.cmd,
+                    "Entrypoint": image.entrypoint,
+                    "Env": image.env,
+                },
+                "architecture": image.architecture,
+                "os": image.os,
+            })).unwrap_or_default()
+        };
+
+        let mut config_header = tar::Header::new_gnu();
+        config_header.set_size(config_data.len() as u64);
+        config_header.set_mode(0o644);
+        archive.append_data(&mut config_header, "config.json", std::io::Cursor::new(config_data))
+            .map_err(|e| CrushError::StorageError(format!("Failed to write config to archive: {}", e)))?;
+
+        // 3. Add manifest.json
+        let manifest_json = serde_json::json!([
+            {
+                "Config": "config.json",
+                "RepoTags": vec![image.tag.clone()],
+                "Layers": manifest_layers,
+            }
+        ]);
+        let manifest_data = serde_json::to_vec(&manifest_json)
+            .map_err(|e| CrushError::ImageError(format!("Serialization error: {}", e)))?;
+
+        let mut manifest_header = tar::Header::new_gnu();
+        manifest_header.set_size(manifest_data.len() as u64);
+        manifest_header.set_mode(0o644);
+        archive.append_data(&mut manifest_header, "manifest.json", std::io::Cursor::new(manifest_data))
+            .map_err(|e| CrushError::StorageError(format!("Failed to write manifest to archive: {}", e)))?;
+
+        archive.into_inner()
+            .map_err(|e| CrushError::StorageError(format!("Failed to finalize archive: {}", e)))?;
+
+        Ok(())
+    }
 }
 
 #[async_trait]
