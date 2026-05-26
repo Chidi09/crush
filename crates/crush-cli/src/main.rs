@@ -16,6 +16,9 @@ use crush_network::NetworkManager;
 #[cfg(target_os = "linux")]
 use crush_runtime_linux::runner::run_container;
 
+#[cfg(unix)]
+use libc;
+
 #[derive(Parser, Debug)]
 #[command(name = "crush")]
 #[command(author = "Crush Contributors")]
