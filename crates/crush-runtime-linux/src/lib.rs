@@ -289,7 +289,8 @@ fn dirs_or_default() -> PathBuf {
     } else if cfg!(target_os = "windows") {
         PathBuf::from(std::env::var("PROGRAMDATA").unwrap_or_else(|_| "C:\\ProgramData\\Crush".to_string()))
     } else {
-        dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("crush")
+        let home = std::env::var("HOME").unwrap_or_else(|_| ".".to_string());
+        PathBuf::from(home).join(".crush")
     };
     std::fs::create_dir_all(&base).ok();
     base

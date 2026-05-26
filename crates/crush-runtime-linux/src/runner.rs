@@ -42,8 +42,9 @@ pub fn run_container(rootfs: &Path, command: &[String], env_vars: &[String]) -> 
                 | nix::sched::CloneFlags::CLONE_NEWIPC
                 | nix::sched::CloneFlags::CLONE_NEWCGROUP;
             
-            let all_flags = base_flags | nix::sched::CloneFlags::CLONE_NEWTIME;
-            if nix::sched::unshare(all_flags).is_err() {
+            // Try to unshare with TIME namespace (0x00000080)
+            let all_flags = base_flags.bits() | 0x00000080;
+            if libc::unshare(all_flags) != 0 {
                 nix::sched::unshare(base_flags)
                     .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
             }
