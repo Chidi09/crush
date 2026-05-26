@@ -25,7 +25,7 @@ impl CgroupManager {
 
     pub fn enforce_memory_limit(&self, max_bytes: u64) -> Result<()> {
         self.write_file("memory.max", max_bytes.to_string())?;
-        self.write_file("memory.oom.group", "1")
+        self.write_file("memory.oom.group", "1".to_string())
     }
 
     pub fn enforce_cpu_limit(&self, cpu_weight: u64) -> Result<()> {
@@ -37,7 +37,7 @@ impl CgroupManager {
     }
 
     pub fn set_freeze_state(&self, freeze: bool) -> Result<()> {
-        self.write_file("cgroup.freeze", if freeze { "1" } else { "0" })
+        self.write_file("cgroup.freeze", if freeze { "1".to_string() } else { "0".to_string() })
     }
 
     pub fn add_process_to_cgroup(&self, pid: u32) -> Result<()> {

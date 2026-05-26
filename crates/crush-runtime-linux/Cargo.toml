@@ -14,7 +14,7 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 crush-types = { workspace = true }
-nix = { version = "0.28", features = ["sched", "mount", "user", "process", "signal"] }
+nix = { version = "0.28", features = ["sched", "mount", "user", "process", "signal", "fs"] }
 libc = "0.2"
 caps = "0.5"
 procfs = "0.16"

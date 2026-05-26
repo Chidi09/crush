@@ -331,7 +331,7 @@ async fn main() -> anyhow::Result<()> {
 
     let cli = Cli::parse();
     let data_dir = dirs_or_default();
-    let store = ImageStore::new(data_dir.join("images"));
+    let store = ImageStore::new(data_dir.join("images")).await?;
     store.rebuild_image_db().await.ok();
 
     match cli.command {
@@ -459,7 +459,7 @@ async fn main() -> anyhow::Result<()> {
             let parser = TraceParser::new();
             let sample_stderr = "TypeError: Cannot read properties of undefined (reading 'split')\n    at Object.handleRequest (src/server.ts:42:18)\n    at next (node_modules/express/lib/router/index.js:275:10)";
 
-            if let Some(trace) = parser.parse_stderr(sample_stderr) {
+            if let Some(trace) = parser.parse(sample_stderr) {
                 println!("\nParsed error trace:");
                 println!("  Language: {}", trace.language);
                 println!("  Exception: {}", trace.exception_type);
@@ -469,7 +469,7 @@ async fn main() -> anyhow::Result<()> {
 
                 let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
                 let engine = DiagnosticEngine::new(api_key);
-                let diagnosis = engine.diagnose(&trace).await?;
+                let diagnosis = engine.diagnose(&trace, None).await?;
                 println!("\nAI Diagnosis:");
                 println!("  Root cause: {}", diagnosis.root_cause);
                 println!("  Fix: {}", diagnosis.fix_description);
@@ -634,7 +634,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Network(args) => {
             info!("Network management operation: {:?}", args.subcommand);
-            let net = NetworkManager::new();
+            let net = NetworkManager::new(data_dir.join("networks"));
             match args.subcommand {
                 NetworkSubcommand::Create { name, subnet } => {
                     let subnet_str = subnet.unwrap_or_else(|| "172.18.0.0/16".to_string());

@@ -39,7 +39,6 @@ impl CapabilitiesManager {
             Capability::CAP_SYS_TTY_CONFIG,
             Capability::CAP_SYSLOG,
             Capability::CAP_NET_ADMIN,
-            Capability::CAP_NET_CONTROL,
             Capability::CAP_MAC_ADMIN,
             Capability::CAP_MAC_OVERRIDE,
             Capability::CAP_LINUX_IMMUTABLE,
@@ -67,9 +66,7 @@ impl CapabilitiesManager {
             for cap in &permitted {
                 let cap_str = format!("{:?}", cap);
                 if self.effective_set.contains(&cap_str) {
-                    caps::set(None, CapSet::Ambient, caps::CapState {
-                        effective: true, permitted: true, inheritable: false,
-                    }, *cap).ok();
+                    caps::raise(None, CapSet::Ambient, *cap).ok();
                 }
             }
         }
