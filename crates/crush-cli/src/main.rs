@@ -104,6 +104,14 @@ enum Commands {
     Completions(CompletionsArgs),
     #[command(hide = true)]
     InternalRun(InternalRunArgs),
+    #[command(hide = true)]
+    __Complete(CompleteArgs),
+}
+
+#[derive(Args, Debug, Clone)]
+pub struct CompleteArgs {
+    #[arg(help = "The category of completions to fetch (containers, images, networks, volumes)")]
+    pub category: String,
 }
 
 #[derive(Args, Debug)]
@@ -426,14 +434,242 @@ async fn main() -> anyhow::Result<()> {
             info!("Developer watch active (debounce: {}ms)", args.debounce);
             let project_root = std::env::current_dir()?;
             let cache_dir = data_dir.join("cache");
-            let engine = BuildEngine::new(cache_dir);
+            let engine = BuildEngine::new(cache_dir.clone());
             let detector = StackDetector::new();
             let stack = detector.detect(&project_root).await?;
 
-            loop {
-                let digest = engine.execute_layered_build(&project_root, &stack).await?;
+            // 1. Initial build & register image
+            let digest = engine.execute_layered_build(&project_root, &stack).await?;
+            println!("[Watch] Initial build complete: {}", digest);
+
+            // Copy layer to image store blobs
+            let layer_file = cache_dir.join("layers").join(digest.replace(':', "_"));
+            let blob_dest = store.blob_store().path_for_digest(&digest);
+            if let Some(parent) = blob_dest.parent() {
+                tokio::fs::create_dir_all(parent).await.ok();
+            }
+            tokio::fs::copy(&layer_file, &blob_dest).await.ok();
+
+            let img = Image {
+                id: digest.clone(),
+                tag: "app:latest".to_string(),
+                digest: digest.clone(),
+                size_bytes: tokio::fs::metadata(&layer_file).await.map(|m| m.len()).unwrap_or(0),
+                layers: vec![digest.clone()],
+                architecture: "amd64".to_string(),
+                os: "linux".to_string(),
+                entrypoint: vec![],
+                cmd: vec![stack.entry_point.clone()],
+                env: vec![format!("PORT={}", stack.default_port)],
+                config_digest: None,
+            };
+            store.database().put_image(&img).await?;
+
+            let container_id = format!("crush_{}", hex_encode_random());
+            let container_name = "crush_watch_blue".to_string();
+            let rootfs = data_dir.join("containers").join(&container_id).join("rootfs");
+            tokio::fs::create_dir_all(&rootfs).await.ok();
+            store.extract_layers(&img.id, &rootfs).await?;
+
+            let container = Container {
+                id: container_id.clone(),
+                name: container_name.clone(),
+                image: img.tag.clone(),
+                status: ContainerStatus::Creating,
+                pid: None,
+                created_at: SystemTime::now(),
+                started_at: None,
+                ports: vec![],
+                mounts: vec![],
+                memory_limit_bytes: None,
+                cpu_shares: None,
+            };
+
+            let container_dir = data_dir.join("containers").join(&container_id);
+            let backend = StatelessEngine::new(data_dir.clone());
+            backend.create(&container, &container_dir).await?;
+
+            let config_json = serde_json::json!({
+                "cmd": vec![stack.entry_point.clone()],
+                "env": vec![format!("PORT={}", stack.default_port)],
+            });
+            let config_json_path = container_dir.join("config.json");
+            tokio::fs::write(&config_json_path, serde_json::to_string_pretty(&config_json)?).await?;
+
+            // Spin it up in background (detached mode)
+            backend.start(&container_id).await?;
+            println!("[Watch] Started container (Blue): {}", container_id);
+
+            #[cfg(target_os = "linux")]
+            let mut current_net = {
+                let orchestrator = crush_network::NetworkOrchestrator::new(data_dir.clone());
+                let ports = vec![PortMapping {
+                    host_port: stack.default_port,
+                    container_port: stack.default_port,
+                    protocol: Protocol::Tcp,
+                }];
+                match orchestrator.setup_container_network(&container_id, &container_name, crush_network::modes::NetworkMode::Bridge, &ports).await {
+                    Ok(net) => {
+                        println!("[Watch] Configured network for {}: IP {:?}", container_id, net.container_ip);
+                        Some(net)
+                    }
+                    Err(e) => {
+                        eprintln!("[Watch] Network setup warning: {}", e);
+                        None
+                    }
+                }
+            };
+            
+            #[cfg(not(target_os = "linux"))]
+            let mut current_net: Option<crush_network::ContainerNetwork> = None;
+
+            let mut active_container_id = container_id;
+            let mut active_container_name = container_name;
+
+            let (tx, mut rx) = tokio::sync::mpsc::channel::<crush_tui::ChangeClass>(10);
+            let project_root_clone = project_root.clone();
+            
+            // Start watcher
+            let _watcher = crush_tui::watch::FileWatcher::new(&[&project_root_clone], move |change| {
+                let _ = tx.blocking_send(change);
+            })?;
+
+            while let Some(change) = rx.recv().await {
+                println!("[Watch] Change detected: {:?}", change);
+                // Perform build
+                let digest = match engine.execute_layered_build(&project_root, &stack).await {
+                    Ok(d) => d,
+                    Err(e) => {
+                        eprintln!("[Watch] Build failed: {}", e);
+                        continue;
+                    }
+                };
+                
                 println!("[Watch] Rebuild complete: {}", digest);
-                tokio::time::sleep(tokio::time::Duration::from_millis(args.debounce * 10)).await;
+
+                // Copy layer to image store blobs
+                let layer_file = cache_dir.join("layers").join(digest.replace(':', "_"));
+                let blob_dest = store.blob_store().path_for_digest(&digest);
+                if let Some(parent) = blob_dest.parent() {
+                    tokio::fs::create_dir_all(parent).await.ok();
+                }
+                tokio::fs::copy(&layer_file, &blob_dest).await.ok();
+
+                let img = Image {
+                    id: digest.clone(),
+                    tag: "app:latest".to_string(),
+                    digest: digest.clone(),
+                    size_bytes: tokio::fs::metadata(&layer_file).await.map(|m| m.len()).unwrap_or(0),
+                    layers: vec![digest.clone()],
+                    architecture: "amd64".to_string(),
+                    os: "linux".to_string(),
+                    entrypoint: vec![],
+                    cmd: vec![stack.entry_point.clone()],
+                    env: vec![format!("PORT={}", stack.default_port)],
+                    config_digest: None,
+                };
+                if let Err(e) = store.database().put_image(&img).await {
+                    eprintln!("[Watch] DB register failed: {}", e);
+                    continue;
+                }
+
+                // --- Blue-Green Hot-Swap Protocol ---
+                let green_id = format!("crush_{}", hex_encode_random());
+                let green_name = if active_container_name == "crush_watch_blue" {
+                    "crush_watch_green".to_string()
+                } else {
+                    "crush_watch_blue".to_string()
+                };
+
+                println!("[Watch] Spawning new container (Green): {} ({})", green_id, green_name);
+                let rootfs = data_dir.join("containers").join(&green_id).join("rootfs");
+                tokio::fs::create_dir_all(&rootfs).await.ok();
+                if let Err(e) = store.extract_layers(&img.id, &rootfs).await {
+                    eprintln!("[Watch] Layer extraction failed: {}", e);
+                    continue;
+                }
+
+                let green_container = Container {
+                    id: green_id.clone(),
+                    name: green_name.clone(),
+                    image: img.tag.clone(),
+                    status: ContainerStatus::Creating,
+                    pid: None,
+                    created_at: SystemTime::now(),
+                    started_at: None,
+                    ports: vec![],
+                    mounts: vec![],
+                    memory_limit_bytes: None,
+                    cpu_shares: None,
+                };
+
+                let green_dir = data_dir.join("containers").join(&green_id);
+                if let Err(e) = backend.create(&green_container, &green_dir).await {
+                    eprintln!("[Watch] Create failed: {}", e);
+                    continue;
+                }
+
+                let config_json = serde_json::json!({
+                    "cmd": vec![stack.entry_point.clone()],
+                    "env": vec![format!("PORT={}", stack.default_port)],
+                });
+                let config_json_path = green_dir.join("config.json");
+                if let Err(e) = tokio::fs::write(&config_json_path, serde_json::to_string_pretty(&config_json)?).await {
+                    eprintln!("[Watch] Config write failed: {}", e);
+                    continue;
+                }
+
+                if let Err(e) = backend.start(&green_id).await {
+                    eprintln!("[Watch] Start failed: {}", e);
+                    continue;
+                }
+
+                // 2. Wait for health checks to pass (or fallback to 200ms delay)
+                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+
+                // 3. Atomically switch port-forwarding rules (`crush_nat`) via CNI/nftables
+                #[cfg(target_os = "linux")]
+                let green_net = {
+                    let orchestrator = crush_network::NetworkOrchestrator::new(data_dir.clone());
+                    let ports = vec![PortMapping {
+                        host_port: stack.default_port,
+                        container_port: stack.default_port,
+                        protocol: Protocol::Tcp,
+                    }];
+                    match orchestrator.setup_container_network(&green_id, &green_name, crush_network::modes::NetworkMode::Bridge, &ports).await {
+                        Ok(net) => {
+                            println!("[Watch] Swapped port routing to Green IP: {:?}", net.container_ip);
+                            Some(net)
+                        }
+                        Err(e) => {
+                            eprintln!("[Watch] Green network setup failed: {}", e);
+                            None
+                        }
+                    }
+                };
+
+                // 4. Stop and clean up the old container (Blue)
+                println!("[Watch] Tearing down old container (Blue): {}", active_container_id);
+                let _ = backend.stop(&active_container_id, 2).await;
+                
+                #[cfg(target_os = "linux")]
+                {
+                    if let Some(net) = current_net.take() {
+                        let orchestrator = crush_network::NetworkOrchestrator::new(data_dir.clone());
+                        let _ = orchestrator.teardown_container_network(&net).await;
+                    }
+                }
+                
+                let _ = backend.delete(&active_container_id).await;
+
+                // Promote Green to Blue
+                active_container_id = green_id;
+                active_container_name = green_name;
+                #[cfg(target_os = "linux")]
+                {
+                    current_net = green_net;
+                }
+                println!("[Watch] Blue-Green Swap complete!");
             }
         }
         Commands::Run(args) => {
@@ -620,7 +856,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
-            let tui = TuiApp::new(1);
+            let tui = TuiApp::new(1, data_dir.clone());
             if cli.no_interactive {
                 tui.draw_containers_table(&container_list);
             } else {
@@ -832,7 +1068,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Stats(args) => {
             info!("Reading metrics stats (no-stream: {})", args.no_stream);
-            let tui = TuiApp::new(1);
+            let tui = TuiApp::new(1, data_dir.clone());
             if cli.no_interactive || args.no_stream {
                 let cpu_samples = vec![12.5, 15.2, 11.8, 20.1, 18.3];
                 let mem_samples = vec![128.0, 132.5, 145.2, 140.0, 138.7];
@@ -1127,10 +1363,9 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Completions(args) => {
             use clap::CommandFactory;
-            use clap_complete::generate;
             let mut cmd = Cli::command();
-            let name = cmd.get_name().to_string();
-            generate(args.shell, &mut cmd, name, &mut std::io::stdout());
+            let completions = crush_tui::generate_completions(args.shell, &mut cmd);
+            print!("{}", completions);
         }
         Commands::InternalRun(args) => {
             let container_dir = data_dir.join("containers").join(&args.id);
@@ -1198,6 +1433,53 @@ async fn main() -> anyhow::Result<()> {
                 eprintln!("Container execution is only supported on Linux.");
                 let _ = mounter.unmount_all(&c.id).await;
                 tokio::fs::remove_dir_all(&rootfs.parent().unwrap_or(&rootfs)).await.ok();
+            }
+        }
+        Commands::__Complete(args) => {
+            match args.category.as_str() {
+                "containers" => {
+                    let containers_dir = data_dir.join("containers");
+                    if containers_dir.exists() {
+                        if let Ok(mut entries) = tokio::fs::read_dir(&containers_dir).await {
+                            while let Ok(Some(entry)) = entries.next_entry().await {
+                                let json_path = entry.path().join("container.json");
+                                if json_path.exists() {
+                                    if let Ok(content) = tokio::fs::read_to_string(&json_path).await {
+                                        if let Ok(c) = serde_json::from_str::<Container>(&content) {
+                                            println!("{}", c.id);
+                                            println!("{}", c.name);
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                "images" => {
+                    if let Ok(images) = store.list_images().await {
+                        for img in images {
+                            println!("{}", img.tag);
+                        }
+                    }
+                }
+                "volumes" => {
+                    let driver = LocalDriver::new(data_dir.clone());
+                    if let Ok(list) = driver.list().await {
+                        for vol in list {
+                            println!("{}", vol.name);
+                        }
+                    }
+                }
+                "networks" => {
+                    println!("crush_nat");
+                    let net = NetworkManager::new(data_dir.join("networks"));
+                    if let Ok(list) = net.list().await {
+                        for n in list {
+                            println!("{}", n.name);
+                        }
+                    }
+                }
+                _ => {}
             }
         }
     }
