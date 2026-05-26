@@ -1,22 +1,22 @@
 use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::{null, null_mut};
+use windows_sys::Win32::Foundation::LocalFree;
 use windows_sys::Win32::Security::Cryptography::{
-    CryptProtectData, CryptUnprotectData, DATA_BLOB,
+    CryptProtectData, CryptUnprotectData, CRYPT_INTEGER_BLOB,
 };
 use windows_sys::Win32::Security::Credentials::{CREDENTIALW, CredWriteW};
-use windows_sys::Win32::System::Memory::LocalFree;
 use crush_types::{Result, CrushError};
 
 pub struct CredentialManager;
 
 impl CredentialManager {
     pub fn encrypt_secrets(data: &[u8]) -> Result<Vec<u8>> {
-        let mut input = DATA_BLOB {
+        let mut input = CRYPT_INTEGER_BLOB {
             cbData: data.len() as u32,
             pbData: data.as_ptr() as *mut _,
         };
-        let mut output = unsafe { std::mem::zeroed::<DATA_BLOB>() };
+        let mut output = unsafe { std::mem::zeroed::<CRYPT_INTEGER_BLOB>() };
 
         let success = unsafe {
             CryptProtectData(
@@ -44,11 +44,11 @@ impl CredentialManager {
     }
 
     pub fn decrypt_secrets(encrypted_data: &[u8]) -> Result<Vec<u8>> {
-        let mut input = DATA_BLOB {
+        let mut input = CRYPT_INTEGER_BLOB {
             cbData: encrypted_data.len() as u32,
             pbData: encrypted_data.as_ptr() as *mut _,
         };
-        let mut output = unsafe { std::mem::zeroed::<DATA_BLOB>() };
+        let mut output = unsafe { std::mem::zeroed::<CRYPT_INTEGER_BLOB>() };
 
         let success = unsafe {
             CryptUnprotectData(

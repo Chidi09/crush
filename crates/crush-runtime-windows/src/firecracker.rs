@@ -264,7 +264,7 @@ impl FirecrackerRunner {
         };
 
         let mut req = hyper::Request::builder()
-            .method(method)
+            .method(&method)
             .uri(url)
             .header("Host", "localhost")
             .header("Accept", "application/json");

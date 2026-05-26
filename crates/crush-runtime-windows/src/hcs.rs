@@ -2,7 +2,7 @@ use std::ffi::OsStr;
 use std::os::windows::ffi::OsStrExt;
 use std::ptr::null_mut;
 use libloading::Library;
-use windows_sys::Win32::System::Memory::LocalFree;
+use windows_sys::Win32::Foundation::LocalFree;
 use crush_types::{Result, CrushError};
 
 type HcsCreateComputeSystemFn = unsafe extern "system" fn(
