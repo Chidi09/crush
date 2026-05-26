@@ -1,6 +1,6 @@
 {
-  "framework": "vite",
-  "installCommand": "pnpm install",
+  "framework": null,
+  "installCommand": "npm install -g pnpm && pnpm install",
   "buildCommand": "pnpm run build",
   "outputDirectory": "dist/client",
   "cleanUrls": true,
