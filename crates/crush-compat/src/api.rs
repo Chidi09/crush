@@ -4,6 +4,9 @@ use tokio::sync::Mutex;
 use tokio::io::AsyncReadExt;
 use crush_types::{Result, CrushError, Container, ContainerStatus, Protocol, PortMapping};
 
+#[cfg(unix)]
+use libc;
+
 const DOCKER_API_VERSION: &str = "v1.41";
 
 pub struct DockerApiServer {
