@@ -75,9 +75,8 @@ impl AuthHandler {
         });
     }
 
-    pub async fn authenticate_dockerhub(&mut self, image: &str) -> Result<String> {
+    pub async fn authenticate_dockerhub(&mut self, client: &reqwest::Client, image: &str) -> Result<String> {
         let url = format!("https://auth.docker.io/token?service=registry.docker.io&scope=repository:{}:pull", image);
-        let client = reqwest::Client::new();
         let resp = client.get(&url).send().await
             .map_err(|e| CrushError::ImageError(format!("Docker Hub auth failed: {}", e)))?;
         let json: serde_json::Value = resp.json().await

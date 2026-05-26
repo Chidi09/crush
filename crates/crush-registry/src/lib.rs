@@ -68,6 +68,8 @@ impl RegistryClient {
         Self {
             http: reqwest::Client::builder()
                 .user_agent("crush/0.1.0")
+                .connect_timeout(std::time::Duration::from_secs(15))
+                .timeout(std::time::Duration::from_secs(300))
                 .build()
                 .expect("Failed to build HTTP client"),
             auth,
@@ -91,7 +93,8 @@ impl RegistryClient {
         }
         // Pre-auth for Docker Hub using known token endpoint
         if AuthHandler::detect_registry_type(registry) == "dockerhub" {
-            let token = self.auth.authenticate_dockerhub(image).await?;
+            let http = self.http.clone();
+            let token = self.auth.authenticate_dockerhub(&http, image).await?;
             self.auth.store_token(registry, token);
         }
         Ok(())
