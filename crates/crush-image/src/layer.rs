@@ -78,12 +78,24 @@ pub fn safe_unpack(archive: &mut tar::Archive<impl std::io::Read>, destination: 
             let link = entry.link_name()
                 .map_err(|e| CrushError::StorageError(format!("symlink error: {}", e)))?
                 .unwrap_or_default();
-            // Validate symlink target stays within destination
-            let link_target = dest.join(&link);
-            if link_target.exists() {
-                if let Ok(canon) = link_target.canonicalize() {
+            // Validate symlink target stays within the rootfs.
+            // Absolute targets like "/usr/lib" are valid within the container — we resolve
+            // them relative to dest, not the host root.
+            let resolve_base = target.parent().unwrap_or(&dest);
+            let candidate = if link.is_absolute() {
+                // Absolute targets like "/usr/lib" are valid within the container;
+                // strip the leading '/' and join under dest so we check the rootfs path.
+                let rel = link.to_string_lossy();
+                dest.join(rel.trim_start_matches('/'))
+            } else {
+                resolve_base.join(&link)
+            };
+            if candidate.exists() {
+                if let Ok(canon) = candidate.canonicalize() {
                     if !canon.starts_with(&dest) {
-                        return Err(CrushError::StorageError("Symlink traversal blocked".to_string()));
+                        return Err(CrushError::StorageError(format!(
+                            "Symlink traversal blocked: {:?} -> {:?}", path, link
+                        )));
                     }
                 }
             }
