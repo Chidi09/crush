@@ -60,6 +60,7 @@ impl tokio::io::AsyncRead for AnyStream {
         buf: &mut tokio::io::ReadBuf<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         match self.project() {
+            #[cfg(unix)]
             AnyStreamProj::Unix(stream) => stream.poll_read(cx, buf),
             #[cfg(windows)]
             AnyStreamProj::Pipe(stream) => stream.poll_read(cx, buf),
@@ -74,6 +75,7 @@ impl tokio::io::AsyncWrite for AnyStream {
         buf: &[u8],
     ) -> std::task::Poll<std::io::Result<usize>> {
         match self.project() {
+            #[cfg(unix)]
             AnyStreamProj::Unix(stream) => stream.poll_write(cx, buf),
             #[cfg(windows)]
             AnyStreamProj::Pipe(stream) => stream.poll_write(cx, buf),
@@ -85,6 +87,7 @@ impl tokio::io::AsyncWrite for AnyStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         match self.project() {
+            #[cfg(unix)]
             AnyStreamProj::Unix(stream) => stream.poll_flush(cx),
             #[cfg(windows)]
             AnyStreamProj::Pipe(stream) => stream.poll_flush(cx),
@@ -96,6 +99,7 @@ impl tokio::io::AsyncWrite for AnyStream {
         cx: &mut std::task::Context<'_>,
     ) -> std::task::Poll<std::io::Result<()>> {
         match self.project() {
+            #[cfg(unix)]
             AnyStreamProj::Unix(stream) => stream.poll_shutdown(cx),
             #[cfg(windows)]
             AnyStreamProj::Pipe(stream) => stream.poll_shutdown(cx),
