@@ -18,13 +18,11 @@ libloading = "0.8"
 uuid = { version = "1.8", features = ["v4", "serde"] }
 reqwest = { workspace = true }
 
-# Windows crate for HCS/HNS high-level bindings
+[target.'cfg(target_os = "windows")'.dependencies]
 windows = { version = "0.52", features = [
     "Win32_System_HostComputeSystem",
     "Win32_System_HostComputeNetwork"
 ] }
-
-# Windows-sys crate for direct, unsafe Win32 API calls
 windows-sys = { version = "0.52", features = [
     "Win32_Foundation",
     "Win32_System_JobObjects",

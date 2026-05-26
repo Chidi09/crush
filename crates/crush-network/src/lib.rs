@@ -18,7 +18,6 @@ use bridge::BridgeManager;
 use nat::NatManager;
 use portmap::PortMapper;
 use dns::DnsResolver;
-use networks::NetworkManager;
 pub use networks::NetworkManager;
 use modes::NetworkMode;
 
