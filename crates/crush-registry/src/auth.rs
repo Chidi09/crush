@@ -180,3 +180,121 @@ impl AuthHandler {
         Ok(())
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    // ── detect_registry_type ──────────────────────────────────────────────────
+
+    #[test]
+    fn detect_dockerhub_variants() {
+        assert_eq!(AuthHandler::detect_registry_type("docker.io"), "dockerhub");
+        assert_eq!(AuthHandler::detect_registry_type("registry-1.docker.io"), "dockerhub");
+    }
+
+    #[test]
+    fn detect_ghcr() {
+        assert_eq!(AuthHandler::detect_registry_type("ghcr.io"), "ghcr");
+    }
+
+    #[test]
+    fn detect_ecr() {
+        assert_eq!(AuthHandler::detect_registry_type("123456789.dkr.ecr.us-east-1.amazonaws.com"), "ecr");
+    }
+
+    #[test]
+    fn detect_gcr() {
+        assert_eq!(AuthHandler::detect_registry_type("gcr.io"), "gcr");
+        assert_eq!(AuthHandler::detect_registry_type("us-docker.pkg.dev"), "gcr");
+    }
+
+    #[test]
+    fn detect_acr() {
+        assert_eq!(AuthHandler::detect_registry_type("myregistry.azurecr.io"), "acr");
+    }
+
+    #[test]
+    fn detect_selfhosted() {
+        assert_eq!(AuthHandler::detect_registry_type("registry.example.com"), "selfhosted");
+        assert_eq!(AuthHandler::detect_registry_type("localhost:5000"), "selfhosted");
+    }
+
+    // ── store_token / get_auth_header ─────────────────────────────────────────
+
+    #[test]
+    fn token_stored_and_retrieved_as_bearer() {
+        let mut handler = AuthHandler::new();
+        handler.store_token("registry-1.docker.io", "mytoken123".to_string());
+        let header = handler.get_auth_header("registry-1.docker.io");
+        assert_eq!(header, Some("Bearer mytoken123".to_string()));
+    }
+
+    #[test]
+    fn missing_registry_returns_none() {
+        let handler = AuthHandler::new();
+        assert!(handler.get_auth_header("registry-1.docker.io").is_none());
+    }
+
+    #[test]
+    fn basic_auth_credentials_encoded_correctly() {
+        let mut handler = AuthHandler::new();
+        // Simulate basic credentials stored via load_docker_config
+        handler.tokens.insert("registry.example.com".to_string(), RegistryAuth {
+            registry: "registry.example.com".to_string(),
+            token: None,
+            username: Some("alice".to_string()),
+            password: Some("secret".to_string()),
+            identity_token: None,
+            token_expiry: u64::MAX,
+        });
+        let header = handler.get_auth_header("registry.example.com").unwrap();
+        assert!(header.starts_with("Basic "), "expected Basic auth: {header}");
+        // Decode and verify
+        let encoded = header.trim_start_matches("Basic ");
+        let decoded = String::from_utf8(
+            base64::engine::general_purpose::STANDARD.decode(encoded).unwrap()
+        ).unwrap();
+        assert_eq!(decoded, "alice:secret");
+    }
+
+    // ── load_docker_config ────────────────────────────────────────────────────
+
+    #[test]
+    fn load_docker_config_parses_auth_field() {
+        use base64::Engine as _;
+        let encoded_creds = base64::engine::general_purpose::STANDARD.encode("bob:password123");
+        let config_json = format!(r#"{{
+            "auths": {{
+                "ghcr.io": {{
+                    "auth": "{}"
+                }}
+            }}
+        }}"#, encoded_creds);
+
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), config_json).unwrap();
+
+        let mut handler = AuthHandler::new();
+        handler.load_docker_config(tmp.path()).unwrap();
+
+        let header = handler.get_auth_header("ghcr.io").unwrap();
+        assert!(header.starts_with("Basic "), "expected Basic from docker config: {header}");
+    }
+
+    #[test]
+    fn load_docker_config_nonexistent_path_is_ok() {
+        let mut handler = AuthHandler::new();
+        let result = handler.load_docker_config(std::path::Path::new("/nonexistent/config.json"));
+        assert!(result.is_ok());
+    }
+
+    #[test]
+    fn load_docker_config_invalid_json_returns_error() {
+        let tmp = tempfile::NamedTempFile::new().unwrap();
+        std::fs::write(tmp.path(), "not valid json {{{{").unwrap();
+        let mut handler = AuthHandler::new();
+        let result = handler.load_docker_config(tmp.path());
+        assert!(result.is_err());
+    }
+}

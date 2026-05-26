@@ -490,3 +490,73 @@ impl ImageStore {
         Ok(image)
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::ImageStore;
+
+    // registry_for_tag(tag) → (registry, image, reference)
+
+    #[test]
+    fn bare_image_defaults_to_dockerhub_library() {
+        let (reg, img, reference) = ImageStore::registry_for_tag("ubuntu");
+        assert_eq!(reg, "registry-1.docker.io");
+        assert_eq!(img, "library/ubuntu");
+        assert_eq!(reference, "latest");
+    }
+
+    #[test]
+    fn image_with_tag() {
+        let (reg, img, reference) = ImageStore::registry_for_tag("ubuntu:22.04");
+        assert_eq!(reg, "registry-1.docker.io");
+        assert_eq!(img, "library/ubuntu");
+        assert_eq!(reference, "22.04");
+    }
+
+    #[test]
+    fn namespaced_image_on_dockerhub() {
+        let (reg, img, reference) = ImageStore::registry_for_tag("nginx/nginx-prometheus-exporter:latest");
+        assert_eq!(reg, "registry-1.docker.io");
+        assert_eq!(img, "nginx/nginx-prometheus-exporter");
+        assert_eq!(reference, "latest");
+    }
+
+    #[test]
+    fn explicit_dockerhub_prefix_stripped() {
+        let (reg, img, reference) = ImageStore::registry_for_tag("docker://alpine:3.19");
+        assert_eq!(reg, "registry-1.docker.io");
+        assert_eq!(img, "library/alpine");
+        assert_eq!(reference, "3.19");
+    }
+
+    #[test]
+    fn ghcr_registry_detected() {
+        let (reg, img, reference) = ImageStore::registry_for_tag("ghcr.io/owner/repo:v1.0");
+        assert_eq!(reg, "ghcr.io");
+        assert_eq!(img, "owner/repo");
+        assert_eq!(reference, "v1.0");
+    }
+
+    #[test]
+    fn private_registry_with_port() {
+        let (reg, img, reference) = ImageStore::registry_for_tag("localhost:5000/myapp:dev");
+        assert_eq!(reg, "localhost:5000");
+        assert_eq!(img, "myapp");
+        assert_eq!(reference, "dev");
+    }
+
+    #[test]
+    fn image_no_tag_defaults_latest() {
+        let (_, _, reference) = ImageStore::registry_for_tag("nginx");
+        assert_eq!(reference, "latest");
+    }
+
+    #[test]
+    fn sha_digest_as_reference() {
+        let digest = "sha256:abc123";
+        let (reg, img, reference) = ImageStore::registry_for_tag(&format!("nginx:{}", digest));
+        assert_eq!(reg, "registry-1.docker.io");
+        assert_eq!(img, "library/nginx");
+        assert_eq!(reference, digest);
+    }
+}

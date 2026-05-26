@@ -28,3 +28,6 @@ indicatif = "0.17"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.13", features = ["v4"] }
 rayon = "1.10"
+
+[dev-dependencies]
+tempfile = "3"

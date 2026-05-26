@@ -159,3 +159,178 @@ pub trait StorageBackend: Send + Sync {
     async fn delete_image(&self, image_id: &str) -> Result<()>;
     async fn extract_layers(&self, image_id: &str, destination: &PathBuf) -> Result<()>;
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::time::UNIX_EPOCH;
+
+    fn make_container() -> Container {
+        Container {
+            id: "abc123".to_string(),
+            name: "test-container".to_string(),
+            image: "ubuntu:22.04".to_string(),
+            status: ContainerStatus::Running,
+            pid: Some(1234),
+            created_at: UNIX_EPOCH,
+            started_at: Some(UNIX_EPOCH),
+            ports: vec![PortMapping {
+                host_ip: "0.0.0.0".to_string(),
+                host_port: 8080,
+                container_port: 80,
+                protocol: Protocol::Tcp,
+            }],
+            mounts: vec![MountConfig {
+                host_path: PathBuf::from("/tmp/data"),
+                container_path: PathBuf::from("/data"),
+                read_only: false,
+                is_tmpfs: false,
+            }],
+            memory_limit_bytes: Some(512 * 1024 * 1024),
+            cpu_shares: Some(1024),
+            health: Some(HealthStatus::Healthy),
+            restart_count: Some(0),
+            restart_policy: Some("on-failure:3".to_string()),
+            health_cmd: Some("curl -f http://localhost/".to_string()),
+            health_interval: Some(30),
+            health_timeout: Some(5),
+            health_retries: Some(3),
+            pids_limit: Some(100),
+            read_only: Some(false),
+            security_opt: None,
+        }
+    }
+
+    fn make_image() -> Image {
+        Image {
+            id: "sha256:deadbeef".to_string(),
+            tag: "ubuntu:22.04".to_string(),
+            digest: "sha256:deadbeef".to_string(),
+            size_bytes: 29_000_000,
+            layers: vec!["sha256:layer1".to_string(), "sha256:layer2".to_string()],
+            architecture: "amd64".to_string(),
+            os: "linux".to_string(),
+            entrypoint: vec![],
+            cmd: vec!["/bin/bash".to_string()],
+            env: vec!["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string()],
+            config_digest: Some("sha256:config123".to_string()),
+        }
+    }
+
+    #[test]
+    fn container_json_round_trip() {
+        let c = make_container();
+        let json = serde_json::to_string(&c).expect("serialize");
+        let back: Container = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.id, c.id);
+        assert_eq!(back.name, c.name);
+        assert_eq!(back.status, ContainerStatus::Running);
+        assert_eq!(back.pid, Some(1234));
+        assert_eq!(back.ports.len(), 1);
+        assert_eq!(back.ports[0].host_port, 8080);
+        assert_eq!(back.ports[0].protocol, Protocol::Tcp);
+        assert_eq!(back.mounts.len(), 1);
+        assert_eq!(back.mounts[0].container_path, PathBuf::from("/data"));
+        assert_eq!(back.memory_limit_bytes, Some(512 * 1024 * 1024));
+    }
+
+    #[test]
+    fn image_json_round_trip() {
+        let img = make_image();
+        let json = serde_json::to_string(&img).expect("serialize");
+        let back: Image = serde_json::from_str(&json).expect("deserialize");
+        assert_eq!(back.id, img.id);
+        assert_eq!(back.tag, "ubuntu:22.04");
+        assert_eq!(back.layers.len(), 2);
+        assert_eq!(back.cmd, vec!["/bin/bash"]);
+        assert_eq!(back.size_bytes, 29_000_000);
+        assert_eq!(back.config_digest, Some("sha256:config123".to_string()));
+    }
+
+    #[test]
+    fn image_missing_optional_fields_default() {
+        let json = r#"{
+            "id": "sha256:abc",
+            "tag": "nginx:latest",
+            "digest": "sha256:abc",
+            "size_bytes": 0,
+            "layers": [],
+            "architecture": "amd64",
+            "os": "linux"
+        }"#;
+        let img: Image = serde_json::from_str(json).expect("deserialize with defaults");
+        assert!(img.entrypoint.is_empty());
+        assert!(img.cmd.is_empty());
+        assert!(img.env.is_empty());
+        assert!(img.config_digest.is_none());
+    }
+
+    #[test]
+    fn container_status_all_variants_serialize() {
+        for (status, expected) in [
+            (ContainerStatus::Creating, "\"Creating\""),
+            (ContainerStatus::Created,  "\"Created\""),
+            (ContainerStatus::Running,  "\"Running\""),
+            (ContainerStatus::Paused,   "\"Paused\""),
+            (ContainerStatus::Stopped,  "\"Stopped\""),
+        ] {
+            let s = serde_json::to_string(&status).unwrap();
+            assert_eq!(s, expected, "wrong serialization for {:?}", status);
+            let back: ContainerStatus = serde_json::from_str(&s).unwrap();
+            assert_eq!(back, status);
+        }
+    }
+
+    #[test]
+    fn port_mapping_udp_protocol() {
+        let pm = PortMapping {
+            host_ip: "127.0.0.1".to_string(),
+            host_port: 53,
+            container_port: 53,
+            protocol: Protocol::Udp,
+        };
+        let json = serde_json::to_string(&pm).unwrap();
+        let back: PortMapping = serde_json::from_str(&json).unwrap();
+        assert_eq!(back.protocol, Protocol::Udp);
+        assert_eq!(back.host_ip, "127.0.0.1");
+    }
+
+    #[test]
+    fn crush_error_display_messages() {
+        let cases: &[(CrushError, &str)] = &[
+            (CrushError::ContainerNotFound("abc".to_string()), "abc"),
+            (CrushError::ImageError("bad digest".to_string()), "bad digest"),
+            (CrushError::NetworkError("veth failed".to_string()), "veth failed"),
+            (CrushError::StorageError("no space".to_string()), "no space"),
+        ];
+        for (err, needle) in cases {
+            let msg = err.to_string();
+            assert!(msg.contains(needle), "error message {msg:?} should contain {needle:?}");
+        }
+    }
+
+    #[test]
+    fn invalid_state_transition_error() {
+        let e = CrushError::InvalidStateTransition {
+            from: ContainerStatus::Stopped,
+            to: ContainerStatus::Paused,
+        };
+        let msg = e.to_string();
+        assert!(msg.contains("Stopped"), "should mention source state: {msg}");
+        assert!(msg.contains("Paused"),  "should mention target state: {msg}");
+    }
+
+    #[test]
+    fn mount_config_tmpfs() {
+        let m = MountConfig {
+            host_path: PathBuf::from(""),
+            container_path: PathBuf::from("/tmp"),
+            read_only: false,
+            is_tmpfs: true,
+        };
+        let json = serde_json::to_string(&m).unwrap();
+        let back: MountConfig = serde_json::from_str(&json).unwrap();
+        assert!(back.is_tmpfs);
+        assert_eq!(back.container_path, PathBuf::from("/tmp"));
+    }
+}
