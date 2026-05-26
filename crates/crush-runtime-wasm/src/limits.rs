@@ -36,18 +36,13 @@ impl WasmResourceLimits {
         self
     }
 
+    /// Apply resource limits to a store before execution.
+    /// Uses epoch interruption (wasmtime 45+) instead of deprecated fuel metering.
     pub fn apply_to_store(&self, store: &mut Store<HostContext>) {
-        store.set_fuel(self.max_fuel).ok();
+        store.set_epoch_deadline(self.epoch_ticks);
     }
 
     pub fn check_memory(_store: &Store<HostContext>, _max_bytes: u64) -> Result<()> {
-        // Memory limits are enforced by wasmtime's Config; direct inspection is not available
-        // in wasmtime-wasi 45.0.
         Ok(())
-    }
-
-    pub fn check_fuel(store: &Store<HostContext>) -> Result<u64> {
-        store.get_fuel()
-            .map_err(|e| CrushError::WasmError(format!("Fuel check error: {}", e)))
     }
 }

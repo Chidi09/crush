@@ -13,7 +13,6 @@ impl WasmEngine {
         config.wasm_component_model(true);
         config.wasm_multi_memory(true);
         config.wasm_memory64(true);
-        config.consume_fuel(true);
         config.epoch_interruption(true);
 
         let engine = Engine::new(&config)
@@ -58,13 +57,10 @@ impl WasmEngine {
         Store::new(&self.engine, data)
     }
 
-    pub fn fuel_remaining(store: &Store<impl Send>) -> Result<u64> {
-        store.get_fuel()
-            .map_err(|e| CrushError::WasmError(format!("Fuel read error: {}", e)))
-    }
-
-    pub fn set_fuel(store: &mut Store<impl Send>, fuel: u64) {
-        store.set_fuel(fuel).ok();
+    /// Set how many epoch ticks the guest may run before being interrupted.
+    /// Call this immediately before instantiation/execution.
+    pub fn set_epoch_deadline(store: &mut Store<impl Send>, ticks: u64) {
+        store.set_epoch_deadline(ticks);
     }
 
     pub fn interrupt_epoch(engine: &Engine) {
