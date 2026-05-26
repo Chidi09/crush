@@ -2,8 +2,9 @@ use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
 use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use crush_types::{Result, CrushError};
+use serde::{Serialize, Deserialize};
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RegistryAuth {
     pub registry: String,
     pub token: Option<String>,
@@ -15,12 +16,40 @@ pub struct RegistryAuth {
 
 #[derive(Default)]
 pub struct AuthHandler {
-    tokens: HashMap<String, RegistryAuth>,
+    pub tokens: HashMap<String, RegistryAuth>,
 }
 
 impl AuthHandler {
     pub fn new() -> Self {
         Self { tokens: HashMap::new() }
+    }
+
+    pub fn save_to_disk(&self, path: &std::path::Path) -> Result<()> {
+        let vec: Vec<RegistryAuth> = self.tokens.values().cloned().collect();
+        let serialized = serde_json::to_string(&vec)
+            .map_err(|e| CrushError::ImageError(format!("Failed to serialize auth: {}", e)))?;
+        if let Some(parent) = path.parent() {
+            std::fs::create_dir_all(parent).ok();
+        }
+        std::fs::write(path, serialized)
+            .map_err(|e| CrushError::StorageError(format!("Failed to write auth to disk: {}", e)))?;
+        Ok(())
+    }
+
+    pub fn load_from_disk(path: &std::path::Path) -> Result<Self> {
+        if !path.exists() {
+            return Ok(Self::new());
+        }
+        let content = std::fs::read_to_string(path)
+            .map_err(|e| CrushError::StorageError(format!("Failed to read auth: {}", e)))?;
+        let vec: Vec<RegistryAuth> = serde_json::from_str(&content)
+            .map_err(|e| CrushError::ImageError(format!("Failed to deserialize auth: {}", e)))?;
+        
+        let mut tokens = HashMap::new();
+        for auth in vec {
+            tokens.insert(auth.registry.clone(), auth);
+        }
+        Ok(Self { tokens })
     }
 
     pub fn detect_registry_type(registry: &str) -> &str {
@@ -65,8 +94,12 @@ impl AuthHandler {
     }
 
     pub fn store_token(&mut self, registry: &str, token: String) {
+        self.store_token_with_expiry(registry, token, 3600);
+    }
+
+    pub fn store_token_with_expiry(&mut self, registry: &str, token: String, expires_in: u64) {
         let expiry = std::time::SystemTime::now()
-            .duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() + 3600;
+            .duration_since(UNIX_EPOCH).unwrap_or_default().as_secs() + expires_in;
         self.tokens.insert(registry.to_string(), RegistryAuth {
             registry: registry.to_string(),
             token: Some(token),

@@ -200,6 +200,163 @@ impl SbomGenerator {
             }
         }
 
-        Ok(components)
     }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct SbomComponent {
+    pub name: String,
+    pub version: String,
+    pub purl: String,
+    pub ecosystem: String,
+}
+
+pub fn walk_rootfs(rootfs: &Path) -> Vec<SbomComponent> {
+    let mut components = Vec::new();
+    
+    components.extend(scan_dpkg(rootfs));
+    components.extend(scan_apk(rootfs));
+    
+    let mut visit = |path: &Path| {
+        let file_name = path.file_name().and_then(|f| f.to_str());
+        let path_str = path.to_string_lossy();
+        
+        if file_name == Some("package.json") {
+            if path_str.contains("node_modules") {
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let (Some(name), Some(version)) = (val["name"].as_str(), val["version"].as_str()) {
+                            components.push(SbomComponent {
+                                name: name.to_string(),
+                                version: version.to_string(),
+                                purl: format!("pkg:npm/{}@{}", name, version),
+                                ecosystem: "npm".to_string(),
+                            });
+                        }
+                    }
+                }
+            }
+        } else if file_name == Some("METADATA") {
+            if path_str.contains(".dist-info") {
+                if let Ok(content) = std::fs::read_to_string(path) {
+                    let mut name = None;
+                    let mut version = None;
+                    for line in content.lines() {
+                        if let Some(val) = line.strip_prefix("Name: ") {
+                            name = Some(val.trim().to_string());
+                        } else if let Some(val) = line.strip_prefix("Version: ") {
+                            version = Some(val.trim().to_string());
+                        }
+                    }
+                    if let (Some(n), Some(v)) = (name, version) {
+                        components.push(SbomComponent {
+                            name: n.clone(),
+                            version: v.clone(),
+                            purl: format!("pkg:pypi/{}@{}", n, v),
+                            ecosystem: "pip".to_string(),
+                        });
+                    }
+                }
+            }
+        }
+    };
+    
+    fn traverse(dir: &Path, depth: usize, f: &mut dyn FnMut(&Path)) {
+        if depth > 10 { return; }
+        if let Ok(entries) = std::fs::read_dir(dir) {
+            for entry in entries.flatten() {
+                if let Ok(file_type) = entry.file_type() {
+                    let path = entry.path();
+                    if file_type.is_dir() {
+                        let name = entry.file_name();
+                        if name == "proc" || name == "sys" || name == "dev" || name == "run" || name == "tmp" {
+                            continue;
+                        }
+                        traverse(&path, depth + 1, f);
+                    } else if file_type.is_file() {
+                        f(&path);
+                    }
+                }
+            }
+        }
+    }
+    
+    traverse(rootfs, 0, &mut visit);
+    components
+}
+
+fn scan_dpkg(rootfs: &Path) -> Vec<SbomComponent> {
+    let mut components = Vec::new();
+    let status_path = rootfs.join("var/lib/dpkg/status");
+    if let Ok(content) = std::fs::read_to_string(&status_path) {
+        let mut current_name = None;
+        let mut current_version = None;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                if let (Some(name), Some(version)) = (current_name.take(), current_version.take()) {
+                    components.push(SbomComponent {
+                        purl: format!("pkg:deb/debian/{}@{}", name, version),
+                        name,
+                        version,
+                        ecosystem: "Debian".to_string(),
+                    });
+                }
+            } else if trimmed.starts_with("Package:") {
+                current_name = Some(trimmed["Package:".len()..].trim().to_string());
+            } else if trimmed.starts_with("Version:") {
+                current_version = Some(trimmed["Version:".len()..].trim().to_string());
+            }
+        }
+        if let (Some(name), Some(version)) = (current_name, current_version) {
+            components.push(SbomComponent {
+                purl: format!("pkg:deb/debian/{}@{}", name, version),
+                name,
+                version,
+                ecosystem: "Debian".to_string(),
+            });
+        }
+    }
+    components
+}
+
+fn scan_apk(rootfs: &Path) -> Vec<SbomComponent> {
+    let mut components = Vec::new();
+    let paths = [
+        rootfs.join("lib/apk/db/installed"),
+        rootfs.join("var/lib/apk/db/installed"),
+    ];
+    for status_path in &paths {
+        if let Ok(content) = std::fs::read_to_string(status_path) {
+            let mut current_name = None;
+            let mut current_version = None;
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    if let (Some(name), Some(version)) = (current_name.take(), current_version.take()) {
+                        components.push(SbomComponent {
+                            purl: format!("pkg:apk/alpine/{}@{}", name, version),
+                            name,
+                            version,
+                            ecosystem: "Alpine".to_string(),
+                        });
+                    }
+                } else if let Some(rest) = trimmed.strip_prefix("P:") {
+                    current_name = Some(rest.trim().to_string());
+                } else if let Some(rest) = trimmed.strip_prefix("V:") {
+                    current_version = Some(rest.trim().to_string());
+                }
+            }
+            if let (Some(name), Some(version)) = (current_name, current_version) {
+                components.push(SbomComponent {
+                    purl: format!("pkg:apk/alpine/{}@{}", name, version),
+                    name,
+                    version,
+                    ecosystem: "Alpine".to_string(),
+                });
+            }
+            break;
+        }
+    }
+    components
 }

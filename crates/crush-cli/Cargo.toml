@@ -27,10 +27,14 @@ crush-reliability = { workspace = true }
 crush-volume = { workspace = true }
 dirs = "5.0"
 libc = "0.2"
+rpassword = "7"
 clap_complete = "4.5"
 which = "6"
 async-trait.workspace = true
 serde = { workspace = true, features = ["derive"] }
+reqwest = { workspace = true }
+tempfile = "3"
+chrono = { version = "0.4", features = ["serde"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 crush-runtime-linux = { workspace = true }
@@ -38,4 +42,9 @@ crush-network = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 crush-runtime-windows = { workspace = true }
+windows-sys = { version = "0.52", features = [
+    "Win32_System_Threading",
+    "Win32_Foundation",
+    "Win32_System_ProcessStatus"
+] }
 

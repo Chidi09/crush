@@ -214,7 +214,25 @@ async fn route_request(
                                         {
                                             is_alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
                                         }
-                                        #[cfg(not(unix))]
+                                        #[cfg(windows)]
+                                        {
+                                            use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+                                            use windows_sys::Win32::Foundation::CloseHandle;
+                                            use windows_sys::Win32::System::Threading::GetExitCodeProcess;
+                                            const STILL_ACTIVE: u32 = 259;
+                                            unsafe {
+                                                let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+                                                if handle == 0 {
+                                                    is_alive = false;
+                                                } else {
+                                                    let mut exit_code: u32 = 0;
+                                                    GetExitCodeProcess(handle, &mut exit_code);
+                                                    is_alive = exit_code == STILL_ACTIVE;
+                                                    CloseHandle(handle);
+                                                }
+                                            }
+                                        }
+                                        #[cfg(all(not(unix), not(windows)))]
                                         {
                                             is_alive = true;
                                         }

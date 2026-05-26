@@ -36,11 +36,12 @@ impl ImageStore {
             .map_err(|e| CrushError::StorageError(format!("Failed to create base dir: {}", e)))?;
         let db = ImageDatabase::new(&base_dir)?;
         let blobs = BlobStore::new(&base_dir);
+        let config_path = base_dir.parent().map(|p| p.to_path_buf());
         Ok(Self {
             base_dir,
             blobs,
             db,
-            registry_client: Arc::new(Mutex::new(RegistryClientHandle::default())),
+            registry_client: Arc::new(Mutex::new(RegistryClientHandle::new(config_path))),
             lazy_mode: false,
         })
     }
@@ -489,6 +490,92 @@ impl ImageStore {
 
         Ok(image)
     }
+}
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize)]
+pub struct Package {
+    pub name: String,
+    pub version: String,
+    pub ecosystem: String,
+}
+
+pub async fn extract_packages(_image_id: &str, rootfs: &Path) -> Vec<Package> {
+    let mut packages = Vec::new();
+    packages.extend(extract_dpkg(rootfs));
+    packages.extend(extract_apk(rootfs));
+    packages
+}
+
+fn extract_dpkg(rootfs: &Path) -> Vec<Package> {
+    let mut packages = Vec::new();
+    let status_path = rootfs.join("var/lib/dpkg/status");
+    if let Ok(content) = std::fs::read_to_string(&status_path) {
+        let mut current_name = None;
+        let mut current_version = None;
+        for line in content.lines() {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                if let (Some(name), Some(version)) = (current_name.take(), current_version.take()) {
+                    packages.push(Package {
+                        name,
+                        version,
+                        ecosystem: "Debian".to_string(),
+                    });
+                }
+            } else if trimmed.starts_with("Package:") {
+                current_name = Some(trimmed["Package:".len()..].trim().to_string());
+            } else if trimmed.starts_with("Version:") {
+                current_version = Some(trimmed["Version:".len()..].trim().to_string());
+            }
+        }
+        if let (Some(name), Some(version)) = (current_name, current_version) {
+            packages.push(Package {
+                name,
+                version,
+                ecosystem: "Debian".to_string(),
+            });
+        }
+    }
+    packages
+}
+
+fn extract_apk(rootfs: &Path) -> Vec<Package> {
+    let mut packages = Vec::new();
+    let paths = [
+        rootfs.join("lib/apk/db/installed"),
+        rootfs.join("var/lib/apk/db/installed"),
+    ];
+    for status_path in &paths {
+        if let Ok(content) = std::fs::read_to_string(status_path) {
+            let mut current_name = None;
+            let mut current_version = None;
+            for line in content.lines() {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    if let (Some(name), Some(version)) = (current_name.take(), current_version.take()) {
+                        packages.push(Package {
+                            name,
+                            version,
+                            ecosystem: "Alpine".to_string(),
+                        });
+                    }
+                } else if let Some(rest) = trimmed.strip_prefix("P:") {
+                    current_name = Some(rest.trim().to_string());
+                } else if let Some(rest) = trimmed.strip_prefix("V:") {
+                    current_version = Some(rest.trim().to_string());
+                }
+            }
+            if let (Some(name), Some(version)) = (current_name, current_version) {
+                packages.push(Package {
+                    name,
+                    version,
+                    ecosystem: "Alpine".to_string(),
+                });
+            }
+            break;
+        }
+    }
+    packages
 }
 
 #[cfg(test)]

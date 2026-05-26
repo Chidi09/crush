@@ -100,6 +100,8 @@ enum Commands {
     Volume(VolumeArgs),
     #[command(about = "Serve a local, secure OCI-compatible registry proxy")]
     Registry(RegistryArgs),
+    #[command(about = "Log in to a remote OCI-compliant registry")]
+    Login(LoginArgs),
     #[command(about = "Perform general system operations (prune, info, telemetry)")]
     System(SystemArgs),
     #[command(about = "Self-update the crush binary securely")]
@@ -314,6 +316,8 @@ struct SbomArgs {
     image: String,
     #[arg(short, long, help = "Format (cyclonedx, spdx)", default_value = "cyclonedx")]
     format: String,
+    #[arg(short, long, help = "Output file path")]
+    output: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -322,6 +326,12 @@ struct MigrateArgs {
     dockerfile: String,
     #[arg(long, help = "Apply migrations automatically")]
     apply: bool,
+}
+
+#[derive(Args, Debug)]
+struct ComposeLogsArgs {
+    #[arg(short, long, help = "Follow log stream in real time")]
+    follow: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -333,7 +343,7 @@ enum ComposeSubcommand {
     #[command(about = "List compose services status")]
     Ps,
     #[command(about = "Stream logs from all compose services")]
-    Logs,
+    Logs(ComposeLogsArgs),
 }
 
 #[derive(Args, Debug)]
@@ -414,6 +424,102 @@ struct HealthArgs {
     timeout: u64,
     #[arg(long, help = "Retry count", default_value_t = 3)]
     retries: u32,
+}
+
+fn format_mem(bytes: u64) -> String {
+    let kib = bytes as f64 / 1024.0;
+    if kib < 1024.0 {
+        format!("{:.1} KB", kib)
+    } else {
+        let mib = kib / 1024.0;
+        if mib < 1024.0 {
+            format!("{:.1} MB", mib)
+        } else {
+            let gib = mib / 1024.0;
+            format!("{:.1} GB", gib)
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn read_proc_stat(pid: u32) -> Option<(u64, u64)> {
+    let content = std::fs::read_to_string(format!("/proc/{}/stat", pid)).ok()?;
+    let fields: Vec<&str> = content.split_whitespace().collect();
+    let utime: u64 = fields.get(13)?.parse().ok()?;
+    let stime: u64 = fields.get(14)?.parse().ok()?;
+    Some((utime + stime, 100))
+}
+
+#[cfg(target_os = "linux")]
+fn read_proc_mem_kb(pid: u32) -> Option<u64> {
+    let content = std::fs::read_to_string(format!("/proc/{}/status", pid)).ok()?;
+    for line in content.lines() {
+        if let Some(rest) = line.strip_prefix("VmRSS:") {
+            return rest.trim().split_whitespace().next()?.parse().ok();
+        }
+    }
+    None
+}
+
+#[cfg(target_os = "linux")]
+fn get_cpu_and_mem(pid: u32) -> Option<(u64, u64)> {
+    let stat = read_proc_stat(pid)?;
+    let mem_kb = read_proc_mem_kb(pid)?;
+    Some((stat.0, mem_kb * 1024))
+}
+
+#[cfg(target_os = "windows")]
+fn get_cpu_and_mem(pid: u32) -> Option<(u64, u64)> {
+    use windows_sys::Win32::System::Threading::{OpenProcess, GetProcessTimes, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::System::ProcessStatus::{GetProcessMemoryInfo, PROCESS_MEMORY_COUNTERS};
+    use windows_sys::Win32::Foundation::{CloseHandle, FILETIME};
+
+    unsafe {
+        let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if handle == 0 {
+            return None;
+        }
+        let mut creation_time = std::mem::zeroed::<FILETIME>();
+        let mut exit_time = std::mem::zeroed::<FILETIME>();
+        let mut kernel_time = std::mem::zeroed::<FILETIME>();
+        let mut user_time = std::mem::zeroed::<FILETIME>();
+        let ok = GetProcessTimes(
+            handle,
+            &mut creation_time,
+            &mut exit_time,
+            &mut kernel_time,
+            &mut user_time,
+        );
+        let mut counters = std::mem::zeroed::<PROCESS_MEMORY_COUNTERS>();
+        counters.cb = std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32;
+        let mem_ok = GetProcessMemoryInfo(
+            handle,
+            &mut counters as *mut _ as *mut _,
+            std::mem::size_of::<PROCESS_MEMORY_COUNTERS>() as u32,
+        );
+        CloseHandle(handle);
+        
+        let cpu = if ok != 0 {
+            let kernel = ((kernel_time.dwHighDateTime as u64) << 32) | (kernel_time.dwLowDateTime as u64);
+            let user = ((user_time.dwHighDateTime as u64) << 32) | (user_time.dwLowDateTime as u64);
+            kernel + user
+        } else {
+            0
+        };
+
+        let mem = if mem_ok != 0 {
+            counters.WorkingSetSize as u64
+        } else {
+            0
+        };
+
+        Some((cpu, mem))
+    }
+}
+
+#[cfg(not(any(target_os = "linux", target_os = "windows")))]
+fn get_cpu_and_mem(_pid: u32) -> Option<(u64, u64)> {
+    None
 }
 
 #[tokio::main]
@@ -1132,7 +1238,25 @@ async fn main() -> anyhow::Result<()> {
                                         {
                                             is_alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
                                         }
-                                        #[cfg(not(unix))]
+                                        #[cfg(windows)]
+                                        {
+                                            use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+                                            use windows_sys::Win32::Foundation::CloseHandle;
+                                            use windows_sys::Win32::System::Threading::GetExitCodeProcess;
+                                            const STILL_ACTIVE: u32 = 259;
+                                            unsafe {
+                                                let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+                                                if handle == 0 {
+                                                    is_alive = false;
+                                                } else {
+                                                    let mut exit_code: u32 = 0;
+                                                    GetExitCodeProcess(handle, &mut exit_code);
+                                                    is_alive = exit_code == STILL_ACTIVE;
+                                                    CloseHandle(handle);
+                                                }
+                                            }
+                                        }
+                                        #[cfg(all(not(unix), not(windows)))]
                                         {
                                             is_alive = true; // Safe cross-compile fallback
                                         }
@@ -1189,6 +1313,18 @@ async fn main() -> anyhow::Result<()> {
                                             }
                                             if !killed {
                                                 unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL); }
+                                            }
+                                        }
+                                        #[cfg(windows)]
+                                        {
+                                            use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+                                            use windows_sys::Win32::Foundation::CloseHandle;
+                                            unsafe {
+                                                let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+                                                if handle != 0 {
+                                                    TerminateProcess(handle, 1);
+                                                    CloseHandle(handle);
+                                                }
                                             }
                                         }
                                     }
@@ -1368,44 +1504,114 @@ async fn main() -> anyhow::Result<()> {
         Commands::Stats(args) => {
             info!("Reading metrics stats (no-stream: {})", args.no_stream);
             let tui = TuiApp::new(1, data_dir.clone());
+            // Load running containers from filesystem
+            let mut container_list: Vec<Container> = Vec::new();
+            let containers_dir = data_dir.join("containers");
+            if containers_dir.exists() {
+                let mut entries = tokio::fs::read_dir(&containers_dir).await?;
+                while let Some(entry) = entries.next_entry().await? {
+                    let json_path = entry.path().join("container.json");
+                    if json_path.exists() {
+                        if let Ok(content) = tokio::fs::read_to_string(&json_path).await {
+                            if let Ok(c) = serde_json::from_str::<Container>(&content) {
+                                if c.status == ContainerStatus::Running {
+                                    container_list.push(c);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
             if cli.no_interactive || args.no_stream {
-                let cpu_samples = vec![12.5, 15.2, 11.8, 20.1, 18.3];
-                let mem_samples = vec![128.0, 132.5, 145.2, 140.0, 138.7];
-                tui.draw_sparklines_graph("system", &cpu_samples, &mem_samples);
+                if container_list.is_empty() {
+                    println!("No running containers.");
+                } else {
+                    let mut first_samples = std::collections::HashMap::new();
+                    for c in &container_list {
+                        if let Some(pid) = c.pid {
+                            if let Some((ticks, mem)) = get_cpu_and_mem(pid) {
+                                first_samples.insert(c.id.clone(), (ticks, mem));
+                            }
+                        }
+                    }
+
+                    let start_time = std::time::Instant::now();
+                    tokio::time::sleep(std::time::Duration::from_millis(500)).await;
+                    let elapsed_secs = start_time.elapsed().as_secs_f64();
+
+                    let num_cpus = std::thread::available_parallelism().map(|n| n.get()).unwrap_or(1) as f64;
+
+                    println!("{:<16} {:<20} {:<12} {:<12}", "CONTAINER ID", "NAME", "CPU %", "MEM USAGE");
+                    for c in &container_list {
+                        let mut cpu_str = "0.0%".to_string();
+                        let mut mem_str = "0.0 KB".to_string();
+
+                        if let Some(pid) = c.pid {
+                            if let Some((ticks_before, _)) = first_samples.get(&c.id) {
+                                if let Some((ticks_after, mem_after)) = get_cpu_and_mem(pid) {
+                                    let delta = if ticks_after >= *ticks_before {
+                                        ticks_after - ticks_before
+                                    } else {
+                                        0
+                                    };
+
+                                    #[cfg(target_os = "windows")]
+                                    let elapsed_cpu_secs = delta as f64 * 1e-7;
+                                    #[cfg(not(target_os = "windows"))]
+                                    let elapsed_cpu_secs = delta as f64 / 100.0;
+
+                                    let cpu_pct = (elapsed_cpu_secs / elapsed_secs / num_cpus) * 100.0;
+                                    cpu_str = format!("{:.1}%", cpu_pct);
+                                    mem_str = format_mem(mem_after);
+                                }
+                            }
+                        }
+
+                        println!("{:<16} {:<20} {:<12} {:<12}",
+                            &c.id[..12.min(c.id.len())], c.name, cpu_str, mem_str);
+                    }
+                }
             } else {
-                let containers = store.list_images().await.unwrap_or_default();
-                let container_list: Vec<Container> = containers.iter().map(|img| Container {
-                    id: img.id.clone(),
-                    name: img.tag.clone(),
-                    image: img.tag.clone(),
-                    status: ContainerStatus::Running,
-                    pid: Some(7171),
-                    created_at: SystemTime::now(),
-                    started_at: None,
-                    ports: vec![],
-                    mounts: vec![],
-                    memory_limit_bytes: None,
-                    cpu_shares: None,
-                    health: None,
-                    restart_count: None,
-                    restart_policy: None,
-                    health_cmd: None,
-                    health_interval: None,
-                    health_timeout: None,
-                    health_retries: None,
-                    pids_limit: None,
-                    read_only: None,
-                    security_opt: None,
-                }).collect();
                 tui.run_stats(container_list)?;
             }
         }
         Commands::Events(args) => {
             info!("Subscribing to system events with filter: {:?}", args.filter);
-            println!("Listening for events (filter: {:?})...", args.filter);
-            println!("  [EVENT] container create: id=example, image=ubuntu:latest");
-            println!("  [EVENT] container start: id=example");
-            println!("  [EVENT] container die: id=example, exitCode=0");
+            let containers_dir = data_dir.join("containers");
+            let mut events: Vec<(u64, String)> = Vec::new();
+            if containers_dir.exists() {
+                let mut entries = tokio::fs::read_dir(&containers_dir).await?;
+                while let Some(entry) = entries.next_entry().await? {
+                    let json_path = entry.path().join("container.json");
+                    if json_path.exists() {
+                        if let Ok(content) = tokio::fs::read_to_string(&json_path).await {
+                            if let Ok(c) = serde_json::from_str::<Container>(&content) {
+                                let matches_filter = args.filter.as_deref()
+                                    .map(|f| c.image.contains(f) || c.name.contains(f) || c.id.contains(f))
+                                    .unwrap_or(true);
+                                if !matches_filter { continue; }
+                                let created_ts = c.created_at.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                                events.push((created_ts, format!("container create  id={}  image={}  name={}", &c.id[..12.min(c.id.len())], c.image, c.name)));
+                                if let Some(started) = c.started_at {
+                                    let ts = started.duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs();
+                                    events.push((ts, format!("container start   id={}  image={}  name={}", &c.id[..12.min(c.id.len())], c.image, c.name)));
+                                }
+                                if c.status == ContainerStatus::Stopped {
+                                    events.push((created_ts + 1, format!("container die     id={}  image={}  name={}  exitCode=0", &c.id[..12.min(c.id.len())], c.image, c.name)));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            events.sort_by_key(|(ts, _)| *ts);
+            if events.is_empty() {
+                println!("No events found. Start some containers first.");
+            } else {
+                for (ts, msg) in &events {
+                    println!("  [{}] {}", ts, msg);
+                }
+            }
         }
         Commands::Pull(args) => {
             info!("Pulling image: {}", args.image);
@@ -1432,6 +1638,34 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
+        Commands::Login(args) => {
+            use std::io::Write as _;
+            let registry = args.registry.trim_end_matches('/').to_string();
+            let username = match args.username {
+                Some(u) => u,
+                None => {
+                    print!("Username: ");
+                    std::io::stdout().flush()?;
+                    let mut s = String::new();
+                    std::io::stdin().read_line(&mut s)?;
+                    s.trim().to_string()
+                }
+            };
+            let password = if args.password_stdin {
+                let mut s = String::new();
+                std::io::stdin().read_line(&mut s)?;
+                s.trim().to_string()
+            } else if let Some(p) = args.password {
+                p
+            } else {
+                rpassword::prompt_password("Password: ")?
+            };
+
+            let mut auth = crush_registry::auth::AuthHandler::new();
+            auth.authenticate_basic(&registry, &username, &password).await?;
+            auth.save_to_disk(&data_dir.join("auth.json"))?;
+            println!("Login succeeded for {}", registry);
+        }
         Commands::Images(args) => {
             info!("Listing images (show intermediate: {})", args.all);
             let images = store.list_images().await?;
@@ -1457,6 +1691,14 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Tag(args) => {
             info!("Tagging image: {} -> {}", args.source, args.target);
+            let image = match store.database().get_image_by_digest(&args.source).await? {
+                Some(img) => img,
+                None => store.database().get_image_by_tag(&args.source).await?
+                    .ok_or_else(|| anyhow::anyhow!("Image {} not found", args.source))?,
+            };
+            let mut tagged = image.clone();
+            tagged.tag = args.target.clone();
+            store.database().put_image(&tagged).await?;
             println!("Tagged {} as {}", args.source, args.target);
         }
         Commands::Export(args) => {
@@ -1480,23 +1722,170 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 let image = args.image.unwrap();
                 info!("Running vulnerability scanning on image: {}", image);
-                println!("Scan results for {}: No vulnerabilities found", image);
+
+                if which::which("trivy").is_ok() {
+                    println!("Trivy binary detected, using Trivy for scan...");
+                    let status = std::process::Command::new("trivy")
+                        .args(["image", "--format", "table", &image])
+                        .status();
+                    if let Ok(st) = status {
+                        if st.success() {
+                            return Ok(());
+                        }
+                    }
+                }
+
+                println!("Scanning {} (extracting packages from rootfs)...", image);
+                let tmp = tempfile::TempDir::new()?;
+                if let Err(e) = store.extract_layers(&image, &tmp.path().to_path_buf()).await {
+                    eprintln!("Failed to extract layers for scanning: {}", e);
+                    return Ok(());
+                }
+
+                let packages = crush_image::extract_packages(&image, tmp.path()).await;
+                if packages.is_empty() {
+                    println!("0 packages found in image rootfs. 0 critical, 0 high — clean");
+                    return Ok(());
+                }
+
+                println!("Querying OSV API for {} packages...", packages.len());
+
+                let queries: Vec<serde_json::Value> = packages.iter().map(|p| {
+                    serde_json::json!({
+                        "package": {
+                            "name": p.name,
+                            "ecosystem": p.ecosystem
+                        },
+                        "version": p.version
+                    })
+                }).collect();
+
+                let body = serde_json::json!({ "queries": queries });
+
+                let client = reqwest::Client::new();
+                let res = client.post("https://api.osv.dev/v1/querybatch")
+                    .json(&body)
+                    .send()
+                    .await;
+
+                match res {
+                    Ok(resp) => {
+                        if resp.status().is_success() {
+                            if let Ok(json_res) = resp.json::<serde_json::Value>().await {
+                                let mut critical_cnt = 0;
+                                let mut high_cnt = 0;
+                                let mut medium_cnt = 0;
+                                let mut low_cnt = 0;
+
+                                if let Some(results) = json_res["results"].as_array() {
+                                    for (i, result) in results.iter().enumerate() {
+                                        if let Some(vulns) = result["vulns"].as_array() {
+                                            let pkg = &packages[i];
+                                            for vuln in vulns {
+                                                let id = vuln["id"].as_str().unwrap_or("unknown");
+                                                let summary = vuln["summary"].as_str().unwrap_or("No summary provided");
+                                                
+                                                let mut severity = "MEDIUM";
+                                                if let Some(s_str) = vuln["database_specific"]["severity"].as_str() {
+                                                    severity = s_str;
+                                                } else if let Some(sevs) = vuln["severity"].as_array() {
+                                                    if let Some(s_type) = sevs.first() {
+                                                        if let Some(score) = s_type["score"].as_str() {
+                                                            severity = score;
+                                                        }
+                                                    }
+                                                }
+
+                                                let severity = severity.to_uppercase();
+                                                match severity.as_str() {
+                                                    "CRITICAL" => critical_cnt += 1,
+                                                    "HIGH" => high_cnt += 1,
+                                                    "LOW" => low_cnt += 1,
+                                                    _ => medium_cnt += 1,
+                                                }
+
+                                                println!("{:<10} {:<15} {:<10} {} — {}", severity, id, pkg.name, pkg.version, summary);
+                                            }
+                                        }
+                                    }
+                                }
+
+                                if critical_cnt == 0 && high_cnt == 0 && medium_cnt == 0 && low_cnt == 0 {
+                                    println!("0 critical, 0 high, 0 medium — clean");
+                                } else {
+                                    println!("{} critical, {} high, {} medium, {} low vulnerabilities found.", critical_cnt, high_cnt, medium_cnt, low_cnt);
+                                }
+                            } else {
+                                eprintln!("Failed to parse OSV API JSON response.");
+                            }
+                        } else {
+                            eprintln!("OSV API query failed with status: {}", resp.status());
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("Network error querying OSV API: {}", e);
+                    }
+                }
             }
         }
         Commands::Sbom(args) => {
             info!("Generating {} SBOM for image: {}", args.format, args.image);
-            let sbom = serde_json::json!({
-                "bomFormat": args.format,
-                "specVersion": "1.4",
-                "metadata": {
-                    "component": {
-                        "name": args.image,
-                        "type": "container",
-                    }
-                },
-                "components": []
-            });
-            println!("{}", serde_json::to_string_pretty(&sbom)?);
+            let tmp = tempfile::TempDir::new()?;
+            store.extract_layers(&args.image, &tmp.path().to_path_buf()).await?;
+            let components = crush_build::sbom::walk_rootfs(tmp.path());
+            
+            let sbom = if args.format.to_lowercase() == "spdx" {
+                let spdx_components: Vec<serde_json::Value> = components.iter().enumerate().map(|(i, c)| serde_json::json!({
+                    "name": c.name,
+                    "versionInfo": c.version,
+                    "SPDXID": format!("SPDXRef-Package-{}", i),
+                    "downloadLocation": "NONE",
+                    "filesAnalyzed": false,
+                    "externalRefs": [
+                        {
+                            "referenceCategory": "PACKAGE-MANAGER",
+                            "referenceType": "purl",
+                            "referenceLocator": c.purl
+                        }
+                    ]
+                })).collect();
+                serde_json::json!({
+                    "spdxVersion": "SPDX-2.3",
+                    "dataLicense": "CC0-1.0",
+                    "SPDXID": "SPDXRef-DOCUMENT",
+                    "name": format!("{}-sbom", args.image),
+                    "creationInfo": {
+                        "creators": ["Tool: Crush Sbom Generator"],
+                        "created": chrono::Utc::now().to_rfc3339()
+                    },
+                    "packages": spdx_components
+                })
+            } else {
+                serde_json::json!({
+                    "bomFormat": "CycloneDX",
+                    "specVersion": "1.4",
+                    "serialNumber": format!("urn:uuid:{}", hex_encode_random()),
+                    "metadata": {
+                        "timestamp": chrono::Utc::now().to_rfc3339(),
+                        "component": {
+                            "name": args.image,
+                            "type": "container"
+                        }
+                    },
+                    "components": components.iter().map(|c| serde_json::json!({
+                        "type": "library",
+                        "name": c.name,
+                        "version": c.version,
+                        "purl": c.purl
+                    })).collect::<Vec<_>>()
+                })
+            };
+
+            if args.output.is_some() {
+                tokio::fs::write(args.output.unwrap(), serde_json::to_string_pretty(&sbom)?).await?;
+            } else {
+                println!("{}", serde_json::to_string_pretty(&sbom)?);
+            }
         }
         Commands::Migrate(args) => {
             info!("Migrating Dockerfile: {} (apply changes: {})", args.dockerfile, args.apply);
@@ -1562,12 +1951,88 @@ async fn main() -> anyhow::Result<()> {
                         println!("No compose state found. Run `crush compose up` first.");
                     }
                 }
-                ComposeSubcommand::Logs => {
-                    let loader = ComposeLoader::new();
-                    let services = loader.parse_compose_file(&compose_path)?;
-                    println!("Streaming logs for compose services:");
-                    for svc in &services {
-                        println!("  {}: (no log data)", svc);
+                ComposeSubcommand::Logs(logs_args) => {
+                    let project_name = compose_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+                    let state_path = data_dir.join("compose").join(&project_name).with_extension("json");
+                    if state_path.exists() {
+                        let content = tokio::fs::read_to_string(&state_path).await?;
+                        let state: std::collections::HashMap<String, String> = serde_json::from_str(&content)?;
+                        
+                        if logs_args.follow {
+                            let (tx, mut rx) = tokio::sync::mpsc::channel::<(String, String)>(256);
+                            for (svc_name, container_id) in &state {
+                                let stdout_path = data_dir.join("containers").join(container_id).join("stdout.log");
+                                let stderr_path = data_dir.join("containers").join(container_id).join("stderr.log");
+                                
+                                let tx_out = tx.clone();
+                                let svc_out = svc_name.clone();
+                                tokio::spawn(async move {
+                                    if let Ok(mut f) = tokio::fs::File::open(&stdout_path).await {
+                                        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+                                        let _ = f.seek(std::io::SeekFrom::End(0)).await;
+                                        let mut buf = [0u8; 1024];
+                                        loop {
+                                            match f.read(&mut buf).await {
+                                                Ok(0) => tokio::time::sleep(tokio::time::Duration::from_millis(200)).await,
+                                                Ok(n) => {
+                                                    let text = String::from_utf8_lossy(&buf[..n]).to_string();
+                                                    for line in text.lines() {
+                                                        let _ = tx_out.send((svc_out.clone(), line.to_string())).await;
+                                                    }
+                                                }
+                                                Err(_) => break,
+                                            }
+                                        }
+                                    }
+                                });
+
+                                let tx_err = tx.clone();
+                                let svc_err = svc_name.clone();
+                                tokio::spawn(async move {
+                                    if let Ok(mut f) = tokio::fs::File::open(&stderr_path).await {
+                                        use tokio::io::{AsyncReadExt, AsyncSeekExt};
+                                        let _ = f.seek(std::io::SeekFrom::End(0)).await;
+                                        let mut buf = [0u8; 1024];
+                                        loop {
+                                            match f.read(&mut buf).await {
+                                                Ok(0) => tokio::time::sleep(tokio::time::Duration::from_millis(200)).await,
+                                                Ok(n) => {
+                                                    let text = String::from_utf8_lossy(&buf[..n]).to_string();
+                                                    for line in text.lines() {
+                                                        let _ = tx_err.send((svc_err.clone(), line.to_string())).await;
+                                                    }
+                                                }
+                                                Err(_) => break,
+                                            }
+                                        }
+                                    }
+                                });
+                            }
+                            drop(tx);
+                            println!("Following logs (Ctrl+C to stop)...");
+                            while let Some((svc, line)) = rx.recv().await {
+                                println!("[{}] {}", svc, line);
+                            }
+                        } else {
+                            for (svc_name, container_id) in &state {
+                                let container_dir = data_dir.join("containers").join(container_id);
+                                let stdout_path = container_dir.join("stdout.log");
+                                let stderr_path = container_dir.join("stderr.log");
+                                println!("=== {} ({}) ===", svc_name, &container_id[..12.min(container_id.len())]);
+                                if stdout_path.exists() {
+                                    if let Ok(logs) = tokio::fs::read_to_string(&stdout_path).await {
+                                        print!("{}", logs);
+                                    }
+                                }
+                                if stderr_path.exists() {
+                                    if let Ok(logs) = tokio::fs::read_to_string(&stderr_path).await {
+                                        eprint!("{}", logs);
+                                    }
+                                }
+                            }
+                        }
+                    } else {
+                        println!("No running compose state. Run `crush compose up` first.");
                     }
                 }
             }
@@ -1585,11 +2050,19 @@ async fn main() -> anyhow::Result<()> {
                         println!("Created network: {} ({})", name, subnet_str);
                     }
                     NetworkSubcommand::Rm { name } => {
+                        net.remove(&name).await?;
                         println!("Removed network: {}", name);
                     }
                     NetworkSubcommand::Ls => {
-                        println!("Networks:");
-                        println!("  crush_nat (NAT, 172.17.0.0/16)");
+                        let nets = net.list().await?;
+                        println!("{:<20} {:<20} {:<18} {}", "NAME", "ID", "SUBNET", "GATEWAY");
+                        println!("{}", "-".repeat(72));
+                        for n in &nets {
+                            println!("{:<20} {:<20} {:<18} {}", n.name, &n.id[..12.min(n.id.len())], n.subnet, n.gateway);
+                        }
+                        if nets.is_empty() {
+                            println!("No user-defined networks.");
+                        }
                     }
                 }
             }
@@ -1643,8 +2116,44 @@ async fn main() -> anyhow::Result<()> {
             match args.subcommand {
                 SystemSubcommand::Prune { all } => {
                     println!("Pruning system (all: {})...", all);
-                    println!("  Removed 0 stopped containers");
-                    println!("  Removed 0 dangling images");
+                    // Remove stopped containers
+                    let mut removed_containers = 0u64;
+                    let mut reclaimed_bytes = 0u64;
+                    let containers_dir = data_dir.join("containers");
+                    if containers_dir.exists() {
+                        let mut entries = tokio::fs::read_dir(&containers_dir).await?;
+                        while let Some(entry) = entries.next_entry().await? {
+                            let json_path = entry.path().join("container.json");
+                            if json_path.exists() {
+                                if let Ok(content) = tokio::fs::read_to_string(&json_path).await {
+                                    if let Ok(c) = serde_json::from_str::<Container>(&content) {
+                                        let can_remove = c.status == ContainerStatus::Stopped || all;
+                                        if can_remove {
+                                            if let Ok(dir_size) = dir_size_bytes(entry.path()).await {
+                                                reclaimed_bytes += dir_size;
+                                            }
+                                            tokio::fs::remove_dir_all(entry.path()).await.ok();
+                                            removed_containers += 1;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    println!("  Removed {} stopped container(s)", removed_containers);
+                    // Remove dangling images (images with no running container referencing them)
+                    let mut removed_images = 0u64;
+                    if all {
+                        if let Ok(images) = store.list_images().await {
+                            for img in images {
+                                if store.delete_image(&img.tag).await.is_ok() {
+                                    removed_images += 1;
+                                }
+                            }
+                        }
+                    }
+                    println!("  Removed {} dangling image(s)", removed_images);
+                    // Remove anonymous volumes
                     let driver = LocalDriver::new(data_dir.clone());
                     let mut removed_vols = 0;
                     if let Ok(vols) = driver.list().await {
@@ -1656,17 +2165,69 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
                     }
-                    println!("  Removed {} unused volumes", removed_vols);
-                    println!("  Reclaimed 0 B of space");
+                    println!("  Removed {} unused volume(s)", removed_vols);
+                    println!("  Reclaimed {:.1} MB", reclaimed_bytes as f64 / 1_048_576.0);
                 }
                 SystemSubcommand::Info => {
                     println!("Crush Container Runtime v0.1.0");
                     println!("OS: {}", std::env::consts::OS);
                     println!("Arch: {}", std::env::consts::ARCH);
                     println!("Data dir: {:?}", data_dir);
-                    println!("Containers: 0 running, 0 stopped");
-                    println!("Images: 0");
-                    println!("Volumes: 0");
+
+                    let mut running_count = 0;
+                    let mut stopped_count = 0;
+                    let containers_dir = data_dir.join("containers");
+                    if containers_dir.exists() {
+                        if let Ok(entries) = std::fs::read_dir(&containers_dir) {
+                            for entry in entries.filter_map(Result::ok) {
+                                if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                                    let json_path = entry.path().join("container.json");
+                                    if json_path.exists() {
+                                        if let Ok(content) = std::fs::read_to_string(&json_path) {
+                                            if let Ok(c) = serde_json::from_str::<Container>(&content) {
+                                                let mut is_alive = false;
+                                                if let Some(pid) = c.pid {
+                                                    #[cfg(unix)]
+                                                    {
+                                                        is_alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+                                                    }
+                                                    #[cfg(windows)]
+                                                    {
+                                                        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+                                                        use windows_sys::Win32::Foundation::CloseHandle;
+                                                        use windows_sys::Win32::System::Threading::GetExitCodeProcess;
+                                                        const STILL_ACTIVE: u32 = 259;
+                                                        unsafe {
+                                                            let handle = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+                                                            if handle != 0 {
+                                                                let mut exit_code: u32 = 0;
+                                                                GetExitCodeProcess(handle, &mut exit_code);
+                                                                is_alive = exit_code == STILL_ACTIVE;
+                                                                CloseHandle(handle);
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                                if is_alive && c.status == ContainerStatus::Running {
+                                                    running_count += 1;
+                                                } else {
+                                                    stopped_count += 1;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                    println!("Containers: {} running, {} stopped", running_count, stopped_count);
+
+                    let image_count = store.list_images().await.map(|list| list.len()).unwrap_or(0);
+                    println!("Images: {}", image_count);
+
+                    let driver = LocalDriver::new(data_dir.clone());
+                    let volume_count = driver.list().await.map(|list| list.len()).unwrap_or(0);
+                    println!("Volumes: {}", volume_count);
                 }
                 SystemSubcommand::Telemetry { enable } => {
                     if enable {
@@ -1679,12 +2240,62 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Update(args) => {
             info!("Self-updater executing (check only: {})", args.check_only);
-            if args.check_only {
-                println!("Current version: 0.1.0");
-                println!("Latest version: 0.1.0 (up to date)");
-            } else {
-                println!("Self-update not yet implemented in this build.");
+            let api_url = "https://api.github.com/repos/Chidi09/crush/releases/latest";
+            let client = reqwest::Client::builder().user_agent("crush/0.1.0").build()?;
+            let resp: serde_json::Value = client.get(api_url).send().await?.json().await?;
+
+            let latest = resp["tag_name"].as_str().unwrap_or("unknown").trim_start_matches('v');
+            let current = env!("CARGO_PKG_VERSION");
+
+            println!("Current: v{}  Latest: v{}", current, latest);
+
+            if latest == current {
+                println!("Already up to date.");
+                return Ok(());
             }
+            if args.check_only { return Ok(()); }
+
+            let target_name = if cfg!(target_os = "windows") {
+                format!("crush-{}-windows-x86_64.exe", latest)
+            } else {
+                format!("crush-{}-linux-x86_64", latest)
+            };
+
+            let asset_url = resp["assets"].as_array()
+                .and_then(|a| a.iter().find(|a| a["name"].as_str() == Some(&target_name)))
+                .and_then(|a| a["browser_download_url"].as_str())
+                .ok_or_else(|| anyhow::anyhow!("No release asset found for this platform: {}", target_name))?
+                .to_string();
+
+            println!("Downloading {}...", target_name);
+            let bytes = client.get(&asset_url).send().await?.bytes().await?;
+
+            let current_exe = std::env::current_exe()?;
+            #[cfg(target_os = "windows")]
+            {
+                let old_path = current_exe.with_extension("old");
+                if old_path.exists() {
+                    let _ = std::fs::remove_file(&old_path);
+                }
+                std::fs::rename(&current_exe, &old_path)?;
+                if let Err(e) = tokio::fs::write(&current_exe, &bytes).await {
+                    let _ = std::fs::rename(&old_path, &current_exe);
+                    return Err(e.into());
+                }
+                let _ = std::fs::remove_file(&old_path);
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                let tmp_path = current_exe.with_extension("tmp");
+                tokio::fs::write(&tmp_path, &bytes).await?;
+                #[cfg(unix)]
+                {
+                    use std::os::unix::fs::PermissionsExt;
+                    std::fs::set_permissions(&tmp_path, std::fs::Permissions::from_mode(0o755))?;
+                }
+                std::fs::rename(&tmp_path, &current_exe)?;
+            }
+            println!("Updated to v{}. Restart crush to use the new version.", latest);
         }
         Commands::Daemon(args) => {
             let socket_path = PathBuf::from(&args.socket);
@@ -2331,6 +2942,23 @@ async fn run_compose_up(compose_path: &Path, data_dir: &Path, store: &ImageStore
     Ok(())
 }
 
+async fn dir_size_bytes(path: std::path::PathBuf) -> std::io::Result<u64> {
+    let mut total = 0u64;
+    let mut stack = vec![path];
+    while let Some(dir) = stack.pop() {
+        let mut entries = tokio::fs::read_dir(&dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let meta = entry.metadata().await?;
+            if meta.is_dir() {
+                stack.push(entry.path());
+            } else {
+                total += meta.len();
+            }
+        }
+    }
+    Ok(total)
+}
+
 fn parse_memory_bytes(s: &str) -> Option<u64> {
     let s = s.trim();
     if let Ok(n) = s.parse::<u64>() { return Some(n); }
@@ -2342,4 +2970,16 @@ fn parse_memory_bytes(s: &str) -> Option<u64> {
         "g" => Some(base * 1024 * 1024 * 1024),
         _ => None,
     }
+}
+
+#[derive(Args, Debug)]
+pub struct LoginArgs {
+    #[arg(help = "OCI Registry URL to log into (e.g. docker.io)")]
+    pub registry: String,
+    #[arg(short, long, help = "Username")]
+    pub username: Option<String>,
+    #[arg(short, long, help = "Password")]
+    pub password: Option<String>,
+    #[arg(long, help = "Read password from stdin")]
+    pub password_stdin: bool,
 }

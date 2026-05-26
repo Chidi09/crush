@@ -31,7 +31,7 @@ impl RegistryClientHandle {
     }
 
     pub async fn fetch_blob(&self, registry: &str, image: &str, digest: &str) -> Result<Vec<u8>> {
-        let client = self.inner.lock().await;
+        let mut client = self.inner.lock().await;
         client.fetch_blob_inner(registry, image, digest).await
     }
 
@@ -59,14 +59,33 @@ pub struct RegistryClient {
 impl RegistryClient {
     pub fn new(config_path: Option<PathBuf>) -> Self {
         let mut auth = AuthHandler::new();
-        if let Some(path) = config_path {
+        if let Some(ref path) = config_path {
             let docker_config = path.join("config.json");
             if docker_config.exists() {
                 auth.load_docker_config(&docker_config).ok();
             }
-            let legacy_config = path.join("config.json");
-            if legacy_config.exists() {
-                auth.load_docker_config(&legacy_config).ok();
+        }
+
+        // Load saved auth on startup
+        let crush_auth_path = if let Some(ref path) = config_path {
+            path.join("auth.json")
+        } else {
+            let base = if cfg!(target_os = "linux") {
+                PathBuf::from("/var/lib/crush")
+            } else if cfg!(target_os = "windows") {
+                PathBuf::from(std::env::var("PROGRAMDATA").unwrap_or_else(|_| "C:\\ProgramData\\Crush".to_string()))
+            } else {
+                let home = std::env::var("USERPROFILE").or_else(|_| std::env::var("HOME")).unwrap_or_else(|_| ".".to_string());
+                PathBuf::from(home).join(".config").join("crush")
+            };
+            base.join("auth.json")
+        };
+
+        if crush_auth_path.exists() {
+            if let Ok(loaded) = AuthHandler::load_from_disk(&crush_auth_path) {
+                for (reg, registry_auth) in loaded.tokens {
+                    auth.tokens.insert(reg, registry_auth);
+                }
             }
         }
 
@@ -105,7 +124,19 @@ impl RegistryClient {
         Ok(())
     }
 
-    async fn fetch_bearer_token(&self, www_auth: &str) -> Result<String> {
+    async fn ensure_fresh_auth(&mut self, registry: &str, image: &str) -> Result<()> {
+        // Clear token if it expires within the next 5 minutes
+        use std::time::{SystemTime, UNIX_EPOCH};
+        if let Some(auth) = self.auth.tokens.get(registry) {
+            let now = SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs();
+            if auth.token_expiry < now + 300 {
+                self.auth.tokens.remove(registry);
+            }
+        }
+        self.ensure_auth(registry, image).await
+    }
+
+    async fn fetch_bearer_token(&self, www_auth: &str) -> Result<(String, u64)> {
         // Parse: Bearer realm="https://...",service="...",scope="..."
         let params = www_auth.trim_start_matches("Bearer ");
         let mut realm = String::new();
@@ -137,6 +168,7 @@ impl RegistryClient {
         let json: serde_json::Value = resp.json().await
             .map_err(|e| CrushError::ImageError(format!("Token response parse failed: {}", e)))?;
 
+        let expires_in: u64 = json["expires_in"].as_u64().unwrap_or(3600);
         let token = json["token"].as_str()
             .or_else(|| json["access_token"].as_str())
             .unwrap_or("")
@@ -145,7 +177,7 @@ impl RegistryClient {
         if token.is_empty() {
             Err(CrushError::ImageError("Empty token in auth response".to_string()))
         } else {
-            Ok(token)
+            Ok((token, expires_in))
         }
     }
 
@@ -166,7 +198,7 @@ impl RegistryClient {
     }
 
     pub async fn fetch_manifest_inner(&mut self, registry: &str, image: &str, reference: &str) -> Result<serde_json::Value> {
-        self.ensure_auth(registry, image).await?;
+        self.ensure_fresh_auth(registry, image).await?;
 
         let url = format!("{}/{}/manifests/{}", Self::base_url(registry), image, reference);
         let resp = self.build_request(&url, registry)
@@ -183,8 +215,8 @@ impl RegistryClient {
                 .map(|s| s.to_string());
 
             if let Some(www_auth) = www_auth {
-                if let Ok(token) = self.fetch_bearer_token(&www_auth).await {
-                    self.auth.store_token(registry, token);
+                if let Ok((token, expires_in)) = self.fetch_bearer_token(&www_auth).await {
+                    self.auth.store_token_with_expiry(registry, token, expires_in);
                     let resp2 = self.build_request(&url, registry)
                         .header("Accept", Self::accept_header())
                         .send()
@@ -214,12 +246,42 @@ impl RegistryClient {
             .map_err(|e| CrushError::ImageError(format!("Manifest parse failed: {}", e)))
     }
 
-    pub async fn fetch_blob_inner(&self, registry: &str, image: &str, digest: &str) -> Result<Vec<u8>> {
+    pub async fn fetch_blob_inner(&mut self, registry: &str, image: &str, digest: &str) -> Result<Vec<u8>> {
+        self.ensure_fresh_auth(registry, image).await?;
+
         let url = format!("{}/{}/blobs/{}", Self::base_url(registry), image, digest);
         let resp = self.build_request(&url, registry)
             .send()
             .await
             .map_err(|e| CrushError::ImageError(format!("Blob fetch failed: {}", e)))?;
+
+        if resp.status().as_u16() == 401 {
+            let www_auth = resp.headers()
+                .get("www-authenticate")
+                .and_then(|v| v.to_str().ok())
+                .map(|s| s.to_string());
+
+            if let Some(www_auth) = www_auth {
+                if let Ok((token, expires_in)) = self.fetch_bearer_token(&www_auth).await {
+                    self.auth.store_token_with_expiry(registry, token, expires_in);
+                    let resp2 = self.build_request(&url, registry)
+                        .send()
+                        .await
+                        .map_err(|e| CrushError::ImageError(format!("Blob fetch failed: {}", e)))?;
+                    if resp2.status().is_success() {
+                        let bytes = resp2.bytes().await
+                            .map_err(|e| CrushError::ImageError(format!("Blob read failed: {}", e)))?;
+                        return Ok(bytes.to_vec());
+                    }
+                    return Err(CrushError::ImageError(format!(
+                        "Registry returned HTTP {} after auth retry", resp2.status()
+                    )));
+                }
+            }
+            return Err(CrushError::ImageError(format!(
+                "Authentication required for {}/{}. Try `crush registry login` first.", registry, image
+            )));
+        }
 
         if !resp.status().is_success() {
             return Err(CrushError::ImageError(format!(
