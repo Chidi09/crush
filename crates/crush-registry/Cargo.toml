@@ -19,3 +19,6 @@ url = { workspace = true }
 base64 = "0.22"
 sha2 = { workspace = true }
 hex = { workspace = true }
+
+[dev-dependencies]
+tokio = { workspace = true, features = ["rt", "macros"] }
