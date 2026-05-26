@@ -70,12 +70,17 @@ impl BuildSecrets {
 
         for (id, secret) in &self.secrets {
             let secret_path = secrets_dir.join(id);
-            // ⚠ FIX: Use 0o600 for secrets to prevent world-readable build artifacts
-            use std::os::unix::fs::OpenOptionsExt;
+            #[cfg(unix)]
+            let mut file = {
+                use std::os::unix::fs::OpenOptionsExt;
+                std::fs::OpenOptions::new()
+                    .create(true).write(true).mode(0o600)
+                    .open(&secret_path)
+                    .map_err(|e| CrushError::StorageError(format!("Failed to create secret file: {}", e)))?
+            };
+            #[cfg(not(unix))]
             let mut file = std::fs::OpenOptions::new()
-                .create(true)
-                .write(true)
-                .mode(0o600)
+                .create(true).write(true)
                 .open(&secret_path)
                 .map_err(|e| CrushError::StorageError(format!("Failed to create secret file: {}", e)))?;
             use std::io::Write;
