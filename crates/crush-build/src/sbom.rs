@@ -200,6 +200,7 @@ impl SbomGenerator {
             }
         }
 
+        Ok(components)
     }
 }
 
