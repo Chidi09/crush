@@ -128,6 +128,7 @@ impl CrushSpecDetector {
         let version = VersionResolver::resolve(root, manifest_ver);
 
         let (framework, confidence_bump) = self.detect_node_framework(&json, root);
+        let framework_detected = !framework.is_empty();
         let mut confidence = if has_ts { 0.97 } else { 0.93 };
         confidence += confidence_bump;
 
@@ -141,7 +142,7 @@ impl CrushSpecDetector {
             runtime_type: rt,
             runtime_version: version,
             framework_name: framework,
-            framework_detected: !framework.is_empty(),
+            framework_detected,
             build_command: build_cmd,
             entry_point: entry,
             port,
