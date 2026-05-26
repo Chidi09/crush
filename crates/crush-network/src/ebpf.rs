@@ -45,6 +45,82 @@ impl EbpfManager {
         }
         EbpfAvailability::Available
     }
+
+    /// Load the compiled eBPF ELF from `/usr/local/lib/crush/crush-ebpf` and
+    /// attach the `xdp_router` XDP program and `tc_egress` TC egress program
+    /// to `iface`.
+    ///
+    /// Returns `Err(CrushError::NetworkError)` on non-Linux platforms.
+    pub fn load_and_attach(iface: &str) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        {
+            use aya::{
+                programs::{Xdp, XdpFlags, SchedClassifier, TcAttachType},
+            };
+            use std::process::Command as StdCommand;
+
+            let elf_path = "/usr/local/lib/crush/crush-ebpf";
+            let mut bpf = aya::Ebpf::load_file(elf_path)
+                .map_err(|e| CrushError::NetworkError(format!("eBPF load_file {}: {}", elf_path, e)))?;
+
+            // --- XDP: xdp_router ---
+            let xdp_prog: &mut Xdp = bpf
+                .program_mut("xdp_router")
+                .ok_or_else(|| CrushError::NetworkError("xdp_router not found in ELF".into()))?
+                .try_into()
+                .map_err(|e| CrushError::NetworkError(format!("xdp_router cast: {}", e)))?;
+
+            xdp_prog
+                .load()
+                .map_err(|e| CrushError::NetworkError(format!("xdp_router load: {}", e)))?;
+            xdp_prog
+                .attach(iface, XdpFlags::default())
+                .map_err(|e| CrushError::NetworkError(format!("xdp_router attach {}: {}", iface, e)))?;
+
+            // --- TC Egress: tc_egress ---
+            // Ensure the clsact qdisc exists on the interface
+            let tc_out = StdCommand::new("tc")
+                .args(["qdisc", "add", "dev", iface, "clsact"])
+                .output()
+                .map_err(|e| CrushError::NetworkError(format!("tc qdisc add: {}", e)))?;
+            if !tc_out.status.success() {
+                let stderr = String::from_utf8_lossy(&tc_out.stderr);
+                if !stderr.contains("File exists") {
+                    return Err(CrushError::NetworkError(
+                        format!("tc clsact on {}: {}", iface, stderr)
+                    ));
+                }
+            }
+
+            let tc_prog: &mut SchedClassifier = bpf
+                .program_mut("tc_egress")
+                .ok_or_else(|| CrushError::NetworkError("tc_egress not found in ELF".into()))?
+                .try_into()
+                .map_err(|e| CrushError::NetworkError(format!("tc_egress cast: {}", e)))?;
+
+            tc_prog
+                .load()
+                .map_err(|e| CrushError::NetworkError(format!("tc_egress load: {}", e)))?;
+            tc_prog
+                .attach(iface, TcAttachType::Egress)
+                .map_err(|e| CrushError::NetworkError(format!("tc_egress attach {}: {}", iface, e)))?;
+
+            // `bpf` must stay alive — in production this should be stored; for now
+            // we intentionally leak it so the programs remain attached for the
+            // lifetime of the process.
+            std::mem::forget(bpf);
+
+            Ok(())
+        }
+
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = iface;
+            Err(CrushError::NetworkError(
+                "load_and_attach is only supported on Linux".into(),
+            ))
+        }
+    }
 }
 
 #[cfg(feature = "ebpf")]
@@ -60,7 +136,7 @@ impl EbpfManager {
         use aya::programs::{Xdp, XdpFlags};
 
         let prog: &mut Xdp = self.bpf
-            .program_mut("crush_xdp")
+            .program_mut("xdp_router")
             .ok_or_else(|| CrushError::NetworkError("XDP program not found in ELF".into()))?
             .try_into()
             .map_err(|e| CrushError::NetworkError(format!("XDP cast: {}", e)))?;
@@ -88,7 +164,7 @@ impl EbpfManager {
         }
 
         let prog: &mut SchedClassifier = self.bpf
-            .program_mut("crush_tc_egress")
+            .program_mut("tc_egress")
             .ok_or_else(|| CrushError::NetworkError("TC program not found in ELF".into()))?
             .try_into()
             .map_err(|e| CrushError::NetworkError(format!("TC cast: {}", e)))?;

@@ -24,13 +24,13 @@ netlink-packet-route = "0.19"
 hickory-resolver = "0.25"
 hickory-server = "0.25"
 hickory-proto = "0.25"
-aya = { version = "0.12", optional = true }
+aya = { version = "0.13", features = ["async_tokio"] }
 aya-obj = { version = "0.2", optional = true }
-aya-log = { version = "0.2", optional = true }
+aya-log = "0.2"
 sled = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 
 [features]
 default = []
-ebpf = ["aya", "aya-obj", "aya-log"]
+ebpf = ["aya-obj"]
