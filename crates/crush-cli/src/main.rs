@@ -722,12 +722,14 @@ async fn main() -> anyhow::Result<()> {
                     println!("\n  Root cause:  {}", diag.root_cause);
                     println!("  Fix:         {}", diag.fix_description);
                     println!("  Confidence:  {:.2}", diag.confidence);
-                    if let Some(ref patch) = diag.proposed_patch {
+                                    if let Some(ref patch) = diag.proposed_patch {
                         println!("  Patch:\n{}", patch);
                     }
                 }
                 for be in &full.build_errors {
-                    println!("  Build error [{}]: {} at {}:{}", be.kind, be.message, be.file, be.line);
+                    println!("  Build error [{:?}]: {} at {}:{}", be.kind, be.message,
+                        be.file.as_deref().unwrap_or("<unknown>"),
+                        be.line.unwrap_or(0));
                 }
                 if full.trace.is_none() && full.diagnosis.is_none() && full.build_errors.is_empty() {
                     println!("  No structured error found. Raw stderr:\n{}", stderr);
