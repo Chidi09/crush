@@ -15,7 +15,7 @@ pub use health::{HealthChecker, HealthCheckConfig, HealthCheckType, HealthState}
 pub use crush_types::HealthStatus;
 pub use restart::{RestartManager, RestartPolicy};
 pub use oom::{OomMonitor, OomEvent, OomPolicy};
-pub use secrets::{SecretManager, SecretSpec, SecretValue, SecretSource, SecretDestination};
+pub use secrets::{SecretManager, SecretSpec, SecretValue, SecretSource, SecretDestination, VaultEngine};
 pub use rootless::RootlessManager;
 pub use apparmor::AppArmorProfile;
 pub use selinux::{SelinuxManager, SelinuxMode};
