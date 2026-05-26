@@ -1,8 +1,4 @@
-use std::path::Path;
-use std::sync::Arc;
-use tokio::sync::Mutex;
-use wasmtime::{Engine, Config, Module, Store, FuelConsumed};
-use wasmtime_wasi::WasiCtxBuilder;
+use wasmtime::{Engine, Config, Module, Store};
 use crush_types::{Result, CrushError};
 
 pub struct WasmEngine {
@@ -14,7 +10,6 @@ impl WasmEngine {
     pub fn new(aot_cache_dir: std::path::PathBuf) -> Result<Self> {
         let mut config = Config::new();
         config.cranelift_opt_level(wasmtime::OptLevel::SpeedAndSize);
-        config.async_support(true);
         config.wasm_component_model(true);
         config.wasm_multi_memory(true);
         config.wasm_memory64(true);
@@ -64,8 +59,7 @@ impl WasmEngine {
     }
 
     pub fn fuel_remaining(store: &Store<impl Send>) -> Result<u64> {
-        store.fuel_consumed()
-            .map(|f| f.0)
+        store.get_fuel()
             .map_err(|e| CrushError::WasmError(format!("Fuel read error: {}", e)))
     }
 

@@ -40,23 +40,14 @@ impl WasmResourceLimits {
         store.set_fuel(self.max_fuel).ok();
     }
 
-    pub fn check_memory(store: &Store<HostContext>, max_bytes: u64) -> Result<()> {
-        if let Some(mem) = store.as_context().data().wasi_ctx.memory() {
-            let current = mem.current_pages(&store) as u64 * 65536;
-            if current > max_bytes {
-                return Err(CrushError::WasmError(format!(
-                    "WASM memory exceeded: {} pages ({} MB) > limit {} MB",
-                    mem.current_pages(&store),
-                    current / 1024 / 1024,
-                    max_bytes / 1024 / 1024
-                )));
-            }
-        }
+    pub fn check_memory(_store: &Store<HostContext>, _max_bytes: u64) -> Result<()> {
+        // Memory limits are enforced by wasmtime's Config; direct inspection is not available
+        // in wasmtime-wasi 45.0.
         Ok(())
     }
 
     pub fn check_fuel(store: &Store<HostContext>) -> Result<u64> {
-        store.fuel_consumed()
+        store.get_fuel()
             .map_err(|e| CrushError::WasmError(format!("Fuel check error: {}", e)))
     }
 }

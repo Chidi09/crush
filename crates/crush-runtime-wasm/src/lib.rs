@@ -11,7 +11,8 @@ use std::sync::Arc;
 use std::collections::HashMap;
 use async_trait::async_trait;
 use tokio::sync::Mutex;
-use wasmtime::{Store, Linker};
+use sha2::Digest;
+use wasmtime::Store;
 use crush_types::{RuntimeBackend, Container, Result, CrushError};
 use engine::WasmEngine;
 use component::{HostContext, ComponentLoader};
@@ -30,6 +31,7 @@ pub struct WasmRuntime {
     data_dir: PathBuf,
 }
 
+#[derive(Clone)]
 struct WasmInstance {
     container_id: String,
     wasm_path: PathBuf,
@@ -125,10 +127,7 @@ impl RuntimeBackend for WasmRuntime {
             self.limits_memory,
         )?;
 
-        let host_ctx = HostContext {
-            wasi_ctx: ctx,
-            http_ctx: wasmtime_wasi_http::WasiHttpCtx::new(),
-        };
+        let host_ctx = HostContext::new(ctx, wasmtime_wasi_http::WasiHttpCtx::new());
 
         let mut store = Store::new(self.engine.engine(), host_ctx);
         self.limits.apply_to_store(&mut store);
