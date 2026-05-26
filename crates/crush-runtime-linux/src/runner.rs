@@ -45,8 +45,12 @@ pub fn run_container(rootfs: &Path, command: &[String], env_vars: &[String]) -> 
             // Try to unshare with TIME namespace (0x00000080)
             let all_flags = base_flags.bits() | 0x00000080;
             if libc::unshare(all_flags) != 0 {
-                nix::sched::unshare(base_flags)
-                    .map_err(|e| std::io::Error::new(std::io::ErrorKind::Other, e.to_string()))?;
+                if let Err(e) = nix::sched::unshare(base_flags) {
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("Failed to unshare namespaces (base_flags={:?}): {}", base_flags, e)
+                    ));
+                }
             }
 
             // Mount procfs inside the container rootfs
@@ -54,26 +58,38 @@ pub fn run_container(rootfs: &Path, command: &[String], env_vars: &[String]) -> 
             let _ = std::fs::create_dir_all(&proc_dir);
             let src_proc = std::ffi::CString::new("proc").unwrap();
             let tgt_proc = std::ffi::CString::new(proc_dir.to_string_lossy().as_bytes()).unwrap();
-            libc::mount(
+            let mount_proc_ret = libc::mount(
                 src_proc.as_ptr(),
                 tgt_proc.as_ptr(),
                 src_proc.as_ptr(),
                 libc::MS_NOSUID | libc::MS_NOEXEC | libc::MS_NODEV,
                 std::ptr::null(),
             );
+            if mount_proc_ret != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to mount /proc inside rootfs: {}", std::io::Error::last_os_error())
+                ));
+            }
 
             // Bind-mount /dev into the container rootfs
             let dev_dir = rootfs_path.join("dev");
             let _ = std::fs::create_dir_all(&dev_dir);
             let src_dev = std::ffi::CString::new("/dev").unwrap();
             let tgt_dev = std::ffi::CString::new(dev_dir.to_string_lossy().as_bytes()).unwrap();
-            libc::mount(
+            let mount_dev_ret = libc::mount(
                 src_dev.as_ptr(),
                 tgt_dev.as_ptr(),
                 std::ptr::null(),
                 libc::MS_BIND | libc::MS_REC,
                 std::ptr::null(),
             );
+            if mount_dev_ret != 0 {
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to bind-mount /dev inside rootfs: {}", std::io::Error::last_os_error())
+                ));
+            }
 
             // pivot_root requires that the new root is a mount point, so we bind mount it onto itself
             let rootfs_str = rootfs_path.to_string_lossy().into_owned();
@@ -86,7 +102,10 @@ pub fn run_container(rootfs: &Path, command: &[String], env_vars: &[String]) -> 
                 std::ptr::null(),
             );
             if mount_ret != 0 {
-                return Err(std::io::Error::last_os_error());
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to bind-mount rootfs onto itself ({}): {}", rootfs_str, std::io::Error::last_os_error())
+                ));
             }
 
             // Create temporary dir for the old root
@@ -99,18 +118,27 @@ pub fn run_container(rootfs: &Path, command: &[String], env_vars: &[String]) -> 
             // Perform pivot_root
             let ret = libc::syscall(libc::SYS_pivot_root, tgt_root_c.as_ptr(), old_root_c.as_ptr());
             if ret != 0 {
-                return Err(std::io::Error::last_os_error());
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed pivot_root: {}", std::io::Error::last_os_error())
+                ));
             }
 
             // Switch execution directory to new root
             if libc::chdir(std::ffi::CString::new("/").unwrap().as_ptr()) != 0 {
-                return Err(std::io::Error::last_os_error());
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed chdir to new root: {}", std::io::Error::last_os_error())
+                ));
             }
 
             // Detach and unmount the old root filesystem
             let old_root_relative = std::ffi::CString::new("/.old_root").unwrap();
             if libc::umount2(old_root_relative.as_ptr(), libc::MNT_DETACH) != 0 {
-                return Err(std::io::Error::last_os_error());
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to umount old_root: {}", std::io::Error::last_os_error())
+                ));
             }
 
             // Remove /.old_root directory
