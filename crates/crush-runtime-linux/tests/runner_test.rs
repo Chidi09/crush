@@ -20,6 +20,33 @@ fn setup_rootfs(rootfs: &Path) -> bool {
 }
 
 #[cfg(target_os = "linux")]
+fn mock_container() -> crush_types::Container {
+    crush_types::Container {
+        id: "test".to_string(),
+        name: "test".to_string(),
+        image: "test".to_string(),
+        status: crush_types::ContainerStatus::Running,
+        pid: None,
+        created_at: std::time::SystemTime::now(),
+        started_at: None,
+        ports: vec![],
+        mounts: vec![],
+        memory_limit_bytes: None,
+        cpu_shares: None,
+        health: None,
+        restart_count: None,
+        restart_policy: None,
+        health_cmd: None,
+        health_interval: None,
+        health_timeout: None,
+        health_retries: None,
+        pids_limit: None,
+        read_only: None,
+        security_opt: None,
+    }
+}
+
+#[cfg(target_os = "linux")]
 #[test]
 fn test_run_container_success() {
     let dir = tempdir().unwrap();
@@ -28,7 +55,7 @@ fn test_run_container_success() {
         println!("Skipping test, /bin/busybox not found");
         return;
     }
-    let code = run_container(&rootfs, &[String::from("/bin/echo"), String::from("hello")], &[]).unwrap();
+    let code = run_container(&rootfs, &[String::from("/bin/echo"), String::from("hello")], &[], &mock_container()).unwrap();
     assert_eq!(code, 0);
 }
 
@@ -40,7 +67,7 @@ fn test_run_container_failure() {
     if !setup_rootfs(&rootfs) {
         return;
     }
-    let code = run_container(&rootfs, &[String::from("/bin/sh"), String::from("-c"), String::from("exit 42")], &[]).unwrap();
+    let code = run_container(&rootfs, &[String::from("/bin/sh"), String::from("-c"), String::from("exit 42")], &[], &mock_container()).unwrap();
     assert_eq!(code, 42);
 }
 
@@ -52,7 +79,7 @@ fn test_run_container_namespace_isolation() {
     if !setup_rootfs(&rootfs) {
         return;
     }
-    let code = run_container(&rootfs, &[String::from("/bin/sh"), String::from("-c"), String::from("ls /proc > /tmp/out")], &[]).unwrap();
+    let code = run_container(&rootfs, &[String::from("/bin/sh"), String::from("-c"), String::from("ls /proc > /tmp/out")], &[], &mock_container()).unwrap();
     assert_eq!(code, 0);
     let out = fs::read_to_string(rootfs.join("tmp").join("out")).unwrap();
     assert!(!out.is_empty());

@@ -12,8 +12,12 @@ use crush_tui::TuiApp;
 
 use crush_registry::LocalRegistryServer;
 use crush_network::NetworkManager;
-use crush_reliability::{HealthChecker, HealthCheckConfig, HealthCheckType};
 use crush_volume::{LocalDriver, VolumeDriver, VolumeMounter};
+use crush_reliability::{
+    HealthChecker, HealthCheckConfig, HealthCheckType, RestartManager, RestartPolicy,
+    OomMonitor, OomPolicy, OomEvent, SecretManager, SecretSpec, SecretSource, SecretDestination,
+    VaultEngine
+};
 mod runtime;
 use runtime::StatelessEngine;
 use std::sync::Arc;
@@ -168,6 +172,22 @@ struct RunArgs {
     memory: Option<u64>,
     #[arg(short, long, help = "CPU limit shares or weights")]
     cpu: Option<u64>,
+    #[arg(long, help = "Command to run for health checks (e.g. 'curl -f http://localhost:80/')")]
+    health_cmd: Option<String>,
+    #[arg(long, help = "Interval between health checks in seconds", default_value_t = 30)]
+    health_interval: u64,
+    #[arg(long, help = "Timeout in seconds to wait for health check", default_value_t = 30)]
+    health_timeout: u64,
+    #[arg(long, help = "Consecutive failures before marking unhealthy", default_value_t = 3)]
+    health_retries: u32,
+    #[arg(long, help = "Restart policy (no, always, on-failure[:max-retries], unless-stopped)", default_value = "no")]
+    restart: String,
+    #[arg(long, help = "Maximum number of PIDs in the container")]
+    pids_limit: Option<u32>,
+    #[arg(long, help = "Mount the container's root filesystem as read-only")]
+    read_only: bool,
+    #[arg(long, help = "Security options (e.g. apparmor=default, label=mcs)")]
+    security_opt: Vec<String>,
 }
 
 #[derive(Args, Debug)]
@@ -483,6 +503,16 @@ async fn main() -> anyhow::Result<()> {
                 mounts: vec![],
                 memory_limit_bytes: None,
                 cpu_shares: None,
+                health: None,
+                restart_count: None,
+                restart_policy: None,
+                health_cmd: None,
+                health_interval: None,
+                health_timeout: None,
+                health_retries: None,
+                pids_limit: None,
+                read_only: None,
+                security_opt: None,
             };
 
             let container_dir = data_dir.join("containers").join(&container_id);
@@ -602,6 +632,16 @@ async fn main() -> anyhow::Result<()> {
                     mounts: vec![],
                     memory_limit_bytes: None,
                     cpu_shares: None,
+                    health: None,
+                    restart_count: None,
+                    restart_policy: None,
+                    health_cmd: None,
+                    health_interval: None,
+                    health_timeout: None,
+                    health_retries: None,
+                    pids_limit: None,
+                    read_only: None,
+                    security_opt: None,
                 };
 
                 let green_dir = data_dir.join("containers").join(&green_id);
@@ -759,6 +799,16 @@ async fn main() -> anyhow::Result<()> {
                 mounts: resolved_mounts,
                 memory_limit_bytes: args.memory.map(|m| m * 1024 * 1024),
                 cpu_shares: args.cpu,
+                health: None,
+                restart_count: Some(0),
+                restart_policy: Some(args.restart.clone()),
+                health_cmd: args.health_cmd.clone(),
+                health_interval: Some(args.health_interval),
+                health_timeout: Some(args.health_timeout),
+                health_retries: Some(args.health_retries),
+                pids_limit: args.pids_limit,
+                read_only: Some(args.read_only),
+                security_opt: Some(args.security_opt.clone()),
             };
 
             let container_dir = data_dir.join("containers").join(&container_id);
@@ -1089,6 +1139,16 @@ async fn main() -> anyhow::Result<()> {
                     mounts: vec![],
                     memory_limit_bytes: None,
                     cpu_shares: None,
+                    health: None,
+                    restart_count: None,
+                    restart_policy: None,
+                    health_cmd: None,
+                    health_interval: None,
+                    health_timeout: None,
+                    health_retries: None,
+                    pids_limit: None,
+                    read_only: None,
+                    security_opt: None,
                 }).collect();
                 tui.run_stats(container_list)?;
             }
@@ -1405,17 +1465,141 @@ async fn main() -> anyhow::Result<()> {
 
             #[cfg(target_os = "linux")]
             {
-                let rootfs_clone = rootfs.clone();
-                let exit_code_res = tokio::task::spawn_blocking(move || {
-                    run_container(&rootfs_clone, &config.cmd, &config.env)
-                })
-                .await;
+                use std::time::Duration;
+
+                // 1. Resolve secrets (Vault / AWS / local DB)
+                let secrets_dir = data_dir.join("secrets").join(&c.id);
+                std::fs::create_dir_all(&secrets_dir).ok();
+                let secret_mgr = SecretManager::new(secrets_dir.clone());
+                let secret_mgr = if let (Ok(addr), Ok(tok)) = (std::env::var("VAULT_ADDR"), std::env::var("VAULT_TOKEN")) {
+                    secret_mgr.with_vault(addr, tok)
+                } else {
+                    secret_mgr
+                };
+
+                if std::env::var("VAULT_ADDR").is_ok() && std::env::var("VAULT_TOKEN").is_ok() {
+                    let spec = SecretSpec {
+                        id: "db-password".to_string(),
+                        source: SecretSource::Vault {
+                            path: "secret/data/db-password".to_string(),
+                            field: "value".to_string(),
+                            engine: VaultEngine::KvV2,
+                        },
+                        destination: SecretDestination::File {
+                            path: rootfs.join("run/secrets/db-password"),
+                            tmpfs: true,
+                        },
+                        mode: 0o400,
+                        uid: 0,
+                        gid: 0,
+                    };
+                    if let Ok(val) = secret_mgr.resolve(&spec).await {
+                        let _ = secret_mgr.mount(&spec, &val).await;
+                    }
+                }
+
+                // 2. Restart policy initialization
+                let r_policy = match c.restart_policy.as_deref().unwrap_or("no") {
+                    "always" => RestartPolicy::Always,
+                    "unless-stopped" => RestartPolicy::UnlessStopped,
+                    s if s.starts_with("on-failure") => {
+                        let max_retries = s.strip_prefix("on-failure:")
+                            .and_then(|r| r.parse::<u32>().ok());
+                        RestartPolicy::OnFailure { max_retries }
+                    }
+                    _ => RestartPolicy::No,
+                };
+                let mut restart_mgr = RestartManager::new(r_policy);
+
+                // 3. Health check task initialization
+                let mut health_handle = None;
+                if let Some(ref h_cmd) = c.health_cmd {
+                    let interval = c.health_interval.unwrap_or(30);
+                    let timeout = c.health_timeout.unwrap_or(30);
+                    let retries = c.health_retries.unwrap_or(3);
+                    let cmd_parts: Vec<String> = h_cmd.split_whitespace().map(|s| s.to_string()).collect();
+                    let h_config = HealthCheckConfig {
+                        check_type: HealthCheckType::Exec { command: cmd_parts },
+                        interval_secs: interval,
+                        timeout_secs: timeout,
+                        retries,
+                        start_period_secs: 0,
+                        start_interval_secs: 5,
+                    };
+                    let checker = Arc::new(HealthChecker::new(h_config));
+                    let checker_clone = checker.clone();
+                    let container_json_clone = container_json_path.clone();
+                    
+                    health_handle = Some(tokio::spawn(async move {
+                        loop {
+                            let status = checker_clone.check().await;
+                            if let Ok(content) = tokio::fs::read_to_string(&container_json_clone).await {
+                                if let Ok(mut c_upd) = serde_json::from_str::<Container>(&content) {
+                                    c_upd.health = Some(status);
+                                    if let Ok(serialized) = serde_json::to_string_pretty(&c_upd) {
+                                        let _ = tokio::fs::write(&container_json_clone, serialized).await;
+                                    }
+                                }
+                            }
+                            tokio::time::sleep(Duration::from_secs(interval)).await;
+                        }
+                    }));
+                }
+
+                // 4. OOM Monitor initialization
+                let mut oom_monitor = OomMonitor::new(&c.id, OomPolicy::Restart);
+
+                // 5. Supervisor Loop
+                let mut exit_code = 0;
+                loop {
+                    let rootfs_clone = rootfs.clone();
+                    let c_clone = c.clone();
+                    let cmd_clone = config.cmd.clone();
+                    let env_clone = config.env.clone();
+
+                    let exit_code_res = tokio::task::spawn_blocking(move || {
+                        run_container(&rootfs_clone, &cmd_clone, &env_clone, &c_clone)
+                    }).await;
+
+                    let current_exit = match exit_code_res {
+                        Ok(Ok(code)) => code,
+                        _ => -1,
+                    };
+
+                    if let Ok(OomEvent::OomKilled { .. }) = oom_monitor.poll().await {
+                        println!("[Supervisor] Container OOM killed!");
+                        exit_code = 137;
+                    } else {
+                        exit_code = current_exit;
+                    }
+
+                    let should_restart = restart_mgr.should_restart(exit_code, false);
+                    if should_restart {
+                        restart_mgr.record_attempt();
+                        let delay = restart_mgr.backoff_delay();
+                        println!("[Supervisor] Restarting container in {:?}", delay);
+                        
+                        if let Ok(content) = tokio::fs::read_to_string(&container_json_path).await {
+                            if let Ok(mut c_upd) = serde_json::from_str::<Container>(&content) {
+                                c_upd.restart_count = Some(restart_mgr.attempt());
+                                c_upd.status = ContainerStatus::Running;
+                                if let Ok(serialized) = serde_json::to_string_pretty(&c_upd) {
+                                    let _ = tokio::fs::write(&container_json_path, serialized).await;
+                                }
+                            }
+                        }
+                        tokio::time::sleep(delay).await;
+                    } else {
+                        break;
+                    }
+                }
+
+                if let Some(h) = health_handle {
+                    h.abort();
+                }
 
                 let _ = mounter.unmount_all(&c.id).await;
 
-                let exit_code = exit_code_res.map_err(|e| CrushError::NamespaceError(format!("Container task failed: {}", e)))??;
-
-                // Update container state to Stopped on exit
                 if let Ok(content) = tokio::fs::read_to_string(&container_json_path).await {
                     if let Ok(mut c_upd) = serde_json::from_str::<Container>(&content) {
                         c_upd.status = ContainerStatus::Stopped;

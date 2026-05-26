@@ -66,6 +66,13 @@ pub enum ContainerStatus {
     Stopped,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+pub enum HealthStatus {
+    Starting,
+    Healthy,
+    Unhealthy,
+}
+
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct Container {
     pub id: String,
@@ -79,6 +86,16 @@ pub struct Container {
     pub mounts: Vec<MountConfig>,
     pub memory_limit_bytes: Option<u64>,
     pub cpu_shares: Option<u64>,
+    pub health: Option<HealthStatus>,
+    pub restart_count: Option<u32>,
+    pub restart_policy: Option<String>,
+    pub health_cmd: Option<String>,
+    pub health_interval: Option<u64>,
+    pub health_timeout: Option<u64>,
+    pub health_retries: Option<u32>,
+    pub pids_limit: Option<u32>,
+    pub read_only: Option<bool>,
+    pub security_opt: Option<Vec<String>>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

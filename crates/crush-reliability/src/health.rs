@@ -3,7 +3,7 @@ use std::sync::Arc;
 use tokio::sync::Mutex;
 use chrono::{DateTime, Utc};
 use serde::{Serialize, Deserialize};
-use crush_types::{Result, CrushError};
+use crush_types::{Result, CrushError, HealthStatus};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct HealthCheckConfig {
@@ -46,13 +46,6 @@ impl Default for HealthCheckConfig {
             start_interval_secs: 5,
         }
     }
-}
-
-#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
-pub enum HealthStatus {
-    Starting,
-    Healthy,
-    Unhealthy,
 }
 
 pub struct HealthState {

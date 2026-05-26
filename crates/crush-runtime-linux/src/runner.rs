@@ -4,7 +4,7 @@ use crush_types::{Result, CrushError};
 /// Fork a child into a new mount+UTS namespace, chroot into `rootfs`, then exec `command`.
 /// Mounts /proc and bind-mounts /dev inside the rootfs before exec.
 /// Blocks until the container process exits, returning its exit code.
-pub fn run_container(rootfs: &Path, command: &[String], env_vars: &[String]) -> Result<i32> {
+pub fn run_container(rootfs: &Path, command: &[String], env_vars: &[String], container: &crush_types::Container) -> Result<i32> {
     if command.is_empty() {
         return Err(CrushError::NamespaceError("No entrypoint or cmd defined for image".to_string()));
     }
@@ -18,6 +18,19 @@ pub fn run_container(rootfs: &Path, command: &[String], env_vars: &[String]) -> 
     }
 
     let rootfs_path = rootfs.to_path_buf();
+    let is_read_only = container.read_only == Some(true);
+    let mut apparmor_profile = None;
+    let mut selinux_label = None;
+    if let Some(ref opts) = container.security_opt {
+        for opt in opts {
+            if let Some(profile) = opt.strip_prefix("apparmor=") {
+                apparmor_profile = Some(profile.to_string());
+            }
+            if let Some(label) = opt.strip_prefix("label=") {
+                selinux_label = Some(label.to_string());
+            }
+        }
+    }
 
     let mut cmd = std::process::Command::new(&command[0]);
     if command.len() > 1 {
@@ -127,7 +140,27 @@ pub fn run_container(rootfs: &Path, command: &[String], env_vars: &[String]) -> 
                     format!("Failed to mount /proc inside rootfs: {}", std::io::Error::last_os_error())
                 ));
             }
-
+            if is_read_only {
+                log("Setting up tmpfs overlays for read-only rootfs");
+                let overlays = ["tmp", "run", "var/run", "tmp/.X11-unix"];
+                for dir in &overlays {
+                    let tgt_dir = rootfs_path.join(dir);
+                    let _ = std::fs::create_dir_all(&tgt_dir);
+                    let tgt_c = std::ffi::CString::new(tgt_dir.to_string_lossy().as_bytes()).unwrap();
+                    let type_tmpfs = std::ffi::CString::new("tmpfs").unwrap();
+                    let mount_ret = libc::mount(
+                        type_tmpfs.as_ptr(),
+                        tgt_c.as_ptr(),
+                        type_tmpfs.as_ptr(),
+                        libc::MS_NOSUID | libc::MS_NODEV | libc::MS_NOEXEC,
+                        std::ptr::null(),
+                    );
+                    if mount_ret != 0 {
+                        let err_val = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+                        log_err("Failed to mount tmpfs overlay", err_val);
+                    }
+                }
+            }
             // Bind-mount /dev into the container rootfs
             log("9. Bind-mounting /dev");
             let dev_dir = rootfs_path.join("dev");
@@ -169,7 +202,24 @@ pub fn run_container(rootfs: &Path, command: &[String], env_vars: &[String]) -> 
                     format!("Failed to bind-mount rootfs onto itself ({}): {}", rootfs_str, std::io::Error::last_os_error())
                 ));
             }
-
+            if is_read_only {
+                log("Remounting rootfs as read-only");
+                let remount_ret = libc::mount(
+                    std::ptr::null(),
+                    tgt_root_c.as_ptr(),
+                    std::ptr::null(),
+                    libc::MS_BIND | libc::MS_REMOUNT | libc::MS_RDONLY | libc::MS_REC,
+                    std::ptr::null(),
+                );
+                if remount_ret != 0 {
+                    let err_val = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+                    log_err("Remounting rootfs as read-only failed", err_val);
+                    return Err(std::io::Error::new(
+                        std::io::ErrorKind::Other,
+                        format!("Failed to remount rootfs as read-only: {}", std::io::Error::last_os_error())
+                    ));
+                }
+            }
             // Create temporary dir for the old root
             log("13. Creating old_root dir");
             let old_root_dir = rootfs_path.join(".old_root");
@@ -216,6 +266,28 @@ pub fn run_container(rootfs: &Path, command: &[String], env_vars: &[String]) -> 
             // Remove /.old_root directory
             log("20. Removing /.old_root dir");
             let _ = std::fs::remove_dir("/.old_root");
+
+            if let Some(ref profile) = apparmor_profile {
+                log("Applying AppArmor profile");
+                let path = b"/proc/self/attr/exec\0";
+                let fd = libc::open(path.as_ptr() as *const libc::c_char, libc::O_WRONLY);
+                if fd >= 0 {
+                    let val = format!("exec {}\n", profile);
+                    let _ = libc::write(fd, val.as_ptr() as *const libc::c_void, val.len());
+                    let _ = libc::close(fd);
+                }
+            }
+
+            if let Some(ref label) = selinux_label {
+                log("Applying SELinux label");
+                let path = b"/proc/self/attr/exec\0";
+                let fd = libc::open(path.as_ptr() as *const libc::c_char, libc::O_WRONLY);
+                if fd >= 0 {
+                    let val = format!("{}\n", label);
+                    let _ = libc::write(fd, val.as_ptr() as *const libc::c_void, val.len());
+                    let _ = libc::close(fd);
+                }
+            }
 
             log("21. Completed pre_exec successfully!");
             Ok(())

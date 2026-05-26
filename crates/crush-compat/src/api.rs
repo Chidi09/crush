@@ -327,6 +327,16 @@ async fn route(
                 mounts: Vec::new(),
                 memory_limit_bytes: None,
                 cpu_shares: None,
+                health: None,
+                restart_count: None,
+                restart_policy: None,
+                health_cmd: None,
+                health_interval: None,
+                health_timeout: None,
+                health_retries: None,
+                pids_limit: None,
+                read_only: None,
+                security_opt: None,
             };
 
             let container_dir = data_dir.join("containers").join(&id);
