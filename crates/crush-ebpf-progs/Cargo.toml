@@ -1,0 +1,22 @@
+[package]
+name = "crush-ebpf-progs"
+version = "0.1.0"
+edition = "2021"
+
+[[bin]]
+name = "crush-ebpf-progs"
+path = "src/main.rs"
+
+[dependencies]
+aya-ebpf = { version = "0.1", features = ["map-hash"] }
+aya-log-ebpf = "0.1"
+
+[profile.release]
+lto = true
+opt-level = 3
+debug = false
+panic = "abort"
+
+[profile.dev]
+debug = 2
+panic = "abort"
