@@ -191,6 +191,7 @@ impl StorageBackend for ImageStore {
         let image = self.store_image_from_manifest(&registry, &image, tag, &final_manifest, &digest).await?;
 
         Ok(image)
+    }
 
     async fn push_image(&self, image_id: &str, registry: &str) -> Result<()> {
         let image = match self.db.get_image_by_digest(image_id).await? {
