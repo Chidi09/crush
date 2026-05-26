@@ -14,8 +14,10 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 crush-types = { workspace = true }
-nix = { version = "0.28", features = ["fs", "mount", "user"] }
 libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+nix = { version = "0.28", features = ["fs", "mount", "user"] }
 sled = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }

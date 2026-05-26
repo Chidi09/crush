@@ -5,6 +5,7 @@ pub mod db;
 pub mod multiarch;
 pub mod gc;
 pub mod lazy;
+#[cfg(not(target_os = "windows"))]
 pub mod fuse;
 
 use std::path::{Path, PathBuf};
@@ -232,7 +233,7 @@ impl StorageBackend for ImageStore {
     }
 
     async fn extract_layers(&self, image_id: &str, destination: &PathBuf) -> Result<()> {
-        // helper defined below impl block
+        #[cfg(not(target_os = "windows"))]
         fn build_inode_map_from_tar(raw: &[u8]) -> Result<std::collections::HashMap<u64, fuse::InodeMetadata>> {
             use std::collections::HashMap;
             use fuser::FileType;
@@ -360,21 +361,24 @@ impl StorageBackend for ImageStore {
                 // Write chunks to disk and record the manifest.
                 loader.load_from_blob(&raw, layer_digest)?;
 
-                // Build inode map by streaming the tar entries once.
-                let inodes = build_inode_map_from_tar(&raw)?;
-                let loader = Arc::new(loader);
+                // Build inode map and mount FUSE filesystem (Linux/macOS only)
+                #[cfg(not(target_os = "windows"))]
+                {
+                    let inodes = build_inode_map_from_tar(&raw)?;
+                    let loader = Arc::new(loader);
 
-                let dest = destination.clone();
-                let fs = fuse::LazyImageFs::new(loader, inodes);
-                std::thread::spawn(move || {
-                    let options = vec![
-                        fuser::MountOption::RO,
-                        fuser::MountOption::AllowOther,
-                        fuser::MountOption::FSName("crush-lazyfs".to_string()),
-                    ];
-                    let _ = fuser::mount2(fs, dest, &options);
-                });
-                continue;
+                    let dest = destination.clone();
+                    let fs = fuse::LazyImageFs::new(loader, inodes);
+                    std::thread::spawn(move || {
+                        let options = vec![
+                            fuser::MountOption::RO,
+                            fuser::MountOption::AllowOther,
+                            fuser::MountOption::FSName("crush-lazyfs".to_string()),
+                        ];
+                        let _ = fuser::mount2(fs, dest, &options);
+                    });
+                    continue;
+                }
             }
 
             let extractor = LayerExtractor::new(destination);

@@ -11,6 +11,7 @@ use crush_ai::AiEngine;
 use crush_tui::TuiApp;
 
 use crush_registry::LocalRegistryServer;
+#[cfg(target_os = "linux")]
 use crush_network::NetworkManager;
 use crush_volume::{LocalDriver, VolumeDriver, VolumeMounter};
 use crush_reliability::{
@@ -727,7 +728,7 @@ async fn main() -> anyhow::Result<()> {
             };
             
             #[cfg(not(target_os = "linux"))]
-            let mut current_net: Option<crush_network::ContainerNetwork> = None;
+            let mut current_net: Option<()> = None;
 
             let mut active_container_id = container_id;
             let mut active_container_name = container_name;
@@ -1573,21 +1574,29 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Network(args) => {
             info!("Network management operation: {:?}", args.subcommand);
-            let net = NetworkManager::new(data_dir.join("networks"));
-            match args.subcommand {
-                NetworkSubcommand::Create { name, subnet } => {
-                    let subnet_str = subnet.unwrap_or_else(|| "172.18.0.0/16".to_string());
-                    let gateway = subnet_str.replace(".0/16", ".1").replace(".0/24", ".1");
-                    net.create(&name, &subnet_str, &gateway).await?;
-                    println!("Created network: {} ({})", name, subnet_str);
+            #[cfg(target_os = "linux")]
+            {
+                let net = NetworkManager::new(data_dir.join("networks"));
+                match args.subcommand {
+                    NetworkSubcommand::Create { name, subnet } => {
+                        let subnet_str = subnet.unwrap_or_else(|| "172.18.0.0/16".to_string());
+                        let gateway = subnet_str.replace(".0/16", ".1").replace(".0/24", ".1");
+                        net.create(&name, &subnet_str, &gateway).await?;
+                        println!("Created network: {} ({})", name, subnet_str);
+                    }
+                    NetworkSubcommand::Rm { name } => {
+                        println!("Removed network: {}", name);
+                    }
+                    NetworkSubcommand::Ls => {
+                        println!("Networks:");
+                        println!("  crush_nat (NAT, 172.17.0.0/16)");
+                    }
                 }
-                NetworkSubcommand::Rm { name } => {
-                    println!("Removed network: {}", name);
-                }
-                NetworkSubcommand::Ls => {
-                    println!("Networks:");
-                    println!("  crush_nat (NAT, 172.17.0.0/16)");
-                }
+            }
+            #[cfg(not(target_os = "linux"))]
+            {
+                let _ = args;
+                eprintln!("Network management requires Linux.");
             }
         }
         Commands::Volume(args) => {
@@ -2043,10 +2052,13 @@ async fn main() -> anyhow::Result<()> {
                 }
                 "networks" => {
                     println!("crush_nat");
-                    let net = NetworkManager::new(data_dir.join("networks"));
-                    if let Ok(list) = net.list().await {
-                        for n in list {
-                            println!("{}", n.name);
+                    #[cfg(target_os = "linux")]
+                    {
+                        let net = NetworkManager::new(data_dir.join("networks"));
+                        if let Ok(list) = net.list().await {
+                            for n in list {
+                                println!("{}", n.name);
+                            }
                         }
                     }
                 }

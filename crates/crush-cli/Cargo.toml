@@ -23,7 +23,6 @@ crush-ai = { workspace = true }
 crush-tui = { workspace = true }
 crush-api = { workspace = true }
 crush-registry = { workspace = true }
-crush-network = { workspace = true }
 crush-reliability = { workspace = true }
 crush-volume = { workspace = true }
 dirs = "5.0"
@@ -35,6 +34,7 @@ serde = { workspace = true, features = ["derive"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 crush-runtime-linux = { workspace = true }
+crush-network = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 crush-runtime-windows = { workspace = true }

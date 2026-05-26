@@ -14,23 +14,25 @@ serde_json = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 crush-types = { workspace = true }
+tracing = { workspace = true }
+hickory-resolver = "0.25"
+hickory-proto = "0.25"
+sled = { workspace = true }
+sha2 = { workspace = true }
+hex = { workspace = true }
+ipnetwork = "0.20"
+
+[target.'cfg(target_os = "linux")'.dependencies]
 nix = { version = "0.28", features = ["net", "sched"] }
 libc = "0.2"
-tracing = { workspace = true }
-ipnetwork = "0.20"
 pnet = "0.35"
 rtnetlink = "0.14"
 netlink-packet-core = "0.7"
 netlink-packet-route = "0.19"
-hickory-resolver = "0.25"
 hickory-server = "0.25"
-hickory-proto = "0.25"
 aya = { version = "0.13", features = ["async_tokio"] }
 aya-obj = { version = "0.2", optional = true }
 aya-log = "0.2"
-sled = { workspace = true }
-sha2 = { workspace = true }
-hex = { workspace = true }
 
 [features]
 default = []

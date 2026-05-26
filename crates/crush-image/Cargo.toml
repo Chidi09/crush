@@ -26,6 +26,8 @@ tokio-util = { workspace = true }
 sled = { workspace = true }
 lru = "0.12"
 base64 = "0.22"
+
+[target.'cfg(not(target_os = "windows"))'.dependencies]
 fuser = "0.14"
 libc = "0.2"
 
