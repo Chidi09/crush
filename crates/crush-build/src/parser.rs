@@ -68,8 +68,7 @@ impl CrushfileParser {
 
         let crushfile: Crushfile = toml::from_str(&interpolated)
             .map_err(|e| {
-                let msg = format!("Crushfile parse error at line {}, column {}: {}\n  File: {:?}",
-                    e.line(), e.column(), e.message(), path);
+                let msg = format!("Crushfile parse error: {}\n  File: {:?}", e, path);
                 CrushError::ImageError(msg)
             })?;
 

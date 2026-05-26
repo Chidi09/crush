@@ -69,7 +69,7 @@ struct SpdxCreationInfo {
     created: String,
 }
 
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct SpdxPackage {
     name: String,
     version_info: String,

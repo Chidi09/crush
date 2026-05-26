@@ -134,7 +134,7 @@ impl CrushSpecDetector {
         let scripts = json["scripts"].as_object();
         let build_cmd = self.infer_node_build(&json, root, has_ts, has_deno);
         let entry = self.infer_node_entry(&json, scripts, root, has_ts);
-        let port = self.detect_port_framework(&framework, 3000);
+        let port = Self::detect_port_framework(&framework, 3000);
 
         Some(Detection {
             project_name: pkg_name.to_string(),
@@ -159,19 +159,19 @@ impl CrushSpecDetector {
         let deps = Self::merge_deps(json);
         let has_file = |name: &str| root.join(name).exists();
 
-        if deps.contains("next") || has_file("next.config.js") || has_file("next.config.ts") {
+        if deps.iter().any(|d| d == "next") || has_file("next.config.js") || has_file("next.config.ts") {
             ("Next.js".to_string(), 0.05)
-        } else if deps.contains("nuxt") || has_file("nuxt.config.ts") || has_file("nuxt.config.js") {
+        } else if deps.iter().any(|d| d == "nuxt") || has_file("nuxt.config.ts") || has_file("nuxt.config.js") {
             ("Nuxt".to_string(), 0.05)
-        } else if deps.contains("nestjs") || has_file("nest-cli.json") {
+        } else if deps.iter().any(|d| d == "@nestjs/core") || has_file("nest-cli.json") {
             ("NestJS".to_string(), 0.04)
-        } else if deps.contains("express") {
+        } else if deps.iter().any(|d| d == "express") {
             ("Express".to_string(), 0.02)
-        } else if deps.contains("fastify") {
+        } else if deps.iter().any(|d| d == "fastify") {
             ("Fastify".to_string(), 0.02)
-        } else if deps.contains("hono") {
+        } else if deps.iter().any(|d| d == "hono") {
             ("Hono".to_string(), 0.02)
-        } else if deps.contains("remix") || has_file("remix.config.js") {
+        } else if deps.iter().any(|d| d == "remix") || has_file("remix.config.js") {
             ("Remix".to_string(), 0.04)
         } else {
             (String::new(), 0.0)
@@ -288,7 +288,7 @@ impl CrushSpecDetector {
             runtime_version: version,
             framework_name: framework.to_string(),
             framework_detected: framework != "Python",
-            build_command,
+            build_command: build_cmd,
             entry_point: entry.to_string(),
             port,
             confidence,
@@ -312,6 +312,7 @@ impl CrushSpecDetector {
             .unwrap_or(bin_name);
 
         let framework = Self::detect_rust_framework(&content, root);
+        let framework_detected = !framework.is_empty();
         let port = if framework.contains("Actix") { 8080 }
         else if framework.contains("Axum") { 3000 }
         else if framework.contains("Rocket") { 8000 }
@@ -323,7 +324,7 @@ impl CrushSpecDetector {
             runtime_type: RuntimeType::Rust,
             runtime_version: version,
             framework_name: framework,
-            framework_detected: !framework.is_empty(),
+            framework_detected,
             build_command: "cargo build --release".to_string(),
             entry_point: format!("target/release/{}", bin_target),
             port,
@@ -464,7 +465,7 @@ impl CrushSpecDetector {
             framework_name: if is_rails { "Rails" } else { "" }.to_string(),
             framework_detected: is_rails,
             build_command: "bundle install".to_string(),
-            entry_point: if is_rails { "config.ru" } else { "app.rb" },
+            entry_point: if is_rails { "config.ru".to_string() } else { "app.rb".to_string() },
             port: if is_rails { 3000 } else { 8080 },
             confidence: 0.87,
             ..Default::default()

@@ -1,6 +1,7 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use sha2::Digest;
 use indicatif::{ProgressBar, ProgressStyle};
 use crush_types::{Result, CrushError};
 use crate::cache::BuildCache;

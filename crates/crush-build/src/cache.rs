@@ -117,7 +117,8 @@ impl BuildCache {
 
     pub async fn put(&self, key: &str, data: &[u8], stage_name: &str, compressed: bool) -> Result<CacheEntry> {
         let layer_path = self.layer_path(key);
-        std::fs::create_dir_all(layer_path.parent().unwrap())?;
+        std::fs::create_dir_all(layer_path.parent().unwrap())
+            .map_err(|e| CrushError::StorageError(format!("Cache dir error: {}", e)))?;
 
         std::fs::write(&layer_path, data)
             .map_err(|e| CrushError::StorageError(format!("Cache write error: {}", e)))?;

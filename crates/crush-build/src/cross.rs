@@ -30,7 +30,7 @@ impl CrossCompiler {
         }
     }
 
-    pub fn target_triple(platform: &str) -> String {
+    pub fn target_triple(platform: &str) -> &'static str {
         match platform {
             "linux/amd64" => "x86_64-unknown-linux-gnu",
             "linux/arm64" => "aarch64-unknown-linux-gnu",
@@ -43,7 +43,7 @@ impl CrossCompiler {
         }
     }
 
-    pub fn rust_target(platform: &str) -> String {
+    pub fn rust_target(platform: &str) -> &'static str {
         match platform {
             "linux/amd64" => "x86_64-unknown-linux-gnu",
             "linux/arm64" => "aarch64-unknown-linux-gnu",
@@ -77,7 +77,11 @@ impl CrossCompiler {
             "linux/riscv64" => "riscv64",
             _ => "amd64",
         };
-        format!("{}ubuntu:22.04", if arch == "amd64" { "" } else { &format!("{}/", arch) })
+        if arch == "amd64" {
+            "ubuntu:22.04".to_string()
+        } else {
+            format!("{}/ubuntu:22.04", arch)
+        }
     }
 
     pub fn parse_platforms(input: &[String]) -> Result<Vec<String>> {
