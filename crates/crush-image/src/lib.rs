@@ -93,21 +93,25 @@ impl ImageStore {
 impl StorageBackend for ImageStore {
     async fn pull_image(&self, tag: &str) -> Result<Image> {
         let (registry, image, reference) = Self::registry_for_tag(tag);
-        let client = self.registry_client.lock().await;
 
-        let manifest_json = client.fetch_manifest(&registry, &image, &reference).await?;
+        // Fetch manifests, then release the lock before store_image_from_manifest,
+        // which also needs to acquire the registry client lock for blob downloads.
+        let (final_manifest, digest) = {
+            let client = self.registry_client.lock().await;
+            let manifest_json = client.fetch_manifest(&registry, &image, &reference).await?;
 
-        let image_obj = if manifest_json.get("manifests").is_some() {
-            let entry = multiarch::MultiArchResolver::resolve_manifest(&manifest_json)?;
-            let plat_digest = entry["digest"].as_str().unwrap_or("");
-            let plat_manifest = client.fetch_manifest(&registry, &image, plat_digest).await?;
-            self.store_image_from_manifest(&registry, &image, &tag, &plat_manifest, plat_digest).await?
-        } else {
-            let digest = manifest_json["config"]["digest"].as_str().unwrap_or("").to_string();
-            self.store_image_from_manifest(&registry, &image, &tag, &manifest_json, &digest).await?
+            if manifest_json.get("manifests").is_some() {
+                let entry = multiarch::MultiArchResolver::resolve_manifest(&manifest_json)?;
+                let plat_digest = entry["digest"].as_str().unwrap_or("").to_string();
+                let plat_manifest = client.fetch_manifest(&registry, &image, &plat_digest).await?;
+                (plat_manifest, plat_digest)
+            } else {
+                let digest = manifest_json["config"]["digest"].as_str().unwrap_or("").to_string();
+                (manifest_json, digest)
+            }
         };
 
-        Ok(image_obj)
+        self.store_image_from_manifest(&registry, &image, tag, &final_manifest, &digest).await
     }
 
     async fn push_image(&self, image_id: &str, registry: &str) -> Result<()> {
