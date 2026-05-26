@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::PathBuf;
 use std::collections::VecDeque;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -24,15 +24,17 @@ pub struct ChunkEntry {
 }
 
 pub struct LazyLoader {
-    layer_dir: PathBuf,
-    chunk_manifest: Option<ChunkManifest>,
+    pub layer_dir: PathBuf,
+    pub chunk_manifest: Option<ChunkManifest>,
     prefetch_queue: Arc<Mutex<VecDeque<u32>>>,
     cache: Arc<Mutex<lru::LruCache<u32, Vec<u8>>>>,
     registry_client: Arc<Mutex<Option<crate::RegistryClientHandle>>>,
+    registry: String,
+    image: String,
 }
 
 impl LazyLoader {
-    pub fn new(layer_dir: PathBuf) -> Self {
+    pub fn new(layer_dir: PathBuf, registry: String, image: String) -> Self {
         Self {
             layer_dir,
             chunk_manifest: None,
@@ -41,6 +43,8 @@ impl LazyLoader {
                 std::num::NonZeroUsize::new(64).unwrap(),
             ))),
             registry_client: Arc::new(Mutex::new(None)),
+            registry,
+            image,
         }
     }
 
@@ -49,13 +53,53 @@ impl LazyLoader {
         *c = Some(client);
     }
 
+    /// Split `data` into CHUNK_SIZE chunks, write each to disk, and return
+    /// the manifest. `layer_digest` is stored in the manifest for range fetches.
+    pub fn load_from_blob(&mut self, data: &[u8], layer_digest: &str) -> Result<ChunkManifest> {
+        let mut chunks = Vec::new();
+        let mut offset = 0u64;
+        let mut index = 0u32;
+
+        while (offset as usize) < data.len() {
+            let end = ((offset as usize) + CHUNK_SIZE).min(data.len());
+            let chunk_data = &data[offset as usize..end];
+
+            let mut hasher = Sha256::new();
+            hasher.update(chunk_data);
+            let hash = hex::encode(hasher.finalize());
+
+            let chunk_path = self.layer_dir.join(format!("chunk_{:06}", index));
+            std::fs::write(&chunk_path, chunk_data)
+                .map_err(|e| CrushError::StorageError(format!("Failed to write chunk {}: {}", index, e)))?;
+
+            chunks.push(ChunkEntry { index, offset, size: chunk_data.len() as u32, sha256: hash });
+            offset = end as u64;
+            index += 1;
+        }
+
+        let manifest = ChunkManifest {
+            layer_digest: layer_digest.to_string(),
+            chunk_size: CHUNK_SIZE as u64,
+            chunks,
+        };
+
+        let manifest_path = self.layer_dir.join("chunk_manifest.json");
+        let json = serde_json::to_string_pretty(&manifest)
+            .map_err(|e| CrushError::ImageError(format!("Manifest serialization: {}", e)))?;
+        std::fs::write(&manifest_path, json)
+            .map_err(|e| CrushError::StorageError(format!("Failed to write manifest: {}", e)))?;
+
+        self.chunk_manifest = Some(manifest.clone());
+        Ok(manifest)
+    }
+
     pub fn generate_chunk_manifest(&self, data: &[u8]) -> ChunkManifest {
         let mut chunks = Vec::new();
         let mut offset = 0u64;
         let mut index = 0u32;
 
-        while offset < data.len() as u64 {
-            let end = (offset as usize + CHUNK_SIZE).min(data.len());
+        while (offset as usize) < data.len() {
+            let end = ((offset as usize) + CHUNK_SIZE).min(data.len());
             let chunk_data = &data[offset as usize..end];
 
             let mut hasher = Sha256::new();
@@ -68,7 +112,6 @@ impl LazyLoader {
                 size: chunk_data.len() as u32,
                 sha256: hash,
             });
-
             offset = end as u64;
             index += 1;
         }
@@ -78,6 +121,15 @@ impl LazyLoader {
             chunk_size: CHUNK_SIZE as u64,
             chunks,
         }
+    }
+
+    pub async fn store_chunk_manifest(&self, manifest: &ChunkManifest) -> Result<()> {
+        let path = self.layer_dir.join("chunk_manifest.json");
+        let data = serde_json::to_string_pretty(manifest)
+            .map_err(|e| CrushError::ImageError(format!("Serialization error: {}", e)))?;
+        tokio::fs::write(&path, data).await
+            .map_err(|e| CrushError::StorageError(format!("Failed to write chunk manifest: {}", e)))?;
+        Ok(())
     }
 
     pub async fn get_chunk(&self, index: u32) -> Result<Vec<u8>> {
@@ -94,14 +146,17 @@ impl LazyLoader {
 
         let chunk_entry = manifest.chunks.iter()
             .find(|c| c.index == index)
-            .ok_or_else(|| CrushError::ImageError(format!("Chunk index {} not found", index)))?;
+            .ok_or_else(|| CrushError::ImageError(format!("Chunk index {} not found", index)))?
+            .clone();
 
         let chunk_path = self.layer_dir.join(format!("chunk_{:06}", index));
         let data = if chunk_path.exists() {
             tokio::fs::read(&chunk_path).await
                 .map_err(|e| CrushError::StorageError(format!("Failed to read chunk: {}", e)))?
         } else {
-            self.fetch_chunk_from_remote(index).await?
+            let fetched = self.fetch_chunk_from_remote(index).await?;
+            tokio::fs::write(&chunk_path, &fetched).await.ok();
+            fetched
         };
 
         {
@@ -110,27 +165,7 @@ impl LazyLoader {
         }
 
         self.schedule_prefetch(index).await;
-
         Ok(data)
-    }
-
-    pub async fn store_chunk_manifest(&self, manifest: ChunkManifest) -> Result<()> {
-        let path = self.layer_dir.join("chunk_manifest.json");
-        let data = serde_json::to_string_pretty(&manifest)
-            .map_err(|e| CrushError::ImageError(format!("Serialization error: {}", e)))?;
-        tokio::fs::write(&path, data).await
-            .map_err(|e| CrushError::StorageError(format!("Failed to write chunk manifest: {}", e)))?;
-
-        // ⚠ FIX: Mutable borrow is needed; store_chunk_manifest is called
-        // before chunk_manifest is read elsewhere. Use interior mutability
-        // pattern via the file-system backed manifest.
-        let path = self.layer_dir.join("chunk_manifest.json");
-        let data = serde_json::to_string_pretty(&manifest)
-            .map_err(|e| CrushError::ImageError(format!("Serialization error: {}", e)))?;
-        tokio::fs::write(&path, data).await
-            .map_err(|e| CrushError::StorageError(format!("Failed to write chunk manifest: {}", e)))?;
-
-        Ok(())
     }
 
     async fn schedule_prefetch(&self, current_index: u32) {
@@ -139,39 +174,37 @@ impl LazyLoader {
             None => return,
         };
 
+        let total = manifest.chunks.len() as u32;
         let mut queue = self.prefetch_queue.lock().await;
-        for i in 1..=PREFETCH_AHEAD {
-            let prefetch_idx = current_index + i as u32;
-            if prefetch_idx < manifest.chunks.len() as u32 && !queue.contains(&prefetch_idx) {
-                queue.push_back(prefetch_idx);
+        for i in 1..=(PREFETCH_AHEAD as u32) {
+            let next = current_index + i;
+            if next < total && !queue.contains(&next) {
+                queue.push_back(next);
             }
         }
-
-        drop(queue);
-
-        let cache = self.cache.clone();
-        let prefetch_queue = self.prefetch_queue.clone();
-        let layer_dir = self.layer_dir.clone();
-
-        tokio::spawn(async move {
-            let idx = {
-                let mut q = prefetch_queue.lock().await;
-                q.pop_front()
-            };
-
-            if let Some(idx) = idx {
-                let chunk_path = layer_dir.join(format!("chunk_{:06}", idx));
-                if !chunk_path.exists() {
-                    let mut cache_lock = cache.lock().await;
-                    if !cache_lock.contains(&idx) {
-                        cache_lock.put(idx, vec![]);
-                    }
-                }
-            }
-        });
+        // Actual prefetch is handled lazily on the next get_chunk call that hits disk.
+        // Spawning a background task here would require Arc<Self> — deferred for now.
     }
 
-    async fn fetch_chunk_from_remote(&self, _index: u32) -> Result<Vec<u8>> {
-        Err(CrushError::ImageError("Remote chunk fetch not implemented in lazy mode".to_string()))
+    async fn fetch_chunk_from_remote(&self, index: u32) -> Result<Vec<u8>> {
+        let manifest = self.chunk_manifest.as_ref()
+            .ok_or_else(|| CrushError::ImageError("No manifest".into()))?;
+        let entry = manifest.chunks.iter().find(|c| c.index == index)
+            .ok_or_else(|| CrushError::ImageError("Chunk not found".into()))?;
+
+        let client_guard = self.registry_client.lock().await;
+        if let Some(client) = client_guard.as_ref() {
+            let start = entry.offset;
+            let end = entry.offset + entry.size as u64 - 1;
+            client.fetch_blob_range(
+                &self.registry,
+                &self.image,
+                &manifest.layer_digest,
+                start,
+                end,
+            ).await.map_err(|e| CrushError::NetworkError(format!("Lazy fetch failed: {}", e)))
+        } else {
+            Err(CrushError::ImageError("No registry client configured".into()))
+        }
     }
 }

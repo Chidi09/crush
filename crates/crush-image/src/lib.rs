@@ -5,6 +5,7 @@ pub mod db;
 pub mod multiarch;
 pub mod gc;
 pub mod lazy;
+pub mod fuse;
 
 use std::path::{Path, PathBuf};
 use std::collections::HashSet;
@@ -153,6 +154,82 @@ impl StorageBackend for ImageStore {
     }
 
     async fn extract_layers(&self, image_id: &str, destination: &PathBuf) -> Result<()> {
+        // helper defined below impl block
+        fn build_inode_map_from_tar(raw: &[u8]) -> Result<std::collections::HashMap<u64, fuse::InodeMetadata>> {
+            use std::collections::HashMap;
+            use fuser::FileType;
+
+            let mut inodes: HashMap<u64, fuse::InodeMetadata> = HashMap::new();
+            let mut name_to_ino: HashMap<String, u64> = HashMap::new();
+            let mut ino_counter = 2u64;
+
+            inodes.insert(1, fuse::InodeMetadata {
+                ino: 1, name: "/".to_string(), kind: FileType::Directory,
+                size: 0, offset_in_layer: 0, children: vec![],
+            });
+            name_to_ino.insert("/".to_string(), 1);
+            name_to_ino.insert(String::new(), 1);
+
+            let cursor = std::io::Cursor::new(raw);
+            let mut archive = tar::Archive::new(cursor);
+            let entries = archive.entries()
+                .map_err(|e| CrushError::ImageError(format!("Tar entries: {}", e)))?;
+
+            for entry in entries {
+                let mut entry = entry
+                    .map_err(|e| CrushError::ImageError(format!("Tar entry: {}", e)))?;
+                let raw_path = entry.path()
+                    .map_err(|e| CrushError::ImageError(format!("Entry path: {}", e)))?
+                    .into_owned();
+                let clean = raw_path.to_string_lossy();
+                let clean = clean.trim_start_matches("./");
+                if clean.is_empty() || clean == "/" { continue; }
+
+                let kind = if entry.header().entry_type().is_dir() {
+                    FileType::Directory
+                } else {
+                    FileType::RegularFile
+                };
+                let size = entry.header().size().unwrap_or(0);
+                let offset_in_layer = entry.raw_file_position();
+
+                let fname = std::path::Path::new(clean)
+                    .file_name()
+                    .map(|n| n.to_string_lossy().to_string())
+                    .unwrap_or_default();
+                if fname.is_empty() { continue; }
+
+                let parent_str = std::path::Path::new(clean)
+                    .parent()
+                    .map(|p| {
+                        let s = p.to_string_lossy();
+                        let s = s.trim_start_matches("./");
+                        if s.is_empty() { "/".to_string() } else { format!("/{}", s) }
+                    })
+                    .unwrap_or_else(|| "/".to_string());
+
+                let parent_ino = *name_to_ino.get(&parent_str).unwrap_or(&1);
+                let this_ino = ino_counter;
+                ino_counter += 1;
+
+                let full = if parent_str == "/" {
+                    format!("/{}", fname)
+                } else {
+                    format!("{}/{}", parent_str, fname)
+                };
+                name_to_ino.insert(full, this_ino);
+
+                inodes.insert(this_ino, fuse::InodeMetadata {
+                    ino: this_ino, name: fname, kind, size, offset_in_layer, children: vec![],
+                });
+                if let Some(p) = inodes.get_mut(&parent_ino) {
+                    p.children.push(this_ino);
+                }
+            }
+
+            Ok(inodes)
+        }
+
         let image = match self.db.get_image_by_digest(image_id).await? {
             Some(img) => img,
             None => self.db.get_image_by_tag(image_id).await?
@@ -176,6 +253,52 @@ impl StorageBackend for ImageStore {
             };
 
             let blob_file = self.blobs.read_blob_stream(layer_digest)?;
+            if self.lazy_mode {
+                let (reg, img, _) = Self::registry_for_tag(&image.tag);
+                let mut loader = lazy::LazyLoader::new(destination.clone(), reg, img);
+
+                // Decompress the full blob so we can (a) split into seekable chunks
+                // and (b) parse tar headers to build the FUSE inode tree.
+                let mut raw: Vec<u8> = Vec::new();
+                match format {
+                    CompressionFormat::Gzip => {
+                        let mut dec = flate2::read::GzDecoder::new(blob_file);
+                        dec.read_to_end(&mut raw)
+                            .map_err(|e| CrushError::ImageError(format!("Gzip decompress: {}", e)))?;
+                    }
+                    CompressionFormat::Zstd => {
+                        let mut dec = zstd::Decoder::new(blob_file)
+                            .map_err(|e| CrushError::ImageError(format!("Zstd decoder: {}", e)))?;
+                        dec.read_to_end(&mut raw)
+                            .map_err(|e| CrushError::ImageError(format!("Zstd decompress: {}", e)))?;
+                    }
+                    _ => {
+                        let mut r: Box<dyn Read> = Box::new(blob_file);
+                        r.read_to_end(&mut raw)
+                            .map_err(|e| CrushError::ImageError(format!("Raw read: {}", e)))?;
+                    }
+                }
+
+                // Write chunks to disk and record the manifest.
+                loader.load_from_blob(&raw, layer_digest)?;
+
+                // Build inode map by streaming the tar entries once.
+                let inodes = build_inode_map_from_tar(&raw)?;
+                let loader = Arc::new(loader);
+
+                let dest = destination.clone();
+                let fs = fuse::LazyImageFs::new(loader, inodes);
+                std::thread::spawn(move || {
+                    let options = vec![
+                        fuser::MountOption::RO,
+                        fuser::MountOption::AllowOther,
+                        fuser::MountOption::FSName("crush-lazyfs".to_string()),
+                    ];
+                    let _ = fuser::mount2(fs, dest, &options);
+                });
+                continue;
+            }
+
             let extractor = LayerExtractor::new(destination);
             extractor.extract_layer_streamed(blob_file, format)?;
         }

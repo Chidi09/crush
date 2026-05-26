@@ -44,6 +44,11 @@ impl RegistryClientHandle {
         let client = self.inner.lock().await;
         client.put_manifest_inner(registry, image, reference, manifest).await
     }
+
+    pub async fn fetch_blob_range(&self, registry: &str, image: &str, digest: &str, start: u64, end: u64) -> Result<Vec<u8>> {
+        let client = self.inner.lock().await;
+        client.fetch_blob_range_inner(registry, image, digest, start, end).await
+    }
 }
 
 pub struct RegistryClient {
@@ -224,6 +229,25 @@ impl RegistryClient {
 
         let bytes = resp.bytes().await
             .map_err(|e| CrushError::ImageError(format!("Blob read failed: {}", e)))?;
+        Ok(bytes.to_vec())
+    }
+
+    pub async fn fetch_blob_range_inner(&self, registry: &str, image: &str, digest: &str, start: u64, end: u64) -> Result<Vec<u8>> {
+        let url = format!("{}/{}/blobs/{}", Self::base_url(registry), image, digest);
+        let resp = self.build_request(&url, registry)
+            .header("Range", format!("bytes={}-{}", start, end))
+            .send()
+            .await
+            .map_err(|e| CrushError::ImageError(format!("Blob range fetch failed: {}", e)))?;
+
+        if !resp.status().is_success() {
+            return Err(CrushError::ImageError(format!(
+                "Registry returned HTTP {} for blob range", resp.status()
+            )));
+        }
+
+        let bytes = resp.bytes().await
+            .map_err(|e| CrushError::ImageError(format!("Blob range read failed: {}", e)))?;
         Ok(bytes.to_vec())
     }
 
