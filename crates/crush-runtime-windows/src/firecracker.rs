@@ -234,7 +234,7 @@ impl FirecrackerRunner {
         }
     }
 
-    async fn api_put(&self, path: &str, body: &serde_json::Value) -> Result<()> {
+    pub(crate) async fn api_put(&self, path: &str, body: &serde_json::Value) -> Result<()> {
         self.request(hyper::Method::PUT, path, Some(body.clone())).await?;
         Ok(())
     }
@@ -255,7 +255,8 @@ impl FirecrackerRunner {
             .build::<_, Full<Bytes>>(connector);
 
         let url: Uri = format!("http://localhost/{}", path).parse()?;
-        
+
+        let has_body = body.is_some();
         let req_body = if let Some(b) = body {
             Full::new(Bytes::from(serde_json::to_vec(&b)?))
         } else {
@@ -268,7 +269,7 @@ impl FirecrackerRunner {
             .header("Host", "localhost")
             .header("Accept", "application/json");
 
-        if req_body.size_hint().exact() != Some(0) {
+        if has_body {
             req = req.header("Content-Type", "application/json");
         }
 
@@ -307,8 +308,9 @@ impl Drop for FirecrackerRunner {
 /// A hyper connector that connects to a Windows named pipe instead of TCP.
 #[cfg(target_os = "windows")]
 mod pipe_connector {
-    use hyper::rt::{Read, Write};
+    use hyper::rt::{Read, ReadBufCursor, Write};
     use hyper_util::client::legacy::connect::Connection;
+    use hyper_util::rt::TokioIo;
     use tokio::net::windows::named_pipe::ClientOptions;
     use std::pin::Pin;
     use std::task::{Context, Poll};
@@ -334,12 +336,13 @@ mod pipe_connector {
             let pipe_path = self.pipe_path.clone();
             Box::pin(async move {
                 let client = ClientOptions::new().open(&pipe_path)?;
-                Ok(NamedPipeStream(client))
+                Ok(NamedPipeStream(TokioIo::new(client)))
             })
         }
     }
 
-    pub struct NamedPipeStream(tokio::net::windows::named_pipe::NamedPipeClient);
+    // TokioIo bridges tokio::io::AsyncRead/Write → hyper::rt::Read/Write
+    pub struct NamedPipeStream(TokioIo<tokio::net::windows::named_pipe::NamedPipeClient>);
 
     impl Connection for NamedPipeStream {
         fn connected(&self) -> hyper_util::client::legacy::connect::Connected {
@@ -347,20 +350,34 @@ mod pipe_connector {
         }
     }
 
-    impl tokio::io::AsyncRead for NamedPipeStream {
-        fn poll_read(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &mut tokio::io::ReadBuf<'_>) -> Poll<std::io::Result<()>> {
+    impl Read for NamedPipeStream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: ReadBufCursor<'_>,
+        ) -> Poll<std::io::Result<()>> {
             Pin::new(&mut self.0).poll_read(cx, buf)
         }
     }
 
-    impl tokio::io::AsyncWrite for NamedPipeStream {
-        fn poll_write(mut self: Pin<&mut Self>, cx: &mut Context<'_>, buf: &[u8]) -> Poll<std::io::Result<usize>> {
+    impl Write for NamedPipeStream {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
             Pin::new(&mut self.0).poll_write(cx, buf)
         }
-        fn poll_flush(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        fn poll_flush(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
             Pin::new(&mut self.0).poll_flush(cx)
         }
-        fn poll_shutdown(mut self: Pin<&mut Self>, cx: &mut Context<'_>) -> Poll<std::io::Result<()>> {
+        fn poll_shutdown(
+            mut self: Pin<&mut Self>,
+            cx: &mut Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
             Pin::new(&mut self.0).poll_shutdown(cx)
         }
     }
