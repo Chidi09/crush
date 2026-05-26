@@ -7,6 +7,7 @@ pub mod devices;
 pub mod cgroup;
 pub mod signals;
 pub mod lifecycle;
+pub mod runner;
 
 use std::path::PathBuf;
 use std::sync::Arc;

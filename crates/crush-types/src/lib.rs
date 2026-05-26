@@ -112,6 +112,14 @@ pub struct Image {
     pub layers: Vec<String>,
     pub architecture: String,
     pub os: String,
+    #[serde(default)]
+    pub entrypoint: Vec<String>,
+    #[serde(default)]
+    pub cmd: Vec<String>,
+    #[serde(default)]
+    pub env: Vec<String>,
+    #[serde(default)]
+    pub config_digest: Option<String>,
 }
 
 #[async_trait]

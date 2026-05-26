@@ -193,7 +193,7 @@ impl ImageStore {
             .map(|a| a.iter().filter_map(|l| l["digest"].as_str().map(|s| s.to_string())).collect())
             .unwrap_or_default();
 
-        let config_digest = manifest["config"]["digest"].as_str().unwrap_or("");
+        let config_digest = manifest["config"]["digest"].as_str().unwrap_or("").to_string();
 
         if !self.blobs.contains(digest) {
             let manifest_str = serde_json::to_string(manifest)
@@ -201,13 +201,40 @@ impl ImageStore {
             self.blobs.atomic_write(manifest_str.as_bytes())?;
         }
 
-        if !config_digest.is_empty() && !self.blobs.contains(config_digest) {
-            let client = self.registry_client.lock().await;
-            if let Ok(config_data) = client.fetch_blob(registry, image_name, config_digest).await {
-                self.blobs.atomic_write(&config_data).ok();
+        // Fetch config blob and parse OCI image config for entrypoint/cmd/env
+        let mut entrypoint = Vec::new();
+        let mut cmd_vec = Vec::new();
+        let mut env_vec = Vec::new();
+
+        if !config_digest.is_empty() {
+            let config_data = if !self.blobs.contains(&config_digest) {
+                let client = self.registry_client.lock().await;
+                match client.fetch_blob(registry, image_name, &config_digest).await {
+                    Ok(data) => { self.blobs.atomic_write(&data).ok(); Some(data) }
+                    Err(_) => None,
+                }
+            } else {
+                self.blobs.read_blob(&config_digest).ok()
+            };
+
+            if let Some(data) = config_data {
+                if let Ok(cfg) = serde_json::from_slice::<serde_json::Value>(&data) {
+                    if let Some(arr) = cfg["config"]["Entrypoint"].as_array() {
+                        entrypoint = arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+                    }
+                    if let Some(arr) = cfg["config"]["Cmd"].as_array() {
+                        cmd_vec = arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+                    }
+                    if let Some(arr) = cfg["config"]["Env"].as_array() {
+                        env_vec = arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
+                    }
+                }
             }
         }
 
+        // Download layer blobs, store as-is (OCI blobs are content-addressed by their sha256,
+        // so atomic_write returns the OCI digest unchanged). No re-compression — that would
+        // create a double-compressed zstd(gzip(tar)) that extract_layers can't handle.
         let mut stored_digests = Vec::new();
         for layer_digest in &layers {
             if self.blobs.contains(layer_digest) {
@@ -219,9 +246,8 @@ impl ImageStore {
             let blob_data = client.fetch_blob(registry, image_name, layer_digest).await?;
             drop(client);
 
-            let compressed = compress::compress_zstd(&blob_data, 3)?;
-            let zstd_digest = self.blobs.atomic_write(&compressed)?;
-            stored_digests.push(zstd_digest);
+            let stored = self.blobs.atomic_write(&blob_data)?;
+            stored_digests.push(stored);
         }
 
         let total_size: u64 = stored_digests.iter()
@@ -243,6 +269,10 @@ impl ImageStore {
             layers: stored_digests,
             architecture: "amd64".to_string(),
             os: "linux".to_string(),
+            entrypoint,
+            cmd: cmd_vec,
+            env: env_vec,
+            config_digest: if config_digest.is_empty() { None } else { Some(config_digest) },
         };
 
         self.db.put_image(&image).await?;

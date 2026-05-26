@@ -13,6 +13,9 @@ use crush_api::ApiServer;
 use crush_registry::LocalRegistryServer;
 use crush_network::NetworkManager;
 
+#[cfg(target_os = "linux")]
+use crush_runtime_linux::runner::run_container;
+
 #[derive(Parser, Debug)]
 #[command(name = "crush")]
 #[command(author = "Crush Contributors")]
@@ -374,55 +377,65 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Run(args) => {
-            info!("Running image: {} on port mappings: {:?}", args.image, args.port);
+            info!("Running image: {}", args.image);
 
-            let image = store.pull_image(&args.image).await?;
-            println!("Pulled image: {}", image.id);
-
-            let mut port_mappings = Vec::new();
-            for p in &args.port {
-                if let Some((host, container)) = p.split_once(':') {
-                    let host_port: u16 = host.parse().unwrap_or(80);
-                    let container_port: u16 = container.parse().unwrap_or(80);
-                    port_mappings.push(PortMapping {
-                        host_ip: "0.0.0.0".to_string(),
-                        host_port,
-                        container_port,
-                        protocol: Protocol::Tcp,
-                    });
+            // Check local store first; pull only if not present
+            let image = match store.database().get_image_by_tag(&args.image).await? {
+                Some(img) => img,
+                None => {
+                    eprintln!("Image not found locally, pulling {}...", args.image);
+                    store.pull_image(&args.image).await?
                 }
-            }
-
-            let mut mounts = Vec::new();
-            for v in &args.volume {
-                if let Some((host, container)) = v.split_once(':') {
-                    mounts.push(MountConfig {
-                        host_path: PathBuf::from(host),
-                        container_path: PathBuf::from(container),
-                        read_only: false,
-                        is_tmpfs: false,
-                    });
-                }
-            }
-
-            let container_id = format!("crush_{}", hex_encode_random());
-            let container = Container {
-                id: container_id.clone(),
-                name: args.name.unwrap_or_else(|| format!("crush_{}", &container_id[..8])),
-                image: args.image,
-                status: ContainerStatus::Creating,
-                pid: None,
-                created_at: SystemTime::now(),
-                started_at: None,
-                ports: port_mappings,
-                mounts,
-                memory_limit_bytes: args.memory.map(|m| m * 1024 * 1024),
-                cpu_shares: args.cpu,
             };
 
-            println!("Created container: {} ({})", container.name, container.id);
-            if !args.detach {
-                println!("Container running. Press Ctrl+C to stop.");
+            let container_id = format!("crush_{}", hex_encode_random());
+            let container_name = args.name.unwrap_or_else(|| format!("crush_{}", &container_id[6..14]));
+            println!("Creating container {} from {}", container_name, image.tag);
+
+            // Extract image layers into a temporary rootfs
+            let rootfs = data_dir.join("containers").join(&container_id).join("rootfs");
+            tokio::fs::create_dir_all(&rootfs).await
+                .map_err(|e| CrushError::StorageError(format!("Failed to create rootfs: {}", e)))?;
+
+            store.extract_layers(&image.id, &rootfs).await?;
+
+            // Build effective command: entrypoint + cmd, falling back to /bin/sh
+            let effective_cmd: Vec<String> = if !image.entrypoint.is_empty() {
+                let mut v = image.entrypoint.clone();
+                v.extend(image.cmd.iter().cloned());
+                v
+            } else if !image.cmd.is_empty() {
+                image.cmd.clone()
+            } else {
+                vec!["/bin/sh".to_string()]
+            };
+
+            println!("Running: {}", effective_cmd.join(" "));
+
+            #[cfg(target_os = "linux")]
+            {
+                let rootfs_clone = rootfs.clone();
+                let env_vars = image.env.clone();
+                let exit_code = tokio::task::spawn_blocking(move || {
+                    run_container(&rootfs_clone, &effective_cmd, &env_vars)
+                })
+                .await
+                .map_err(|e| CrushError::NamespaceError(format!("Container task failed: {}", e)))??;
+
+                // Cleanup container directory after exit
+                let container_dir = rootfs.parent().map(|p| p.to_path_buf()).unwrap_or(rootfs);
+                tokio::fs::remove_dir_all(&container_dir).await.ok();
+
+                if exit_code != 0 {
+                    std::process::exit(exit_code);
+                }
+            }
+
+            #[cfg(not(target_os = "linux"))]
+            {
+                eprintln!("Container execution is only supported on Linux.");
+                let _ = effective_cmd;
+                tokio::fs::remove_dir_all(&rootfs.parent().unwrap_or(&rootfs)).await.ok();
             }
         }
         Commands::Ps(args) => {
