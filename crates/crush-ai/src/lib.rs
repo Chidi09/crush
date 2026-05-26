@@ -41,7 +41,7 @@ impl AiEngine {
         project_root: Option<&Path>,
     ) -> Result<FullDiagnosis> {
         // 1. Run ALL runtime parsers, scored. Highest confidence wins.
-        let trace = self.trace_parser.parse(stderr);
+        if let Some(trace) = self.trace_parser.parse(stderr) {
             let source_ctx = if !trace.file.is_empty() && trace.line > 0 {
                 let file_path = project_root.map(|r| r.join(&trace.file))
                     .unwrap_or_else(|| PathBuf::from(&trace.file));
