@@ -96,8 +96,6 @@ enum Commands {
     Daemon(DaemonArgs),
     #[command(about = "Run health checks on a container")]
     Health(HealthArgs),
-    #[command(about = "Auto-detect project stack and print inferred configuration")]
-    Detect,
     #[command(about = "Generate shell completion scripts")]
     Completions(CompletionsArgs),
 }
@@ -1032,12 +1030,6 @@ async fn main() -> anyhow::Result<()> {
             let checker = HealthChecker::new(config);
             let status = checker.check().await;
             println!("Health status for {}: {:?}", args.id, status);
-        }
-        Commands::Detect => {
-            let detector = StackDetector::new();
-            let project_root = std::env::current_dir()?;
-            let stack = detector.detect(&project_root).await?;
-            println!("{}", serde_json::to_string_pretty(&stack)?);
         }
         Commands::Completions(args) => {
             use clap::CommandFactory;
