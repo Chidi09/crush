@@ -58,7 +58,7 @@ impl HnsManager {
 
             if !response_ptr.is_null() {
                 unsafe {
-                    windows_sys::Win32::System::SystemServices::LocalFree(response_ptr as _);
+                    windows_sys::Win32::Foundation::LocalFree(response_ptr as _);
                 }
             }
 
@@ -104,7 +104,7 @@ impl HnsManager {
 
                 if !response_ptr.is_null() {
                     unsafe {
-                        windows_sys::Win32::System::SystemServices::LocalFree(response_ptr as _);
+                        windows_sys::Win32::Foundation::LocalFree(response_ptr as _);
                     }
                 }
 
