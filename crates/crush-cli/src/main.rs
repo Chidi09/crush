@@ -9,7 +9,7 @@ use crush_image::ImageStore;
 use crush_compat::{DockerfileParser, ComposeLoader};
 use crush_ai::AiEngine;
 use crush_tui::TuiApp;
-use crush_api::ApiServer;
+
 use crush_registry::LocalRegistryServer;
 use crush_network::NetworkManager;
 use crush_reliability::{HealthChecker, HealthCheckConfig, HealthCheckType};

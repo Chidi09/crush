@@ -62,12 +62,12 @@ impl RuntimeBackend for StatelessEngine {
         #[cfg(unix)]
         {
             use std::os::unix::process::CommandExt;
-            cmd.pre_exec(|| {
-                unsafe {
+            unsafe {
+                cmd.pre_exec(|| {
                     libc::setsid();
-                }
-                Ok(())
-            });
+                    Ok(())
+                });
+            }
         }
 
         #[cfg(windows)]

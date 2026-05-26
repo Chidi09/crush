@@ -890,6 +890,7 @@ name = "crush-cli"
 version = "0.1.0"
 dependencies = [
  "anyhow",
+ "async-trait",
  "clap",
  "clap_complete",
  "crush-ai",
@@ -906,6 +907,7 @@ dependencies = [
  "crush-volume",
  "dirs",
  "libc",
+ "serde",
  "serde_json",
  "thiserror 1.0.69",
  "tokio",
