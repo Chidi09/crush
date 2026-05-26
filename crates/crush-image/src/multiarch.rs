@@ -12,9 +12,16 @@ pub struct Platform {
 
 impl Platform {
     pub fn current() -> Self {
+        // Normalize Rust's arch names to OCI/Docker convention
+        let arch = match std::env::consts::ARCH {
+            "x86_64"  => "amd64",
+            "aarch64" => "arm64",
+            "arm"     => "arm",
+            other     => other,
+        };
         Self {
             os: std::env::consts::OS.to_string(),
-            architecture: std::env::consts::ARCH.to_string(),
+            architecture: arch.to_string(),
             variant: None,
             os_version: None,
             os_features: Vec::new(),
@@ -73,18 +80,10 @@ impl MultiArchResolver {
 
         for (i, entry) in manifests.iter().enumerate() {
             let plat = Platform::from_manifest_entry(entry);
-            if plat.os != host.os {
-                continue;
-            }
-            if !plat.architecture.contains(&host.architecture)
-                && !host.architecture.contains(&plat.architecture)
-            {
+            if !host.matches(&plat) {
                 continue;
             }
             let score = if plat.architecture == host.architecture { 2 } else { 1 };
-            if plat.variant.is_some() {
-                // prefer exact variant match
-            }
             if score > best_score {
                 best_score = score;
                 best = Some((i, entry));
