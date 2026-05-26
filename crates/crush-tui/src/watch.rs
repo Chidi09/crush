@@ -49,12 +49,10 @@ impl FileWatcher {
         let (tx, rx) = std::sync::mpsc::channel::<ChangeClass>();
 
         let mut watcher = RecommendedWatcher::new(
-            move |res: Result<Event, notify::Error>| {
+            move |res: std::result::Result<Event, notify::Error>| {
                 if let Ok(event) = res {
                     if let Some(path) = event.paths.first() {
-                        if event.kind == EventKind::Modify(notify::event::ModifyKind::Data(_))
-                            || event.kind == EventKind::Create(notify::event::CreateKind::File)
-                        {
+                        if matches!(event.kind, EventKind::Modify(_) | EventKind::Create(_)) {
                             let classification = classify_change(path);
                             tx.send(classification).ok();
                         }
