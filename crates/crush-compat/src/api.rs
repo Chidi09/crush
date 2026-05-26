@@ -47,6 +47,7 @@ struct DockerImageSummary {
 
 #[pin_project::pin_project(project = AnyStreamProj)]
 enum AnyStream {
+    #[cfg(unix)]
     Unix(#[pin] tokio::net::UnixStream),
     #[cfg(windows)]
     Pipe(#[pin] tokio::net::windows::named_pipe::NamedPipeServer),
