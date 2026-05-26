@@ -75,11 +75,11 @@ impl WasmNetworkProxy {
     }
 }
 
-async fn proxy_bidirectional(mut inbound: tokio::net::TcpStream, mut outbound: tokio::net::TcpStream) {
+async fn proxy_bidirectional(inbound: tokio::net::TcpStream, outbound: tokio::net::TcpStream) {
     use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    let (mut ri, mut wi) = inbound.split();
-    let (mut ro, mut wo) = outbound.split();
+    let (mut ri, mut wi) = inbound.into_split();
+    let (mut ro, mut wo) = outbound.into_split();
 
     let client_to_server = tokio::spawn(async move {
         let mut buf = vec![0u8; 65536];

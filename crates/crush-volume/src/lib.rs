@@ -105,7 +105,7 @@ impl VolumeManager {
     }
 
     pub async fn teardown_container_mounts(
-        &self,
+        &mut self,
         mounts: &[MountConfig],
         container_root: &PathBuf,
         remove_on_exit: bool,
