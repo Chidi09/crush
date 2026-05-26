@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 use std::time::{SystemTime, UNIX_EPOCH};
+use base64::{Engine as _, engine::general_purpose::STANDARD as BASE64};
 use crush_types::{Result, CrushError};
 
 #[derive(Debug, Clone)]
@@ -55,7 +56,7 @@ impl AuthHandler {
         }
 
         if let (Some(ref user), Some(ref pass)) = (&auth.username, &auth.password) {
-            let encoded = base64::encode(format!("{}:{}", user, pass));
+            let encoded = BASE64.encode(format!("{}:{}", user, pass));
             return Some(format!("Basic {}", encoded));
         }
 
@@ -104,7 +105,7 @@ impl AuthHandler {
     }
 
     pub async fn authenticate_basic(&mut self, registry: &str, username: &str, password: &str) -> Result<String> {
-        let encoded = base64::encode(format!("{}:{}", username, password));
+        let encoded = BASE64.encode(format!("{}:{}", username, password));
         let auth = RegistryAuth {
             registry: registry.to_string(),
             token: None,
@@ -131,7 +132,7 @@ impl AuthHandler {
                 if let Some(auth_val) = creds["auth"].as_str() {
                     if !auth_val.is_empty() {
                         let decoded = String::from_utf8(
-                            base64::decode(auth_val).unwrap_or_default()
+                            BASE64.decode(auth_val).unwrap_or_default()
                         ).unwrap_or_default();
                         if let Some(pos) = decoded.find(':') {
                             let user = &decoded[..pos];
