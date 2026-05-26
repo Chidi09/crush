@@ -42,7 +42,7 @@ impl NetworkNamespace {
 
     pub fn enter(&self) -> Result<()> {
         if let Some(ref file) = self.ns_file {
-            setns(file.as_raw_fd(), CloneFlags::CLONE_NEWNET)
+            setns(file, CloneFlags::CLONE_NEWNET)
                 .map_err(|e| CrushError::NamespaceError(e.to_string()))
         } else {
             Err(CrushError::NamespaceError("Namespace file closed".to_string()))

@@ -1,6 +1,6 @@
 use crush_types::{Result, CrushError};
 
-#[derive(Debug, Clone, Copy, PartialEq)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum NetworkMode {
     Bridge,
     Host,

@@ -47,7 +47,7 @@ impl Ipv6Manager {
 
         let suffix = format!("{}:{}:{}:{}", &hash[0..4], &hash[4..8], &hash[8..12], &hash[12..16]);
         let addr = format!("fd00:dead:beef:{}:{}:{}:{}:{}",
-            &hash[16..20], &hash[20..24], &hash[24..28], &hash[28..32]);
+            &hash[16..20], &hash[20..24], &hash[24..28], &hash[28..32], &hash[32..36]);
 
         let add = Command::new("ip")
             .args(["-n", netns, "-6", "addr", "add", &format!("{}/64", &addr), "dev", veth])

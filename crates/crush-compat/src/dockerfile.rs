@@ -118,7 +118,7 @@ impl DockerfileParserV2 {
                     base_images.push(img.clone());
                 }
                 current_stage.base_image = image.clone();
-                current_stage.name = name;
+                current_stage.name = name.clone();
                 current_stage.instructions.push(DockerInstruction::From {
                     image: image.unwrap_or_default(),
                     name, platform,

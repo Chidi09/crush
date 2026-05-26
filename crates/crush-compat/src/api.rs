@@ -1,6 +1,7 @@
 use std::path::PathBuf;
 use std::sync::Arc;
 use tokio::sync::Mutex;
+use tokio::io::AsyncReadExt;
 use crush_types::{Result, CrushError};
 
 const DOCKER_API_VERSION: &str = "v1.41";
