@@ -86,6 +86,14 @@ enum Commands {
     System(SystemArgs),
     #[command(about = "Self-update the crush binary securely")]
     Update(UpdateArgs),
+    #[command(about = "Start the Docker compatibility daemon serving over /var/run/crush.sock")]
+    Daemon(DaemonArgs),
+}
+
+#[derive(Args, Debug)]
+pub struct DaemonArgs {
+    #[arg(short, long, help = "Unix socket path to bind", default_value = "/var/run/crush.sock")]
+    pub socket: String,
 }
 
 #[derive(Args, Debug)]
@@ -412,6 +420,25 @@ async fn main() -> anyhow::Result<()> {
 
             println!("Running: {}", effective_cmd.join(" "));
 
+            let container = Container {
+                id: container_id.clone(),
+                name: container_name.clone(),
+                image: image.tag.clone(),
+                status: ContainerStatus::Running,
+                pid: Some(std::process::id()),
+                created_at: SystemTime::now(),
+                started_at: Some(SystemTime::now()),
+                ports: vec![],
+                mounts: vec![],
+                memory_limit_bytes: args.memory.map(|m| m * 1024 * 1024),
+                cpu_shares: args.cpu,
+            };
+
+            let container_dir = data_dir.join("containers").join(&container_id);
+            let container_json_path = container_dir.join("container.json");
+            let container_json = serde_json::to_string_pretty(&container)?;
+            tokio::fs::write(&container_json_path, container_json).await?;
+
             #[cfg(target_os = "linux")]
             {
                 let rootfs_clone = rootfs.clone();
@@ -422,9 +449,16 @@ async fn main() -> anyhow::Result<()> {
                 .await
                 .map_err(|e| CrushError::NamespaceError(format!("Container task failed: {}", e)))??;
 
-                // Cleanup container directory after exit
-                let container_dir = rootfs.parent().map(|p| p.to_path_buf()).unwrap_or(rootfs);
-                tokio::fs::remove_dir_all(&container_dir).await.ok();
+                // Update container state to Stopped on exit
+                if let Ok(content) = tokio::fs::read_to_string(&container_json_path).await {
+                    if let Ok(mut c) = serde_json::from_str::<Container>(&content) {
+                        c.status = ContainerStatus::Stopped;
+                        c.pid = None;
+                        if let Ok(serialized) = serde_json::to_string_pretty(&c) {
+                            let _ = tokio::fs::write(&container_json_path, serialized).await;
+                        }
+                    }
+                }
 
                 if exit_code != 0 {
                     std::process::exit(exit_code);
@@ -440,31 +474,159 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Ps(args) => {
             info!("Fetching containers (show all: {})", args.all);
-            let containers = store.list_images().await.unwrap_or_default();
-            let container_list: Vec<Container> = containers.iter().map(|img| Container {
-                id: img.id.clone(),
-                name: img.tag.clone(),
-                image: img.tag.clone(),
-                status: ContainerStatus::Running,
-                pid: Some(7171),
-                created_at: SystemTime::now(),
-                started_at: None,
-                ports: vec![],
-                mounts: vec![],
-                memory_limit_bytes: None,
-                cpu_shares: None,
-            }).collect();
+            let containers_dir = data_dir.join("containers");
+            let mut container_list = Vec::new();
+            if containers_dir.exists() {
+                let mut entries = tokio::fs::read_dir(&containers_dir).await?;
+                while let Some(entry) = entries.next_entry().await? {
+                    if entry.file_type().await?.is_dir() {
+                        let json_path = entry.path().join("container.json");
+                        if json_path.exists() {
+                            if let Ok(content) = tokio::fs::read_to_string(&json_path).await {
+                                if let Ok(mut c) = serde_json::from_str::<Container>(&content) {
+                                    let mut is_alive = false;
+                                    if let Some(pid) = c.pid {
+                                        #[cfg(unix)]
+                                        {
+                                            is_alive = unsafe { libc::kill(pid as libc::pid_t, 0) == 0 };
+                                        }
+                                        #[cfg(not(unix))]
+                                        {
+                                            is_alive = true; // Safe cross-compile fallback
+                                        }
+                                    }
+                                    if !is_alive && c.status == ContainerStatus::Running {
+                                        c.status = ContainerStatus::Stopped;
+                                        c.pid = None;
+                                        if let Ok(serialized) = serde_json::to_string_pretty(&c) {
+                                            let _ = tokio::fs::write(&json_path, serialized).await;
+                                        }
+                                    }
+
+                                    if args.all || c.status == ContainerStatus::Running {
+                                        container_list.push(c);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
 
             let tui = TuiApp::new(1);
-            tui.draw_containers_table(&container_list);
+            if cli.no_interactive {
+                tui.draw_containers_table(&container_list);
+            } else {
+                tui.run_ps(container_list)?;
+            }
         }
         Commands::Stop(args) => {
             info!("Stopping container: {} (grace period: {}s)", args.id, args.timeout);
-            println!("Container {} stopped successfully", args.id);
+            let containers_dir = data_dir.join("containers");
+            let mut stopped = false;
+            if containers_dir.exists() {
+                let mut entries = tokio::fs::read_dir(&containers_dir).await?;
+                while let Some(entry) = entries.next_entry().await? {
+                    let json_path = entry.path().join("container.json");
+                    if json_path.exists() {
+                        if let Ok(content) = tokio::fs::read_to_string(&json_path).await {
+                            if let Ok(mut c) = serde_json::from_str::<Container>(&content) {
+                                if c.id == args.id || c.name == args.id {
+                                    if let Some(pid) = c.pid {
+                                        #[cfg(unix)]
+                                        {
+                                            unsafe { libc::kill(pid as libc::pid_t, libc::SIGTERM); }
+                                            let start = std::time::Instant::now();
+                                            let mut killed = false;
+                                            while start.elapsed().as_secs() < args.timeout as u64 {
+                                                if unsafe { libc::kill(pid as libc::pid_t, 0) != 0 } {
+                                                    killed = true;
+                                                    break;
+                                                }
+                                                tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                                            }
+                                            if !killed {
+                                                unsafe { libc::kill(pid as libc::pid_t, libc::SIGKILL); }
+                                            }
+                                        }
+                                    }
+                                    c.status = ContainerStatus::Stopped;
+                                    c.pid = None;
+                                    if let Ok(serialized) = serde_json::to_string_pretty(&c) {
+                                        let _ = tokio::fs::write(&json_path, serialized).await;
+                                    }
+                                    println!("Container {} stopped successfully", args.id);
+                                    stopped = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !stopped {
+                eprintln!("Container {} not found", args.id);
+            }
         }
         Commands::Logs(args) => {
             info!("Streaming logs for container: {} (follow: {})", args.id, args.follow);
-            println!("Logs for {}: (no log data available)", args.id);
+            let containers_dir = data_dir.join("containers");
+            let mut found = false;
+            if containers_dir.exists() {
+                let mut entries = tokio::fs::read_dir(&containers_dir).await?;
+                while let Some(entry) = entries.next_entry().await? {
+                    let json_path = entry.path().join("container.json");
+                    if json_path.exists() {
+                        if let Ok(content) = tokio::fs::read_to_string(&json_path).await {
+                            if let Ok(c) = serde_json::from_str::<Container>(&content) {
+                                if c.id == args.id || c.name == args.id {
+                                    found = true;
+                                    let stdout_path = entry.path().join("stdout.log");
+                                    let stderr_path = entry.path().join("stderr.log");
+                                    
+                                    if stdout_path.exists() {
+                                        if let Ok(logs) = tokio::fs::read_to_string(&stdout_path).await {
+                                            print!("{}", logs);
+                                        }
+                                    }
+                                    if stderr_path.exists() {
+                                        if let Ok(logs) = tokio::fs::read_to_string(&stderr_path).await {
+                                            eprint!("{}", logs);
+                                        }
+                                    }
+                                    
+                                    if args.follow {
+                                        let stdout_file = tokio::fs::File::open(&stdout_path).await;
+                                        if let Ok(mut f) = stdout_file {
+                                            use tokio::io::AsyncSeekExt;
+                                            let _ = f.seek(std::io::SeekFrom::End(0)).await;
+                                            let mut buffer = [0u8; 1024];
+                                            loop {
+                                                use tokio::io::AsyncReadExt;
+                                                match f.read(&mut buffer).await {
+                                                    Ok(0) => {
+                                                        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                                                    }
+                                                    Ok(n) => {
+                                                        use std::io::Write;
+                                                        let _ = std::io::stdout().write_all(&buffer[..n]);
+                                                        let _ = std::io::stdout().flush();
+                                                    }
+                                                    Err(_) => break,
+                                                }
+                                            }
+                                        }
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !found {
+                eprintln!("Container {} not found", args.id);
+            }
         }
         Commands::Debug(args) => {
             info!("AI diagnosis debugger interactive session on container: {}", args.id);
@@ -495,31 +657,57 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Inspect(args) => {
             info!("Inspecting: {}", args.id);
-            let data = serde_json::json!({
-                "Id": args.id,
-                "State": {
-                    "Status": "running",
-                    "Running": true,
-                    "Pid": 7171,
-                    "ExitCode": 0,
-                },
-                "Config": {
-                    "Image": "ubuntu:latest",
+            let containers_dir = data_dir.join("containers");
+            let mut found = false;
+            if containers_dir.exists() {
+                let mut entries = tokio::fs::read_dir(&containers_dir).await?;
+                while let Some(entry) = entries.next_entry().await? {
+                    let json_path = entry.path().join("container.json");
+                    if json_path.exists() {
+                        if let Ok(content) = tokio::fs::read_to_string(&json_path).await {
+                            if let Ok(c) = serde_json::from_str::<Container>(&content) {
+                                if c.id == args.id || c.name == args.id {
+                                    if args.format == "json" {
+                                        println!("{}", serde_json::to_string_pretty(&c)?);
+                                    } else {
+                                        println!("{:#?}", c);
+                                    }
+                                    found = true;
+                                    break;
+                                }
+                            }
+                        }
+                    }
                 }
-            });
-            if args.format == "json" {
-                println!("{}", serde_json::to_string_pretty(&data)?);
-            } else {
-                println!("{:#?}", data);
+            }
+            if !found {
+                eprintln!("Container {} not found", args.id);
             }
         }
         Commands::Stats(args) => {
             info!("Reading metrics stats (no-stream: {})", args.no_stream);
-            let cpu_samples = vec![12.5, 15.2, 11.8, 20.1, 18.3];
-            let mem_samples = vec![128.0, 132.5, 145.2, 140.0, 138.7];
-
             let tui = TuiApp::new(1);
-            tui.draw_sparklines_graph("system", &cpu_samples, &mem_samples);
+            if cli.no_interactive || args.no_stream {
+                let cpu_samples = vec![12.5, 15.2, 11.8, 20.1, 18.3];
+                let mem_samples = vec![128.0, 132.5, 145.2, 140.0, 138.7];
+                tui.draw_sparklines_graph("system", &cpu_samples, &mem_samples);
+            } else {
+                let containers = store.list_images().await.unwrap_or_default();
+                let container_list: Vec<Container> = containers.iter().map(|img| Container {
+                    id: img.id.clone(),
+                    name: img.tag.clone(),
+                    image: img.tag.clone(),
+                    status: ContainerStatus::Running,
+                    pid: Some(7171),
+                    created_at: SystemTime::now(),
+                    started_at: None,
+                    ports: vec![],
+                    mounts: vec![],
+                    memory_limit_bytes: None,
+                    cpu_shares: None,
+                }).collect();
+                tui.run_stats(container_list)?;
+            }
         }
         Commands::Events(args) => {
             info!("Subscribing to system events with filter: {:?}", args.filter);
@@ -737,6 +925,17 @@ async fn main() -> anyhow::Result<()> {
             } else {
                 println!("Self-update not yet implemented in this build.");
             }
+        }
+        Commands::Daemon(args) => {
+            info!("Starting Docker compatibility daemon on socket: {}", args.socket);
+            let socket_path = PathBuf::from(&args.socket);
+            let server = crush_compat::DockerApiServer::new(socket_path, data_dir);
+            server.start().await?;
+            println!("Docker compatibility socket running at: {}", args.socket);
+            println!("Press Ctrl+C to stop.");
+            tokio::signal::ctrl_c().await?;
+            server.stop().await?;
+            println!("Daemon stopped.");
         }
     }
 

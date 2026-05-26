@@ -57,6 +57,10 @@ impl RuntimeBackend for LinuxRuntime {
 
         self.ns.unshare_namespaces()?;
 
+        // Trigger createRuntime hooks
+        let create_runtime_hooks = load_oci_hooks(spec_path, "createRuntime");
+        self.lifecycle.trigger_hooks_list("createRuntime", &create_runtime_hooks)?;
+
         let rootfs = spec_path.join("rootfs");
         let overlay = OverlayManager::new(
             container.mounts.iter().map(|m| m.host_path.clone()).collect(),
@@ -90,10 +94,20 @@ impl RuntimeBackend for LinuxRuntime {
         self.caps.drop_unnecessary_capabilities()?;
         self.caps.apply_ambient_capabilities()?;
 
+        // Trigger createContainer hooks
+        let create_container_hooks = load_oci_hooks(spec_path, "createContainer");
+        self.lifecycle.trigger_hooks_list("createContainer", &create_container_hooks)?;
+
         Ok(())
     }
 
     async fn start(&self, container_id: &str) -> Result<()> {
+        let spec_path = get_spec_path(container_id);
+
+        // Trigger startContainer hooks
+        let start_container_hooks = load_oci_hooks(&spec_path, "startContainer");
+        self.lifecycle.trigger_hooks_list("startContainer", &start_container_hooks)?;
+
         let child_pid = self.spawn_container_process(container_id).await?;
 
         let cgroup = CgroupManager::new(container_id);
@@ -103,6 +117,10 @@ impl RuntimeBackend for LinuxRuntime {
             let mut pids = self.child_pids.lock().await;
             pids.insert(container_id.to_string(), child_pid);
         }
+
+        // Trigger poststart hooks
+        let poststart_hooks = load_oci_hooks(&spec_path, "poststart");
+        self.lifecycle.trigger_hooks_list("poststart", &poststart_hooks)?;
 
         Ok(())
     }
@@ -122,6 +140,12 @@ impl RuntimeBackend for LinuxRuntime {
             let mut pids = self.child_pids.lock().await;
             pids.remove(container_id);
         }
+
+        let spec_path = get_spec_path(container_id);
+
+        // Trigger poststop hooks
+        let poststop_hooks = load_oci_hooks(&spec_path, "poststop");
+        self.lifecycle.trigger_hooks_list("poststop", &poststop_hooks)?;
 
         Ok(())
     }
@@ -253,4 +277,70 @@ impl LinuxRuntime {
             "mlock","munlock","madvise","restart_syscall",
         ].into_iter().map(String::from).collect()
     }
+}
+
+fn get_spec_path(container_id: &str) -> PathBuf {
+    dirs_or_default().join("containers").join(container_id)
+}
+
+fn dirs_or_default() -> PathBuf {
+    let base = if cfg!(target_os = "linux") {
+        PathBuf::from("/var/lib/crush")
+    } else if cfg!(target_os = "windows") {
+        PathBuf::from(std::env::var("PROGRAMDATA").unwrap_or_else(|_| "C:\\ProgramData\\Crush".to_string()))
+    } else {
+        dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("crush")
+    };
+    std::fs::create_dir_all(&base).ok();
+    base
+}
+
+fn load_oci_hooks(spec_path: &std::path::Path, stage: &str) -> Vec<lifecycle::OciHook> {
+    let config_path = spec_path.join("config.json");
+    if !config_path.exists() {
+        return Vec::new();
+    }
+    
+    let content = match std::fs::read_to_string(&config_path) {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    
+    let value: serde_json::Value = match serde_json::from_str(&content) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    
+    let hook_list = match value.get("hooks").and_then(|h| h.get(stage)).and_then(|s| s.as_array()) {
+        Some(arr) => arr,
+        None => return Vec::new(),
+    };
+    
+    let mut result = Vec::new();
+    for item in hook_list {
+        if let Some(path) = item.get("path").and_then(|p| p.as_str()) {
+            let args = item.get("args")
+                .and_then(|a| a.as_array())
+                .unwrap_or(&Vec::new())
+                .iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect();
+            let env = item.get("env")
+                .and_then(|e| e.as_array())
+                .unwrap_or(&Vec::new())
+                .iter()
+                .filter_map(|x| x.as_str().map(|s| s.to_string()))
+                .collect();
+            let timeout = item.get("timeout").and_then(|t| t.as_u64().map(|v| v as u32));
+            
+            result.push(lifecycle::OciHook {
+                path: path.to_string(),
+                args,
+                env,
+                timeout,
+            });
+        }
+    }
+    
+    result
 }
