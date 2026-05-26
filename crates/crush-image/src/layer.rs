@@ -78,25 +78,24 @@ pub fn safe_unpack(archive: &mut tar::Archive<impl std::io::Read>, destination: 
             let link = entry.link_name()
                 .map_err(|e| CrushError::StorageError(format!("symlink error: {}", e)))?
                 .unwrap_or_default();
-            // Validate symlink target stays within the rootfs.
-            // Absolute targets like "/usr/lib" are valid within the container — we resolve
-            // them relative to dest, not the host root.
-            let resolve_base = target.parent().unwrap_or(&dest);
-            let candidate = if link.is_absolute() {
-                // Absolute targets like "/usr/lib" are valid within the container;
-                // strip the leading '/' and join under dest so we check the rootfs path.
-                let rel = link.to_string_lossy();
-                dest.join(rel.trim_start_matches('/'))
-            } else {
-                resolve_base.join(&link)
-            };
-            if candidate.exists() {
-                if let Ok(canon) = candidate.canonicalize() {
-                    if !canon.starts_with(&dest) {
-                        return Err(CrushError::StorageError(format!(
-                            "Symlink traversal blocked: {:?} -> {:?}", path, link
-                        )));
+            // Validate relative symlink targets don't escape the rootfs via "../.." chains.
+            // Absolute targets (e.g. "/usr/lib") are intentional in container images and
+            // are safe because they resolve within the chrooted container, not the host.
+            if !link.is_absolute() {
+                let resolve_base = target.parent().unwrap_or(&dest);
+                let mut resolved = resolve_base.to_path_buf();
+                for component in link.components() {
+                    match component {
+                        std::path::Component::ParentDir => { resolved.pop(); }
+                        std::path::Component::Normal(c) => resolved.push(c),
+                        _ => {}
                     }
+                }
+                // resolved must still be within dest
+                if !resolved.starts_with(&dest) {
+                    return Err(CrushError::StorageError(format!(
+                        "Symlink traversal blocked: {:?} -> {:?}", path, link
+                    )));
                 }
             }
             let _ = fs::remove_file(&target);
@@ -107,13 +106,21 @@ pub fn safe_unpack(archive: &mut tar::Archive<impl std::io::Read>, destination: 
             let link_target = entry.link_name()
                 .map_err(|e| CrushError::StorageError(format!("link error: {}", e)))?
                 .unwrap_or_default();
+            // Hard link targets are always relative to the archive root, so we just
+            // join with dest and verify containment via path normalization (no canonicalize,
+            // since that would follow symlinks through the host filesystem).
             let hard_target = dest.join(&link_target);
-            if hard_target.exists() {
-                if let Ok(canon) = hard_target.canonicalize() {
-                    if !canon.starts_with(&dest) {
-                        return Err(CrushError::StorageError("Hardlink traversal blocked".to_string()));
-                    }
+            let mut resolved = std::path::PathBuf::new();
+            for component in hard_target.components() {
+                match component {
+                    std::path::Component::ParentDir => { resolved.pop(); }
+                    c => resolved.push(c),
                 }
+            }
+            if !resolved.starts_with(&dest) {
+                return Err(CrushError::StorageError(format!(
+                    "Hardlink traversal blocked: {:?} -> {:?}", path, link_target
+                )));
             }
             let _ = fs::remove_file(&target);
             fs::hard_link(&hard_target, &target)
