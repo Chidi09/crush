@@ -5,6 +5,9 @@ use crush_types::{Result, CrushError, Container, ContainerStatus};
 
 const DOCKER_API_VERSION: &str = "v1.41";
 
+#[cfg(unix)]
+use libc;
+
 pub struct DockerApiServer {
     socket_path: PathBuf,
     data_dir: PathBuf,
@@ -105,7 +108,7 @@ impl DockerApiServer {
 async fn handle_api_connection(
     mut stream: tokio::net::UnixStream, data_dir: PathBuf, backend: Arc<dyn crush_types::RuntimeBackend>,
 ) -> Result<()> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, AsyncReadExt, BufReader};
     let mut reader = BufReader::new(&mut stream);
     let mut request_line = String::new();
     reader.read_line(&mut request_line).await.map_err(|e| CrushError::ApiError(e.to_string()))?;
@@ -306,8 +309,9 @@ async fn route(
                     
                     let rootfs = data_dir.join("containers").join(&id).join("rootfs");
                     let _ = std::fs::create_dir_all(&rootfs);
-                    let store = crush_image::ImageStore::new(data_dir.clone());
-                    let _ = store.extract_layers(&img.id, &rootfs).await;
+                    if let Ok(store) = crush_image::ImageStore::new(data_dir.clone()).await {
+                        let _ = store.extract_layers(&img.id, &rootfs).await;
+                    }
                 }
             }
 

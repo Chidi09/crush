@@ -4,6 +4,8 @@ use tokio::sync::Mutex;
 use crush_types::{Result, CrushError, Container, ContainerStatus, RuntimeBackend};
 use crush_image::db::ImageDatabase;
 
+#[cfg(unix)]
+use libc;
 pub struct ApiServer {
     socket_path: PathBuf,
     data_dir: PathBuf,
@@ -77,7 +79,7 @@ async fn handle_connection(
     data_dir: PathBuf,
     backend: Arc<dyn RuntimeBackend>,
 ) -> Result<()> {
-    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
+    use tokio::io::{AsyncBufReadExt, AsyncWriteExt, AsyncReadExt, BufReader};
 
     let mut reader = BufReader::new(&mut stream);
     let mut request_line = String::new();
@@ -302,8 +304,9 @@ async fn route_request(
                     
                     let rootfs = data_dir.join("containers").join(&id).join("rootfs");
                     let _ = std::fs::create_dir_all(&rootfs);
-                    let store = crush_image::ImageStore::new(data_dir.clone());
-                    let _ = store.extract_layers(&img.id, &rootfs).await;
+                    if let Ok(store) = crush_image::ImageStore::new(data_dir.clone()).await {
+                        let _ = store.extract_layers(&img.id, &rootfs).await;
+                    }
                 }
             }
 
