@@ -332,7 +332,6 @@ async fn main() -> anyhow::Result<()> {
     let cli = Cli::parse();
     let data_dir = dirs_or_default();
     let store = ImageStore::new(data_dir.join("images")).await?;
-    store.rebuild_image_db().await.ok();
 
     match cli.command {
         Commands::Default => {
@@ -638,7 +637,8 @@ async fn main() -> anyhow::Result<()> {
             match args.subcommand {
                 NetworkSubcommand::Create { name, subnet } => {
                     let subnet_str = subnet.unwrap_or_else(|| "172.18.0.0/16".to_string());
-                    net.create_bridge(&name, &subnet_str).await?;
+                    let gateway = subnet_str.replace(".0/16", ".1").replace(".0/24", ".1");
+                    net.create(&name, &subnet_str, &gateway).await?;
                     println!("Created network: {} ({})", name, subnet_str);
                 }
                 NetworkSubcommand::Rm { name } => {

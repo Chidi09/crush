@@ -57,7 +57,7 @@ impl ReliabilityEngine {
         let should = self.restart.should_restart(exit_code, explicitly_stopped);
         if should {
             self.restart.record_attempt();
-            self.audit.log(AuditEvent::event(
+            self.audit.log(AuditLogger::event(
                 audit::AuditEventType::RestartAttempt,
                 None, None,
                 format!("Restart attempt {} (exit code {})", self.restart.attempt(), exit_code),
