@@ -231,7 +231,7 @@ impl StorageBackend for ImageStore {
         self.db.delete_image(image_id).await
     }
 
-    pub async fn extract_layers(&self, image_id: &str, destination: &PathBuf) -> Result<()> {
+    async fn extract_layers(&self, image_id: &str, destination: &PathBuf) -> Result<()> {
         // helper defined below impl block
         fn build_inode_map_from_tar(raw: &[u8]) -> Result<std::collections::HashMap<u64, fuse::InodeMetadata>> {
             use std::collections::HashMap;
