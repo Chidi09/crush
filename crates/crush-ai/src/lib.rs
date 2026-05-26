@@ -35,7 +35,7 @@ impl AiEngine {
     }
 
     pub async fn diagnose_stderr(
-        &self,
+        &mut self,
         stderr: &str,
         build_command: Option<&str>,
         project_root: Option<&Path>,

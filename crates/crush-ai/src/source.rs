@@ -2,6 +2,7 @@ use std::path::{Path, PathBuf};
 use std::fs;
 use crush_types::{Result, CrushError};
 
+#[derive(Debug)]
 pub struct SourceContext {
     pub file: PathBuf,
     pub line: usize,
@@ -10,6 +11,7 @@ pub struct SourceContext {
     pub git_blame: Option<String>,
 }
 
+#[derive(Debug)]
 pub struct SourceLine {
     pub line_number: usize,
     pub content: String,
