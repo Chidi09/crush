@@ -23,6 +23,7 @@ impl ApiServer {
         }
     }
 
+    #[cfg(unix)]
     pub async fn serve_unix_socket(&self) -> Result<()> {
         let _ = tokio::fs::remove_file(&self.socket_path).await;
 
@@ -64,6 +65,54 @@ impl ApiServer {
         Ok(())
     }
 
+    #[cfg(windows)]
+    pub async fn serve_named_pipe(&self) -> Result<()> {
+        use tokio::net::windows::named_pipe::ServerOptions;
+
+        // Convert any path to a named pipe name: \\.\pipe\crush-api
+        let pipe_name = format!("\\\\.\\pipe\\crush-api");
+
+        {
+            let mut running = self.running.lock().await;
+            *running = true;
+        }
+
+        let running = self.running.clone();
+        let data_dir = self.data_dir.clone();
+        let backend = self.backend.clone();
+
+        tokio::spawn(async move {
+            loop {
+                let is_running = { *running.lock().await };
+                if !is_running { break; }
+
+                // Each accept cycle creates a new server instance
+                let server = match ServerOptions::new()
+                    .first_pipe_instance(false)
+                    .create(&pipe_name)
+                {
+                    Ok(s) => s,
+                    Err(e) => {
+                        eprintln!("API named pipe create error: {}", e);
+                        break;
+                    }
+                };
+
+                if server.connect().await.is_err() {
+                    continue;
+                }
+
+                let dir = data_dir.clone();
+                let b = backend.clone();
+                tokio::spawn(async move {
+                    handle_connection(server, dir, b).await.ok();
+                });
+            }
+        });
+
+        Ok(())
+    }
+
     pub async fn stop(&self) -> Result<()> {
         {
             let mut running = self.running.lock().await;
@@ -74,11 +123,14 @@ impl ApiServer {
     }
 }
 
-async fn handle_connection(
-    mut stream: tokio::net::UnixStream,
+async fn handle_connection<S>(
+    mut stream: S,
     data_dir: PathBuf,
     backend: Arc<dyn RuntimeBackend>,
-) -> Result<()> {
+) -> Result<()>
+where
+    S: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin + Send,
+{
     use tokio::io::{AsyncBufReadExt, AsyncWriteExt, AsyncReadExt, BufReader};
 
     let mut reader = BufReader::new(&mut stream);

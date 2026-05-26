@@ -1704,7 +1704,10 @@ async fn main() -> anyhow::Result<()> {
             let api_socket_path = socket_path.parent().unwrap_or(&socket_path).join("crush-api.sock");
             info!("Starting Standalone API daemon on socket: {}", api_socket_path.display());
             let api_server = crush_api::ApiServer::new(api_socket_path.clone(), data_dir.clone(), backend.clone());
+            #[cfg(unix)]
             api_server.serve_unix_socket().await?;
+            #[cfg(windows)]
+            api_server.serve_named_pipe().await?;
 
             println!("Docker compatibility socket running at: {}", args.socket);
             println!("Standalone API socket running at: {}", api_socket_path.display());
