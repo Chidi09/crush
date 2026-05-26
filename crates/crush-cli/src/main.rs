@@ -22,6 +22,9 @@ mod runtime;
 use runtime::StatelessEngine;
 use std::sync::Arc;
 
+#[cfg(target_os = "windows")]
+use crush_runtime_windows::WindowsRuntime;
+
 #[cfg(target_os = "linux")]
 use crush_runtime_linux::runner::run_container;
 
@@ -551,6 +554,9 @@ async fn main() -> anyhow::Result<()> {
                 // copy everything except .git, target, node_modules
                 copy_project_into_rootfs(&project_root, &app_dir).await?;
 
+                #[cfg(target_os = "windows")]
+                let backend = WindowsRuntime::new();
+                #[cfg(not(target_os = "windows"))]
                 let backend = StatelessEngine::new(data_dir.clone());
                 backend.create(&container, &container_dir).await?;
 
@@ -682,6 +688,9 @@ async fn main() -> anyhow::Result<()> {
             };
 
             let container_dir = data_dir.join("containers").join(&container_id);
+            #[cfg(target_os = "windows")]
+            let backend = WindowsRuntime::new();
+            #[cfg(not(target_os = "windows"))]
             let backend = StatelessEngine::new(data_dir.clone());
             backend.create(&container, &container_dir).await?;
 
@@ -1048,6 +1057,9 @@ async fn main() -> anyhow::Result<()> {
             let container_dir = data_dir.join("containers").join(&container_id);
             let container_json_path = container_dir.join("container.json");
             
+            #[cfg(target_os = "windows")]
+            let backend = WindowsRuntime::new();
+            #[cfg(not(target_os = "windows"))]
             let backend = StatelessEngine::new(data_dir.clone());
             backend.create(&container, &container_dir).await?;
 
@@ -1494,6 +1506,9 @@ async fn main() -> anyhow::Result<()> {
                     if state_path.exists() {
                         let content = tokio::fs::read_to_string(&state_path).await?;
                         let state: std::collections::HashMap<String, String> = serde_json::from_str(&content)?;
+                        #[cfg(target_os = "windows")]
+                        let backend = WindowsRuntime::new();
+                        #[cfg(not(target_os = "windows"))]
                         let backend = StatelessEngine::new(data_dir.clone());
                         for (svc_name, container_id) in &state {
                             println!("  Stopping {}...", svc_name);
@@ -1649,7 +1664,10 @@ async fn main() -> anyhow::Result<()> {
             let socket_path = PathBuf::from(&args.socket);
             
             // Initialize the stateless engine backend
-            let backend = Arc::new(StatelessEngine::new(data_dir.clone()));
+            #[cfg(target_os = "windows")]
+            let backend: Arc<dyn crush_types::RuntimeBackend> = Arc::new(WindowsRuntime::new());
+            #[cfg(not(target_os = "windows"))]
+            let backend: Arc<dyn crush_types::RuntimeBackend> = Arc::new(StatelessEngine::new(data_dir.clone()));
 
             // Compat API server
             info!("Starting Docker compatibility daemon on socket: {}", args.socket);
@@ -1927,11 +1945,39 @@ async fn main() -> anyhow::Result<()> {
                     std::process::exit(exit_code);
                 }
             }
-            #[cfg(not(target_os = "linux"))]
+            #[cfg(target_os = "windows")]
             {
-                eprintln!("Container execution is only supported on Linux.");
+                // Read container config
+                let rootfs = container_dir.join("rootfs");
+
+                // Detect image OS from image tag stored in container.json
+                let image_os = store.database().get_image_by_tag(&c.image).await
+                    .ok()
+                    .flatten()
+                    .map(|img| img.os.to_lowercase())
+                    .unwrap_or_else(|| "linux".to_string());
+
+                let win_runtime = WindowsRuntime::new();
+
+                if image_os == "windows" {
+                    // Windows-native container: Job Objects path
+                    win_runtime.create(&c, &container_dir).await
+                        .map_err(|e| CrushError::Internal(anyhow::anyhow!("Windows create failed: {}", e)))?;
+                    win_runtime.start_with_config(&c.id, &config.cmd, &config.env, &rootfs).await
+                        .map_err(|e| CrushError::Internal(anyhow::anyhow!("Windows start failed: {}", e)))?;
+                } else {
+                    // Linux container: Firecracker microVM path
+                    win_runtime.run_linux_container(&c.id, &rootfs, &config.cmd, &config.env, &c.ports).await
+                        .map_err(|e| CrushError::Internal(anyhow::anyhow!("Firecracker start failed: {}", e)))?;
+                }
+
                 let _ = mounter.unmount_all(&c.id).await;
-                tokio::fs::remove_dir_all(&rootfs.parent().unwrap_or(&rootfs)).await.ok();
+            }
+
+            #[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
+            {
+                eprintln!("Container execution requires Linux or Windows.");
+                let _ = mounter.unmount_all(&c.id).await;
             }
         }
         Commands::__Complete(args) => {
@@ -2200,6 +2246,9 @@ async fn run_compose_up(compose_path: &Path, data_dir: &Path, store: &ImageStore
         tokio::fs::create_dir_all(&rootfs).await?;
         store.extract_layers(&image.id, &rootfs).await?;
 
+        #[cfg(target_os = "windows")]
+        let backend = WindowsRuntime::new();
+        #[cfg(not(target_os = "windows"))]
         let backend = StatelessEngine::new(data_dir.to_path_buf());
         backend.create(&container, &container_dir).await?;
 

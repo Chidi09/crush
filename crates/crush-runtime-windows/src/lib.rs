@@ -27,7 +27,7 @@ mod windows_impl {
     use super::job_control::JobObject;
     use super::process::ChildProcess;
     use super::fs_sandbox::FileSystemSandbox;
-    use super::firecracker::FirecrackerMicroVM;
+    use super::firecracker::FirecrackerRunner;
     use super::hcs::HcsManager;
     use super::hns::HnsManager;
 
@@ -45,6 +45,87 @@ mod windows_impl {
             let hcs = HcsManager::load().ok();
             let hns = HnsManager::load();
             Self { hcs, hns, job_handles: Arc::new(Mutex::new(HashMap::new())) }
+        }
+
+        pub async fn start_with_config(
+            &self,
+            container_id: &str,
+            cmd: &[String],
+            env: &[String],
+            rootfs: &std::path::Path,
+        ) -> anyhow::Result<()> {
+            use std::fmt::Write as _;
+
+            let handles = self.job_handles.lock().unwrap();
+            let job = handles.get(container_id).ok_or_else(|| {
+                anyhow::anyhow!("No Job Object for '{}' — call create() first", container_id)
+            })?;
+
+            if cmd.is_empty() {
+                return Err(anyhow::anyhow!("No command to run"));
+            }
+
+            // Build environment block: NULL-separated KEY=VALUE pairs, double-NULL terminated
+            let mut env_block = String::new();
+            for pair in env {
+                env_block.push_str(pair);
+                env_block.push('\0');
+            }
+            env_block.push('\0');
+
+            // Build command string: join cmd[0] + args with spaces, quote args with spaces
+            let command_str = cmd.iter()
+                .map(|s| if s.contains(' ') { format!("\"{}\"", s) } else { s.clone() })
+                .collect::<Vec<_>>()
+                .join(" ");
+
+            // Launch with working dir = rootfs
+            let working_dir = rootfs.to_string_lossy().to_string();
+            let child = crate::process::ChildProcess::spawn_in_job(
+                &command_str,
+                Some(&working_dir),
+                job,
+            )?;
+
+            println!("[Windows] Container {} started (PID {})", container_id, child.pid());
+            Ok(())
+        }
+
+        pub async fn run_linux_container(
+            &self,
+            container_id: &str,
+            rootfs: &std::path::Path,
+            cmd: &[String],
+            env: &[String],
+            ports: &[crush_types::PortMapping],
+        ) -> anyhow::Result<()> {
+            use crate::firecracker::FirecrackerRunner;
+
+            let fc_binary = std::env::var("CRUSH_FC_BINARY")
+                .unwrap_or_else(|_| r"C:\crush\boot\firecracker.exe".to_string());
+            let kernel_path = std::env::var("CRUSH_FC_KERNEL")
+                .unwrap_or_else(|_| r"C:\crush\boot\vmlinux".to_string());
+
+            let socket_path = std::path::PathBuf::from(format!(
+                r"\\.\pipe\fc_{}",
+                &container_id[..12]
+            ));
+
+            // Convert rootfs to an ext4 image Firecracker can boot from
+            let rootfs_img = rootfs.with_extension("ext4");
+            FirecrackerRunner::pack_rootfs_to_ext4(rootfs, &rootfs_img)?;
+
+            let mut runner = FirecrackerRunner::new(
+                container_id.to_string(),
+                socket_path,
+                std::path::PathBuf::from(&fc_binary),
+                std::path::PathBuf::from(&kernel_path),
+                rootfs_img,
+            );
+
+            runner.boot(256, 2, cmd, env, ports).await?;
+            println!("[Firecracker] Linux container {} running", container_id);
+            Ok(())
         }
     }
 

@@ -35,3 +35,7 @@ serde = { workspace = true, features = ["derive"] }
 
 [target.'cfg(target_os = "linux")'.dependencies]
 crush-runtime-linux = { workspace = true }
+
+[target.'cfg(target_os = "windows")'.dependencies]
+crush-runtime-windows = { workspace = true }
+
