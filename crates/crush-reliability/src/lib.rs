@@ -11,7 +11,8 @@ pub mod readonly;
 use std::path::Path;
 use crush_types::{Result, CrushError};
 
-pub use health::{HealthChecker, HealthCheckConfig, HealthCheckType, HealthStatus, HealthState};
+pub use health::{HealthChecker, HealthCheckConfig, HealthCheckType, HealthState};
+pub use crush_types::HealthStatus;
 pub use restart::{RestartManager, RestartPolicy};
 pub use oom::{OomMonitor, OomEvent, OomPolicy};
 pub use secrets::{SecretManager, SecretSpec, SecretValue, SecretSource, SecretDestination};
