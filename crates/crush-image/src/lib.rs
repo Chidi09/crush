@@ -331,42 +331,47 @@ impl StorageBackend for ImageStore {
                 CompressionFormat::Gzip
             };
 
-            let blob_file = self.blobs.read_blob_stream(layer_digest)?;
-            if self.lazy_mode {
-                let (reg, img, _) = Self::registry_for_tag(&image.tag);
-                let mut loader = lazy::LazyLoader::new(destination.clone(), reg, img);
+            // Windows: always eager extraction (no FUSE support)
+            #[cfg(target_os = "windows")]
+            {
+                let blob_file = self.blobs.read_blob_stream(layer_digest)?;
+                let extractor = LayerExtractor::new(destination);
+                extractor.extract_layer_streamed(blob_file, format)?;
+                continue;
+            }
 
-                // Decompress the full blob so we can (a) split into seekable chunks
-                // and (b) parse tar headers to build the FUSE inode tree.
-                let mut raw: Vec<u8> = Vec::new();
-                match format {
-                    CompressionFormat::Gzip => {
-                        let mut dec = flate2::read::GzDecoder::new(blob_file);
-                        dec.read_to_end(&mut raw)
-                            .map_err(|e| CrushError::ImageError(format!("Gzip decompress: {}", e)))?;
-                    }
-                    CompressionFormat::Zstd => {
-                        let mut dec = zstd::Decoder::new(blob_file)
-                            .map_err(|e| CrushError::ImageError(format!("Zstd decoder: {}", e)))?;
-                        dec.read_to_end(&mut raw)
-                            .map_err(|e| CrushError::ImageError(format!("Zstd decompress: {}", e)))?;
-                    }
-                    _ => {
-                        let mut r: Box<dyn Read> = Box::new(blob_file);
-                        r.read_to_end(&mut raw)
-                            .map_err(|e| CrushError::ImageError(format!("Raw read: {}", e)))?;
-                    }
-                }
+            // Linux/macOS: FUSE lazy loading or eager extraction
+            #[cfg(not(target_os = "windows"))]
+            {
+                let blob_file = self.blobs.read_blob_stream(layer_digest)?;
+                if self.lazy_mode {
+                    let (reg, img, _) = Self::registry_for_tag(&image.tag);
+                    let mut loader = lazy::LazyLoader::new(destination.clone(), reg, img);
 
-                // Write chunks to disk and record the manifest.
-                loader.load_from_blob(&raw, layer_digest)?;
+                    let mut raw: Vec<u8> = Vec::new();
+                    match format {
+                        CompressionFormat::Gzip => {
+                            let mut dec = flate2::read::GzDecoder::new(blob_file);
+                            dec.read_to_end(&mut raw)
+                                .map_err(|e| CrushError::ImageError(format!("Gzip decompress: {}", e)))?;
+                        }
+                        CompressionFormat::Zstd => {
+                            let mut dec = zstd::Decoder::new(blob_file)
+                                .map_err(|e| CrushError::ImageError(format!("Zstd decoder: {}", e)))?;
+                            dec.read_to_end(&mut raw)
+                                .map_err(|e| CrushError::ImageError(format!("Zstd decompress: {}", e)))?;
+                        }
+                        _ => {
+                            let mut r: Box<dyn Read> = Box::new(blob_file);
+                            r.read_to_end(&mut raw)
+                                .map_err(|e| CrushError::ImageError(format!("Raw read: {}", e)))?;
+                        }
+                    }
 
-                // Build inode map and mount FUSE filesystem (Linux/macOS only)
-                #[cfg(not(target_os = "windows"))]
-                {
+                    loader.load_from_blob(&raw, layer_digest)?;
+
                     let inodes = build_inode_map_from_tar(&raw)?;
                     let loader = Arc::new(loader);
-
                     let dest = destination.clone();
                     let fs = fuse::LazyImageFs::new(loader, inodes);
                     std::thread::spawn(move || {
@@ -379,10 +384,10 @@ impl StorageBackend for ImageStore {
                     });
                     continue;
                 }
-            }
 
-            let extractor = LayerExtractor::new(destination);
-            extractor.extract_layer_streamed(blob_file, format)?;
+                let extractor = LayerExtractor::new(destination);
+                extractor.extract_layer_streamed(blob_file, format)?;
+            }
         }
 
         Ok(())
