@@ -22,7 +22,7 @@ impl LocalDriver {
         self.volumes_dir().join(name)
     }
 
-    fn volume_json_path(&self, name: &str) -> PathBuf {
+    pub fn volume_json_path(&self, name: &str) -> PathBuf {
         self.volume_dir(name).join("volume.json")
     }
 }
