@@ -88,6 +88,24 @@ pub fn run_container(rootfs: &Path, command: &[String], env_vars: &[String]) -> 
             }
             log("6. Namespaces unshared successfully");
 
+            // Make all mounts private so pivot_root doesn't fail with EINVAL due to shared mounts
+            log("6.5 Making root mount private");
+            let root_path = b"/\0";
+            if libc::mount(
+                std::ptr::null(),
+                root_path.as_ptr() as *const libc::c_char,
+                std::ptr::null(),
+                libc::MS_PRIVATE | libc::MS_REC,
+                std::ptr::null(),
+            ) != 0 {
+                let err_val = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
+                log_err("6.6 Making root private failed", err_val);
+                return Err(std::io::Error::new(
+                    std::io::ErrorKind::Other,
+                    format!("Failed to make root mount private: {}", std::io::Error::last_os_error())
+                ));
+            }
+
             // Mount procfs inside the container rootfs
             log("7. Mounting /proc");
             let proc_dir = rootfs_path.join("proc");
