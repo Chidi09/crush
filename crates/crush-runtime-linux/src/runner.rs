@@ -78,7 +78,7 @@ pub fn run_container(rootfs: &Path, command: &[String], env_vars: &[String]) -> 
                 log_err("3. Unshare with TIME namespace failed", err_val);
                 log("4. Attempting fallback unshare (base_flags)");
                 if let Err(e) = nix::sched::unshare(base_flags) {
-                    let fb_err = e.as_errno().map(|errno| errno as i32).unwrap_or(0);
+                    let fb_err = std::io::Error::last_os_error().raw_os_error().unwrap_or(0);
                     log_err("5. Fallback unshare failed", fb_err);
                     return Err(std::io::Error::new(
                         std::io::ErrorKind::Other,
