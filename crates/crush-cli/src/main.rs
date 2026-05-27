@@ -991,6 +991,55 @@ fn colour_prefix(name: &str, idx: usize) -> String {
     }
 }
 
+/// Shared sink for URLs discovered in child process output.
+type UrlSink = std::sync::Arc<tokio::sync::Mutex<Vec<String>>>;
+
+/// Strips ANSI escape sequences (CSI). Cheap and good enough for log scraping.
+fn strip_ansi(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let bytes = s.as_bytes();
+    let mut i = 0;
+    while i < bytes.len() {
+        if bytes[i] == 0x1b && i + 1 < bytes.len() && bytes[i + 1] == b'[' {
+            i += 2;
+            while i < bytes.len() && !(bytes[i] >= 0x40 && bytes[i] <= 0x7e) { i += 1; }
+            if i < bytes.len() { i += 1; }
+        } else {
+            out.push(bytes[i] as char);
+            i += 1;
+        }
+    }
+    out
+}
+
+/// Scans a line for `http(s)://(localhost|127.0.0.1|0.0.0.0|[::]):PORT...`
+/// substrings. Pushes any new ones into the sink.
+async fn record_urls(line: &str, sink: &UrlSink) {
+    let clean = strip_ansi(line);
+    let lower = clean.to_lowercase();
+    let mut start = 0usize;
+    while let Some(idx) = lower[start..].find("http") {
+        let abs = start + idx;
+        let rest = &clean[abs..];
+        let scheme_len = if rest.starts_with("https://") { 8 }
+                         else if rest.starts_with("http://") { 7 }
+                         else { start = abs + 4; continue; };
+        let after = &rest[scheme_len..];
+        let host_ok = ["localhost", "127.0.0.1", "0.0.0.0", "[::]", "[::1]"]
+            .iter().any(|h| after.starts_with(h));
+        if !host_ok { start = abs + scheme_len; continue; }
+        let end = rest.find(|c: char| c.is_whitespace() || c == '"' || c == '\'' || c == '`' || c == ',' || c == ';')
+            .unwrap_or(rest.len());
+        let mut url = rest[..end].to_string();
+        while matches!(url.chars().last(), Some('.') | Some(')') | Some(']')) { url.pop(); }
+        let mut s = sink.lock().await;
+        if !s.iter().any(|u| u == &url) {
+            s.push(url);
+        }
+        start = abs + end;
+    }
+}
+
 /// Spawns a command line through the OS shell so PATH lookups resolve `.cmd`,
 /// `.bat`, and `.ps1` shims (pnpm, npm, yarn, uvicorn are all .cmd on Windows
 /// when installed via nvm/scoop/Volta). On Unix, executes directly via the
@@ -1378,6 +1427,7 @@ async fn main() -> anyhow::Result<()> {
                 let filter: Arc<RwLock<FilterMode>> = Arc::new(RwLock::new(FilterMode::All));
 
                 let mut children: Vec<(String, u16, tokio::process::Child)> = Vec::new();
+                let url_sink: UrlSink = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
                 let overall_spawn = std::time::Instant::now();
                 for sub in &stack.services {
                     let sub_path = PathBuf::from(&sub.path);
@@ -1497,11 +1547,13 @@ async fn main() -> anyhow::Result<()> {
                             if let Some(stdout) = child.stdout.take() {
                                 let n = sub.name.clone();
                                 let f = filter.clone();
+                                let sink = url_sink.clone();
                                 tokio::spawn(async move {
                                     use tokio::io::AsyncBufReadExt;
                                     let reader = tokio::io::BufReader::new(stdout);
                                     let mut lines = reader.lines();
                                     while let Ok(Some(line)) = lines.next_line().await {
+                                        record_urls(&line, &sink).await;
                                         if should_show(&*f.read().await, &n, &line, false) {
                                             println!("{} {}", colour_prefix(&n, color_idx), line);
                                         }
@@ -1511,11 +1563,13 @@ async fn main() -> anyhow::Result<()> {
                             if let Some(stderr) = child.stderr.take() {
                                 let n = sub.name.clone();
                                 let f = filter.clone();
+                                let sink = url_sink.clone();
                                 tokio::spawn(async move {
                                     use tokio::io::AsyncBufReadExt;
                                     let reader = tokio::io::BufReader::new(stderr);
                                     let mut lines = reader.lines();
                                     while let Ok(Some(line)) = lines.next_line().await {
+                                        record_urls(&line, &sink).await;
                                         if should_show(&*f.read().await, &n, &line, true) {
                                             eprintln!("{} {}", colour_prefix(&n, color_idx), line);
                                         }
@@ -1589,6 +1643,28 @@ async fn main() -> anyhow::Result<()> {
                         "✗".red().bold(),
                         m.bold(),
                         "did not bind".dimmed());
+                }
+                // Any URLs the children printed that aren't already covered by the
+                // per-service port lines — turbo/monorepo children, secondary
+                // listeners, etc.
+                let discovered = url_sink.lock().await.clone();
+                let known_ports: std::collections::HashSet<u16> = probed.iter().map(|(_, p, _)| *p).collect();
+                let extras: Vec<&String> = discovered.iter()
+                    .filter(|u| {
+                        if let Some(rest) = u.splitn(2, "://").nth(1) {
+                            if let Some(port_str) = rest.split(|c: char| c == '/' || c == '?').next()
+                                .and_then(|hp| hp.rsplit(':').next()) {
+                                if let Ok(p) = port_str.parse::<u16>() {
+                                    return !known_ports.contains(&p);
+                                }
+                            }
+                        }
+                        true
+                    })
+                    .collect();
+                if !extras.is_empty() {
+                    println!("  {} also:", "↳".cyan());
+                    for u in extras { println!("     {}", u.cyan()); }
                 }
                 println!("  {}", "─".repeat(60).dimmed());
                 println!("  {}  started in {} · keys: {} all  {} errors  {} pause  {} service-N  {} quit",
@@ -1760,9 +1836,37 @@ async fn main() -> anyhow::Result<()> {
                 let spawn_start = std::time::Instant::now();
                 let mut cmd = spawn_shell(entry_str, &project_root, &dep_env);
                 cmd.env("PORT", port.to_string());
+                cmd.stdout(std::process::Stdio::piped());
+                cmd.stderr(std::process::Stdio::piped());
 
                 let mut child = cmd.spawn()
                     .map_err(|e| anyhow::anyhow!("Failed to start `{}`: {}", entry_str, e))?;
+
+                let url_sink: UrlSink = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
+                if let Some(stdout) = child.stdout.take() {
+                    let sink = url_sink.clone();
+                    tokio::spawn(async move {
+                        use tokio::io::AsyncBufReadExt;
+                        let reader = tokio::io::BufReader::new(stdout);
+                        let mut lines = reader.lines();
+                        while let Ok(Some(line)) = lines.next_line().await {
+                            record_urls(&line, &sink).await;
+                            println!("{}", line);
+                        }
+                    });
+                }
+                if let Some(stderr) = child.stderr.take() {
+                    let sink = url_sink.clone();
+                    tokio::spawn(async move {
+                        use tokio::io::AsyncBufReadExt;
+                        let reader = tokio::io::BufReader::new(stderr);
+                        let mut lines = reader.lines();
+                        while let Ok(Some(line)) = lines.next_line().await {
+                            record_urls(&line, &sink).await;
+                            eprintln!("{}", line);
+                        }
+                    });
+                }
 
                 let mut port_ready = false;
                 for _ in 0..100u32 {
@@ -1782,6 +1886,15 @@ async fn main() -> anyhow::Result<()> {
                         format!(":{}", port).cyan().bold(),
                         format!("— started in {:.1}s (total: {:.1}s!)", startup_s, total_s)
                             .dimmed());
+                    // Give sub-procs (turbo children, etc.) a beat to announce URLs.
+                    tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+                    let urls = url_sink.lock().await;
+                    if !urls.is_empty() {
+                        println!("   {} open:", "↳".cyan());
+                        for u in urls.iter() {
+                            println!("     {}", u.cyan());
+                        }
+                    }
                 } else if let Ok(Some(status)) = child.try_wait() {
                     eprintln!(" {} app exited before binding {} (exit code {})",
                         "✗".red().bold(),
