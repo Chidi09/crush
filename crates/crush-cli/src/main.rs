@@ -6,16 +6,17 @@ use tracing_subscriber::EnvFilter;
 use crush_types::*;
 use crush_build::{StackDetector, BuildEngine};
 use crush_build::{
-    detect_backend, parse_compose, BackendKind,
-    start_dep_service, stop_dep_service,
+    detect_backend, parse_compose,
+    stop_dep_service,
     rewrite_env_hostnames,
     save_service_state, load_service_state, clear_service_state,
     ServiceState, RunningContainer,
-    StartedService, start_dep_service_smart, native_driver_for,
+    StartedService, start_dep_service_smart,
 };
 use crush_services::{
     save_native_state, load_native_state, clear_native_state,
     NativeServiceState, RunningService as NativeRunningService,
+    ServiceDriver,
 };
 use crush_image::ImageStore;
 use crush_compat::{DockerfileParser, ComposeLoader, DockerInstruction};
