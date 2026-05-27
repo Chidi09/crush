@@ -249,11 +249,19 @@ pub fn synthesize_dep_env(dep: &DepService) -> Vec<(String, String)> {
         out.push(("POSTGRES_DB".into(), db.clone()));
         out.push(("DATABASE_URL".into(),
             format!("postgresql://{}:{}@localhost:{}/{}", user, pass, port, db)));
+        // Spring Boot relaxed binding: these env vars override application.yml
+        // without the app having to declare ${...} placeholders.
+        out.push(("SPRING_DATASOURCE_URL".into(),
+            format!("jdbc:postgresql://localhost:{}/{}", port, db)));
+        out.push(("SPRING_DATASOURCE_USERNAME".into(), user));
+        out.push(("SPRING_DATASOURCE_PASSWORD".into(), pass));
     } else if img_name.starts_with("redis") || img_name.starts_with("keydb") || img_name.starts_with("dragonflydb") {
         let port = host_port.unwrap_or(6379);
         out.push(("REDIS_HOST".into(), "localhost".into()));
         out.push(("REDIS_PORT".into(), port.to_string()));
         out.push(("REDIS_URL".into(), format!("redis://localhost:{}", port)));
+        out.push(("SPRING_DATA_REDIS_HOST".into(), "localhost".into()));
+        out.push(("SPRING_DATA_REDIS_PORT".into(), port.to_string()));
     } else if img_name.starts_with("mysql") || img_name.starts_with("mariadb") {
         let user = env_get("MYSQL_USER").or_else(|| env_get("MARIADB_USER")).unwrap_or_else(|| "root".into());
         let pass = env_get("MYSQL_PASSWORD").or_else(|| env_get("MARIADB_PASSWORD"))
@@ -267,6 +275,172 @@ pub fn synthesize_dep_env(dep: &DepService) -> Vec<(String, String)> {
         out.push(("MONGODB_URL".into(), format!("mongodb://localhost:{}", port)));
     }
     out
+}
+
+/// Parses Spring Boot's `application.yml` / `application.properties` for
+/// `spring.datasource.url`, `spring.data.redis.host`, etc., and returns
+/// `DepService`s that crush can spin up. Lets projects without a compose
+/// file still get their deps auto-started.
+pub fn parse_spring_config(root: &Path) -> Vec<DepService> {
+    let candidates = [
+        "src/main/resources/application.yml",
+        "src/main/resources/application.yaml",
+    ];
+    for path in candidates {
+        if let Ok(content) = fs::read_to_string(root.join(path)) {
+            return parse_spring_yaml(&content);
+        }
+    }
+    if let Ok(content) = fs::read_to_string(root.join("src/main/resources/application.properties")) {
+        return parse_spring_properties(&content);
+    }
+    Vec::new()
+}
+
+/// Resolves Spring's `${VAR:default}` placeholder syntax to the default value.
+/// If no default is provided, returns the literal placeholder unchanged.
+fn resolve_spring_placeholder(s: &str) -> String {
+    let trimmed = s.trim();
+    if let Some(inner) = trimmed.strip_prefix("${").and_then(|r| r.strip_suffix("}")) {
+        if let Some(idx) = inner.find(':') {
+            return inner[idx + 1..].to_string();
+        }
+    }
+    trimmed.to_string()
+}
+
+fn parse_spring_yaml(content: &str) -> Vec<DepService> {
+    let val: serde_yaml::Value = match serde_yaml::from_str(content) {
+        Ok(v) => v,
+        Err(_) => return Vec::new(),
+    };
+    let mut deps = Vec::new();
+    let spring = &val["spring"];
+
+    // JDBC datasource → postgres / mysql / mariadb
+    if let Some(url) = spring["datasource"]["url"].as_str() {
+        let resolved = resolve_spring_placeholder(url);
+        let user = spring["datasource"]["username"].as_str()
+            .map(resolve_spring_placeholder);
+        let pass = spring["datasource"]["password"].as_str()
+            .map(resolve_spring_placeholder);
+        if let Some(dep) = jdbc_url_to_dep(&resolved, user.as_deref(), pass.as_deref()) {
+            deps.push(dep);
+        }
+    }
+
+    // Redis: Spring Boot 3.x uses spring.data.redis; older uses spring.redis
+    for prefix in [&spring["data"]["redis"], &spring["redis"]] {
+        if let Some(host) = prefix["host"].as_str() {
+            let h = resolve_spring_placeholder(host);
+            if h == "localhost" || h == "127.0.0.1" || h.is_empty() {
+                let port = prefix["port"].as_u64()
+                    .or_else(|| prefix["port"].as_str()
+                        .map(resolve_spring_placeholder)
+                        .and_then(|s| s.parse().ok()))
+                    .unwrap_or(6379) as u16;
+                deps.push(DepService {
+                    name: "redis".into(),
+                    image: "redis:7-alpine".into(),
+                    ports: vec![(port, 6379)],
+                    env: Vec::new(),
+                    volumes: Vec::new(),
+                });
+                break;
+            }
+        }
+    }
+    deps
+}
+
+fn parse_spring_properties(content: &str) -> Vec<DepService> {
+    let mut map: HashMap<String, String> = HashMap::new();
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') { continue; }
+        if let Some((k, v)) = trimmed.split_once('=') {
+            map.insert(k.trim().to_string(), resolve_spring_placeholder(v.trim()));
+        }
+    }
+    let mut deps = Vec::new();
+    if let Some(url) = map.get("spring.datasource.url") {
+        let user = map.get("spring.datasource.username").map(String::as_str);
+        let pass = map.get("spring.datasource.password").map(String::as_str);
+        if let Some(dep) = jdbc_url_to_dep(url, user, pass) {
+            deps.push(dep);
+        }
+    }
+    let redis_host = map.get("spring.data.redis.host").or_else(|| map.get("spring.redis.host"));
+    if let Some(h) = redis_host {
+        if h == "localhost" || h == "127.0.0.1" || h.is_empty() {
+            let port = map.get("spring.data.redis.port")
+                .or_else(|| map.get("spring.redis.port"))
+                .and_then(|s| s.parse::<u16>().ok())
+                .unwrap_or(6379);
+            deps.push(DepService {
+                name: "redis".into(),
+                image: "redis:7-alpine".into(),
+                ports: vec![(port, 6379)],
+                env: Vec::new(),
+                volumes: Vec::new(),
+            });
+        }
+    }
+    deps
+}
+
+fn jdbc_url_to_dep(url: &str, user: Option<&str>, pass: Option<&str>) -> Option<DepService> {
+    let no_jdbc = url.strip_prefix("jdbc:")?;
+    let scheme_idx = no_jdbc.find("://")?;
+    let scheme = &no_jdbc[..scheme_idx];
+    let rest = &no_jdbc[scheme_idx + 3..];
+
+    let (image, default_port, default_user) = match scheme {
+        "postgresql" => ("postgres:17-alpine", 5432u16, "postgres"),
+        "mysql"      => ("mysql:8", 3306, "root"),
+        "mariadb"    => ("mariadb:11", 3306, "root"),
+        // In-process / file-backed → nothing to start
+        "h2" | "sqlite" | "hsqldb" | "derby" => return None,
+        _ => return None,
+    };
+
+    // host[:port]/db[?params]
+    let (hostport_db, _) = rest.split_once('?').unwrap_or((rest, ""));
+    let (hostport, dbname) = hostport_db.split_once('/').unwrap_or((hostport_db, ""));
+    let port = hostport.rsplit(':').next()
+        .and_then(|p| p.parse::<u16>().ok())
+        .unwrap_or(default_port);
+
+    let username = user.unwrap_or(default_user).to_string();
+    let password = pass.unwrap_or("").to_string();
+
+    let mut env = Vec::new();
+    match scheme {
+        "postgresql" => {
+            env.push(("POSTGRES_USER".into(), username));
+            env.push(("POSTGRES_PASSWORD".into(), password));
+            if !dbname.is_empty() {
+                env.push(("POSTGRES_DB".into(), dbname.to_string()));
+            }
+        }
+        "mysql" | "mariadb" => {
+            env.push(("MYSQL_USER".into(), username.clone()));
+            env.push(("MYSQL_PASSWORD".into(), password.clone()));
+            env.push(("MYSQL_ROOT_PASSWORD".into(), password));
+            if !dbname.is_empty() {
+                env.push(("MYSQL_DATABASE".into(), dbname.to_string()));
+            }
+        }
+        _ => {}
+    }
+
+    Some(DepService {
+        name: "db".into(),
+        image: image.into(),
+        ports: vec![(port, default_port)],
+        env,
+        volumes: Vec::new(),
+    })
 }
 
 // ── 2e. Backend detection ───────────────────────────────────────────

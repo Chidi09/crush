@@ -36,7 +36,7 @@ pub use service_orchestrator::{
     rewrite_env_hostnames,
     save_service_state, load_service_state, clear_service_state,
     StartedService, start_dep_service_smart, native_driver_for,
-    synthesize_dep_env,
+    synthesize_dep_env, parse_spring_config,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

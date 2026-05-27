@@ -6,7 +6,7 @@ use tracing_subscriber::EnvFilter;
 use crush_types::*;
 use crush_build::{StackDetector, BuildEngine};
 use crush_build::{
-    detect_backend, parse_compose,
+    detect_backend, parse_compose, parse_spring_config,
     stop_dep_service,
     rewrite_env_hostnames,
     save_service_state, load_service_state, clear_service_state,
@@ -943,6 +943,61 @@ async fn main() -> anyhow::Result<()> {
                     }
                     Err(e) => {
                         println!("   ↳ compose parse warning: {} — proceeding with stack detection", e);
+                    }
+                }
+            }
+
+            // ── 2b. Spring Boot fallback: no compose file? Parse application.yml ──
+            // Lets Java/Spring projects deployed without Docker still get postgres/redis
+            // auto-started from their datasource config.
+            if dep_service_names.is_empty() {
+                let spring_deps = parse_spring_config(&project_root);
+                if !spring_deps.is_empty() {
+                    let state_dir = data_dir.join("services");
+                    let mut running_natives = Vec::new();
+                    let mut running_containers = Vec::new();
+                    let backend = detect_backend();
+
+                    for dep in &spring_deps {
+                        print!("   ↳ starting {} ({}) [from application.yml]... ", dep.name, dep.image);
+                        use std::io::Write;
+                        let _ = std::io::stdout().flush();
+                        match start_dep_service_smart(dep, &project_name, &data_dir).await {
+                            Ok(StartedService::Native(running)) => {
+                                println!("ok  [native]");
+                                dep_service_names.push(dep.name.clone());
+                                dep_env.extend(synthesize_dep_env(dep));
+                                running_natives.push(running);
+                            }
+                            Ok(StartedService::Container(cname)) => {
+                                println!("ok  [container]");
+                                dep_service_names.push(dep.name.clone());
+                                dep_env.extend(synthesize_dep_env(dep));
+                                running_containers.push(RunningContainer {
+                                    service_name: dep.name.clone(),
+                                    container_name: cname,
+                                    ports: dep.ports.clone(),
+                                });
+                            }
+                            Err(e) => println!("failed: {}", e),
+                        }
+                    }
+                    if !running_natives.is_empty() {
+                        let _ = save_native_state(&state_dir, &NativeServiceState {
+                            project: project_name.clone(),
+                            services: running_natives,
+                            started_at: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+                        });
+                    }
+                    if !running_containers.is_empty() {
+                        let _ = save_service_state(&state_dir, &ServiceState {
+                            project: project_name.clone(),
+                            backend: backend.as_str().to_string(),
+                            containers: running_containers,
+                            started_at: std::time::SystemTime::now()
+                                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
+                        });
                     }
                 }
             }
