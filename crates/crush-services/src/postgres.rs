@@ -174,10 +174,17 @@ impl ServiceDriver for PostgresDriver {
             .context("Failed to run pg_ctl start")?;
 
         if !status.success() {
-            anyhow::bail!(
-                "PostgreSQL failed to start — check log at {}",
-                log_file.display()
-            );
+            // pg_ctl returns non-zero when the server is already running.
+            // Verify by attempting a TCP connection before treating it as failure.
+            let already_up = tokio::net::TcpStream::connect(format!("127.0.0.1:{}", config.port))
+                .await
+                .is_ok();
+            if !already_up {
+                anyhow::bail!(
+                    "PostgreSQL failed to start — check log at {}",
+                    log_file.display()
+                );
+            }
         }
 
         let pid = fs::read_to_string(data_dir.join("postmaster.pid"))

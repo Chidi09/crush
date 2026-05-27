@@ -442,14 +442,20 @@ impl CrushSpecDetector {
             "pip install -r requirements.txt".to_string()
         };
 
-        let py = if has_uv { "uv run --no-sync python" } else { "python" };
+        // Invoke venv binaries directly — avoids uv trying to reinstall the editable
+        // project package (which fails when the project has no __init__.py or missing src/).
+        let venv_bin = if cfg!(target_os = "windows") { r".venv\Scripts\" } else { ".venv/bin/" };
+        let exe_suffix = if cfg!(target_os = "windows") { ".exe" } else { "" };
+        let py = if has_uv {
+            format!("{}{}{}", venv_bin, "python", exe_suffix)
+        } else {
+            "python".to_string()
+        };
         let entry = match framework {
             "FastAPI" | "Starlette" => {
                 let module = entry_file.trim_end_matches(".py");
                 if has_uv {
-                    // --no-sync: deps already installed by the build step; skip re-sync
-                    // so uv doesn't try to install the project package again.
-                    format!("uv run --no-sync uvicorn {}:app --host 0.0.0.0", module)
+                    format!("{}uvicorn{} {}:app --host 0.0.0.0", venv_bin, exe_suffix, module)
                 } else {
                     format!("uvicorn {}:app --host 0.0.0.0", module)
                 }
@@ -457,7 +463,7 @@ impl CrushSpecDetector {
             "Litestar" => {
                 let module = entry_file.trim_end_matches(".py");
                 if has_uv {
-                    format!("uv run --no-sync litestar --app {}:app run --host 0.0.0.0", module)
+                    format!("{}litestar{} --app {}:app run --host 0.0.0.0", venv_bin, exe_suffix, module)
                 } else {
                     format!("litestar --app {}:app run --host 0.0.0.0", module)
                 }
