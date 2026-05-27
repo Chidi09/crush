@@ -11,6 +11,11 @@ use crush_build::{
     rewrite_env_hostnames,
     save_service_state, load_service_state, clear_service_state,
     ServiceState, RunningContainer,
+    StartedService, start_dep_service_smart, native_driver_for,
+};
+use crush_services::{
+    save_native_state, load_native_state, clear_native_state,
+    NativeServiceState, RunningService as NativeRunningService,
 };
 use crush_image::ImageStore;
 use crush_compat::{DockerfileParser, ComposeLoader, DockerInstruction};
@@ -42,7 +47,7 @@ use libc;
 #[derive(Parser, Debug)]
 #[command(name = "crush")]
 #[command(author = "Crush Contributors")]
-#[command(version = "0.6.0")]
+#[command(version = "0.7.0")]
 #[command(about = "A from-scratch, production-grade container runtime in Rust", long_about = None)]
 #[command(subcommand_required = false, arg_required_else_help = false)]
 struct Cli {
@@ -838,39 +843,63 @@ async fn main() -> anyhow::Result<()> {
                     Ok(parsed) => {
                         if !parsed.dep_services.is_empty() {
                             let backend = detect_backend();
-                            if matches!(backend, BackendKind::None) {
-                                println!("   ↳ compose services found — install Docker or WSL2+Docker to start them automatically");
-                            } else {
-                                let state_dir = data_dir.join("services");
-                                let mut running = Vec::new();
-                                for dep in &parsed.dep_services {
-                                    print!("   ↳ starting {} ({})... ", dep.name, dep.image);
-                                    use std::io::Write;
-                                    let _ = std::io::stdout().flush();
-                                    match start_dep_service(&backend, dep, &project_name).await {
-                                        Ok(cname) => {
-                                            println!("ok");
-                                            dep_service_names.push(dep.name.clone());
-                                            running.push(RunningContainer {
-                                                service_name: dep.name.clone(),
-                                                container_name: cname,
-                                                ports: dep.ports.clone(),
-                                            });
-                                        }
-                                        Err(e) => println!("failed: {}", e),
+                            let state_dir = data_dir.join("services");
+                            let mut running_containers = Vec::new();
+                            let mut running_natives = Vec::new();
+
+                            for dep in &parsed.dep_services {
+                                print!("   ↳ starting {} ({})... ", dep.name, dep.image);
+                                use std::io::Write;
+                                let _ = std::io::stdout().flush();
+
+                                match start_dep_service_smart(dep, &project_name, &data_dir).await {
+                                    Ok(StartedService::Native(running)) => {
+                                        let note = if running.kind == crush_services::ServiceKind::Postgres {
+                                            "[native]"
+                                        } else {
+                                            #[cfg(target_os = "windows")]
+                                            { "[garnet]" }
+                                            #[cfg(not(target_os = "windows"))]
+                                            { "[native]" }
+                                        };
+                                        println!("ok  {}", note);
+                                        dep_service_names.push(dep.name.clone());
+                                        running_natives.push(running);
                                     }
+                                    Ok(StartedService::Container(cname)) => {
+                                        println!("ok  [container]");
+                                        dep_service_names.push(dep.name.clone());
+                                        running_containers.push(RunningContainer {
+                                            service_name: dep.name.clone(),
+                                            container_name: cname,
+                                            ports: dep.ports.clone(),
+                                        });
+                                    }
+                                    Err(e) => println!("failed: {}", e),
                                 }
-                                if !running.is_empty() {
-                                    let state = ServiceState {
-                                        project: project_name.clone(),
-                                        backend: backend.as_str().to_string(),
-                                        containers: running,
-                                        started_at: std::time::SystemTime::now()
-                                            .duration_since(std::time::UNIX_EPOCH)
-                                            .unwrap_or_default().as_secs(),
-                                    };
-                                    let _ = save_service_state(&state_dir, &state);
-                                }
+                            }
+
+                            if !running_containers.is_empty() {
+                                let state = ServiceState {
+                                    project: project_name.clone(),
+                                    backend: backend.as_str().to_string(),
+                                    containers: running_containers,
+                                    started_at: std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default().as_secs(),
+                                };
+                                let _ = save_service_state(&state_dir, &state);
+                            }
+
+                            if !running_natives.is_empty() {
+                                let state = NativeServiceState {
+                                    project: project_name.clone(),
+                                    services: running_natives,
+                                    started_at: std::time::SystemTime::now()
+                                        .duration_since(std::time::UNIX_EPOCH)
+                                        .unwrap_or_default().as_secs(),
+                                };
+                                let _ = save_native_state(&state_dir, &state);
                             }
                         }
                         if let Some(hints) = parsed.app_hints {
@@ -3365,36 +3394,84 @@ async fn main() -> anyhow::Result<()> {
 
             match args.cmd.unwrap_or(ServicesSubcommand::Status) {
                 ServicesSubcommand::Status => {
-                    match load_service_state(&state_dir, &project_name) {
-                        Some(state) => {
-                            println!("Services for {} (backend: {}):", project_name, state.backend);
-                            for c in &state.containers {
-                                let ports: Vec<String> = c.ports.iter()
-                                    .map(|(h, _)| format!("localhost:{}", h)).collect();
-                                println!("  {} -> {} ({})", c.service_name, c.container_name,
-                                    if ports.is_empty() { "no ports".into() } else { ports.join(", ") });
-                            }
+                    let mut found = false;
+                    if let Some(state) = load_service_state(&state_dir, &project_name) {
+                        println!("Container services for {} (backend: {}):", project_name, state.backend);
+                        for c in &state.containers {
+                            let ports: Vec<String> = c.ports.iter()
+                                .map(|(h, _)| format!("localhost:{}", h)).collect();
+                            println!("  {} -> {} ({})", c.service_name, c.container_name,
+                                if ports.is_empty() { "no ports".into() } else { ports.join(", ") });
                         }
-                        None => println!("No running crush-managed services for {}.", project_name),
+                        found = true;
+                    }
+                    if let Some(state) = load_native_state(&state_dir, &project_name) {
+                        println!("Native services for {}:", project_name);
+                        for s in &state.services {
+                            let kind_str = match s.kind {
+                                crush_services::ServiceKind::Postgres => "postgres [native]",
+                                crush_services::ServiceKind::RedisCompat => {
+                                    #[cfg(target_os = "windows")]
+                                    { "redis [garnet]" }
+                                    #[cfg(not(target_os = "windows"))]
+                                    { "redis [native]" }
+                                }
+                                crush_services::ServiceKind::MySQL => "mysql [native]",
+                            };
+                            println!("  {} (PID: {}) -> localhost:{} ({})", s.name, s.pid, s.port, kind_str);
+                        }
+                        found = true;
+                    }
+                    if !found {
+                        println!("No running crush-managed services for {}.", project_name);
                     }
                 }
                 ServicesSubcommand::Stop => {
                     let backend = detect_backend();
-                    match load_service_state(&state_dir, &project_name) {
-                        Some(state) => {
-                            for c in &state.containers {
-                                print!("   ↳ stopping {}... ", c.service_name);
-                                use std::io::Write;
-                                let _ = std::io::stdout().flush();
-                                match stop_dep_service(&backend, &c.container_name).await {
-                                    Ok(_) => println!("done"),
-                                    Err(e) => println!("error: {}", e),
-                                }
+                    let mut stopped_any = false;
+
+                    if let Some(state) = load_service_state(&state_dir, &project_name) {
+                        for c in &state.containers {
+                            print!("   ↳ stopping container {}... ", c.service_name);
+                            use std::io::Write;
+                            let _ = std::io::stdout().flush();
+                            match stop_dep_service(&backend, &c.container_name).await {
+                                Ok(_) => println!("done"),
+                                Err(e) => println!("error: {}", e),
                             }
-                            clear_service_state(&state_dir, &project_name);
-                            println!(" ✓ all services stopped");
                         }
-                        None => println!("No running crush-managed services for {}.", project_name),
+                        clear_service_state(&state_dir, &project_name);
+                        stopped_any = true;
+                    }
+
+                    if let Some(state) = load_native_state(&state_dir, &project_name) {
+                        let cache_dir = data_dir.join("cache");
+                        for s in &state.services {
+                            print!("   ↳ stopping native {}... ", s.name);
+                            use std::io::Write;
+                            let _ = std::io::stdout().flush();
+
+                            let stop_res = if s.kind == crush_services::ServiceKind::Postgres {
+                                let driver = crush_services::PostgresDriver::new(cache_dir.clone());
+                                driver.stop(s).await
+                            } else {
+                                let driver = crush_services::RedisCompatDriver::new(cache_dir.clone());
+                                driver.stop(s).await
+                            };
+
+                            match stop_res {
+                                Ok(_) => println!("done"),
+                                Err(e) => println!("error: {}", e),
+                            }
+                        }
+                        clear_native_state(&state_dir, &project_name);
+                        stopped_any = true;
+                    }
+
+                    if stopped_any {
+                        println!(" ✓ all services stopped");
+                    } else {
+                        println!("No running crush-managed services for {}.", project_name);
                     }
                 }
             }

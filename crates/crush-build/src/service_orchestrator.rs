@@ -465,3 +465,68 @@ pub fn clear_service_state(state_dir: &Path, project: &str) {
     let file_path = state_dir.join(format!("{}.json", project));
     let _ = fs::remove_file(file_path);
 }
+
+// ── v0.7.0 Native Integration ──────────────────────────────────────────
+
+#[derive(Serialize, Deserialize, Debug, Clone)]
+pub enum StartedService {
+    Native(crush_services::RunningService),
+    Container(String),
+}
+
+pub fn native_driver_for(image: &str) -> Option<&'static str> {
+    let name = image.split('/').last().unwrap_or(image).split(':').next().unwrap_or(image);
+    match name {
+        n if n.starts_with("postgres") || n.starts_with("pgvector") || n.starts_with("timescale") => Some("postgres"),
+        n if n.starts_with("redis") || n.starts_with("valkey") || n.starts_with("keydb") || n.starts_with("garnet") => Some("redis"),
+        _ => None,
+    }
+}
+
+pub async fn start_dep_service_smart(
+    dep: &DepService,
+    project_name: &str,
+    data_dir: &Path,
+) -> anyhow::Result<StartedService> {
+    if let Some(driver_name) = native_driver_for(&dep.image) {
+        let cache_dir = data_dir.join("cache");
+        let svc_data_dir = data_dir.join("services").join("data").join(&dep.name);
+        fs::create_dir_all(&svc_data_dir).ok();
+
+        let host_port = dep.ports.iter().next().map(|(hp, _)| *hp).unwrap_or(0);
+        let password = dep.env.iter().find(|(k, _)| k == "POSTGRES_PASSWORD" || k == "REDIS_PASSWORD").map(|(_, v)| v.clone());
+        let database = dep.env.iter().find(|(k, _)| k == "POSTGRES_DB").map(|(_, v)| v.clone());
+
+        let config = crush_services::ServiceConfig {
+            port: if host_port > 0 { host_port } else { 
+                if driver_name == "postgres" { 5432 } else { 6379 }
+            },
+            password,
+            database,
+            extra_env: dep.env.clone(),
+        };
+
+        if driver_name == "postgres" {
+            let driver = crush_services::PostgresDriver::new(cache_dir.clone());
+            driver.ensure_ready(&svc_data_dir, &cache_dir).await?;
+            let running = driver.start(&config, &svc_data_dir).await?;
+            return Ok(StartedService::Native(running));
+        } else if driver_name == "redis" {
+            let driver = crush_services::RedisCompatDriver::new(cache_dir.clone());
+            driver.ensure_ready(&svc_data_dir, &cache_dir).await?;
+            let running = driver.start(&config, &svc_data_dir).await?;
+            return Ok(StartedService::Native(running));
+        }
+    }
+
+    let backend = detect_backend();
+    match backend {
+        BackendKind::Docker | BackendKind::Wsl2Docker | BackendKind::Podman => {
+            let cname = start_dep_service(&backend, dep, project_name).await?;
+            Ok(StartedService::Container(cname))
+        }
+        BackendKind::None => {
+            anyhow::bail!("No container or native backend available. Please install Docker, Podman, or ensure the service matches a supported native runtime.");
+        }
+    }
+}

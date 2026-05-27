@@ -35,6 +35,7 @@ pub use service_orchestrator::{
     start_dep_service, stop_dep_service,
     rewrite_env_hostnames,
     save_service_state, load_service_state, clear_service_state,
+    StartedService, start_dep_service_smart, native_driver_for,
 };
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

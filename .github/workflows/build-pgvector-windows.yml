@@ -1,0 +1,34 @@
+name: Build pgvector for Windows
+on:
+  workflow_dispatch:
+    inputs:
+      pgvector_version:
+        required: true
+        default: "0.7.4"
+      pg_version:
+        required: true
+        default: "16"
+jobs:
+  build:
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          repository: pgvector/pgvector
+          ref: v${{ inputs.pgvector_version }}
+      - name: Install PostgreSQL ${{ inputs.pg_version }}
+        run: choco install postgresql${{ inputs.pg_version }} --params '/Password:test'
+      - name: Build pgvector DLL
+        run: |
+          $PG_HOME = "C:\Program Files\PostgreSQL\${{ inputs.pg_version }}"
+          $env:PATH += ";$PG_HOME\bin"
+          nmake /F Makefile.win
+        shell: cmd
+      - name: Package artifacts
+        run: |
+          Compress-Archive -Path vector.dll, vector.control, sql/vector*.sql `
+            -DestinationPath pgvector-${{ inputs.pgvector_version }}-pg${{ inputs.pg_version }}-windows-x64.zip
+      - name: Upload to release
+        run: gh release upload pgvector-windows pgvector-*.zip
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
