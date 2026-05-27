@@ -207,6 +207,7 @@ impl CrushSpecDetector {
             is_monorepo: false,
             services: vec![],
             dockerfile_found: None,
+            base_image: String::new(),
         })
     }
 
