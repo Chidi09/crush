@@ -1605,7 +1605,7 @@ async fn main() -> anyhow::Result<()> {
                         println!("{:#?}", img);
                     }
                     found = true;
-                } else if let Ok(Some(img)) = store.database().get_image(&args.id).await {
+                } else if let Ok(Some(img)) = store.database().get_image_by_digest(&args.id).await {
                     if args.format == "json" {
                         println!("{}", serde_json::to_string_pretty(&img)?);
                     } else {
