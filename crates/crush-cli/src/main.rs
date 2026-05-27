@@ -719,6 +719,79 @@ fn install_unix(current_exe: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Interactive log filter mode toggled by single-letter keys after Ready.
+#[derive(Clone)]
+enum FilterMode { All, OnlyService(String), OnlyErrors, Paused }
+
+/// Decide whether a child output line should be printed given the current
+/// filter mode. stderr always counts as "errors" so crashes never disappear.
+fn should_show(mode: &FilterMode, service: &str, line: &str, is_err: bool) -> bool {
+    match mode {
+        FilterMode::All => true,
+        FilterMode::Paused => false,
+        FilterMode::OnlyService(s) => s == service,
+        FilterMode::OnlyErrors => is_err || looks_like_error(line),
+    }
+}
+
+/// Heuristic: lines that look like errors even when written to stdout.
+fn looks_like_error(line: &str) -> bool {
+    let l = line.to_lowercase();
+    l.contains("error") || l.contains("panic") || l.contains("fatal")
+        || l.contains("exception") || l.contains("traceback")
+        || l.contains("failed") || l.contains(" denied")
+}
+
+/// Probes well-known doc / health paths on a service's port. Returns the
+/// list of `(label, url)` that responded with 2xx. Cheap and parallel.
+async fn probe_service_links(port: u16) -> Vec<(&'static str, String)> {
+    let client = match reqwest::Client::builder()
+        .timeout(std::time::Duration::from_millis(700))
+        .redirect(reqwest::redirect::Policy::limited(3))
+        .build()
+    {
+        Ok(c) => c,
+        Err(_) => return Vec::new(),
+    };
+    // (path, label) — first hit per label wins.
+    let probes = [
+        ("/swagger-ui/index.html", "docs"),
+        ("/swagger-ui.html", "docs"),
+        ("/swagger/index.html", "docs"),
+        ("/swagger", "docs"),
+        ("/docs", "docs"),
+        ("/api-docs", "docs"),
+        ("/v3/api-docs", "openapi"),
+        ("/openapi.json", "openapi"),
+        ("/actuator/health", "health"),
+        ("/health", "health"),
+        ("/healthz", "health"),
+        ("/graphql", "graphql"),
+    ];
+    let mut hits: Vec<(&'static str, String)> = Vec::new();
+    let mut seen_labels = std::collections::HashSet::new();
+    for (path, label) in probes {
+        if seen_labels.contains(label) { continue; }
+        let url = format!("http://localhost:{}{}", port, path);
+        if let Ok(resp) = client.get(&url).send().await {
+            if resp.status().is_success() {
+                let ct = resp.headers().get("content-type")
+                    .and_then(|h| h.to_str().ok()).unwrap_or("");
+                // Filter out SPA fallback 200s — only count HTML/JSON that
+                // looks like real API docs.
+                let plausible = ct.contains("json")
+                    || (ct.contains("html") && (path.contains("swagger") || path.contains("docs") || path.contains("graphql")))
+                    || path.contains("health");
+                if plausible {
+                    seen_labels.insert(label);
+                    hits.push((label, url));
+                }
+            }
+        }
+    }
+    hits
+}
+
 /// Renders a small, idiomatic Dockerfile for the detected stack. Uses an
 /// official base image, copies source, installs deps, and sets CMD.
 fn generate_dockerfile(stack: &crush_build::InferredStack) -> String {
@@ -1288,6 +1361,11 @@ async fn main() -> anyhow::Result<()> {
             };
 
             if should_run && is_multi_service {
+                use std::sync::Arc;
+                use tokio::sync::RwLock;
+
+                let filter: Arc<RwLock<FilterMode>> = Arc::new(RwLock::new(FilterMode::All));
+
                 let mut children: Vec<(String, u16, tokio::process::Child)> = Vec::new();
                 let overall_spawn = std::time::Instant::now();
                 for sub in &stack.services {
@@ -1376,29 +1454,34 @@ async fn main() -> anyhow::Result<()> {
                     cmd.stderr(std::process::Stdio::piped());
                     match cmd.spawn() {
                         Ok(mut child) => {
-                            // Spawn line-buffered readers so each subservice's output
-                            // is prefixed with [name] in its own colour, interleaved
-                            // cleanly turborepo-style.
                             let color_idx = children.len();
+                            // Reader tasks check shared filter state. Stderr is always shown
+                            // (and counts as "errors") so crashes never disappear.
                             if let Some(stdout) = child.stdout.take() {
                                 let n = sub.name.clone();
+                                let f = filter.clone();
                                 tokio::spawn(async move {
                                     use tokio::io::AsyncBufReadExt;
                                     let reader = tokio::io::BufReader::new(stdout);
                                     let mut lines = reader.lines();
                                     while let Ok(Some(line)) = lines.next_line().await {
-                                        println!("{} {}", colour_prefix(&n, color_idx), line);
+                                        if should_show(&*f.read().await, &n, &line, false) {
+                                            println!("{} {}", colour_prefix(&n, color_idx), line);
+                                        }
                                     }
                                 });
                             }
                             if let Some(stderr) = child.stderr.take() {
                                 let n = sub.name.clone();
+                                let f = filter.clone();
                                 tokio::spawn(async move {
                                     use tokio::io::AsyncBufReadExt;
                                     let reader = tokio::io::BufReader::new(stderr);
                                     let mut lines = reader.lines();
                                     while let Ok(Some(line)) = lines.next_line().await {
-                                        eprintln!("{} {}", colour_prefix(&n, color_idx), line);
+                                        if should_show(&*f.read().await, &n, &line, true) {
+                                            eprintln!("{} {}", colour_prefix(&n, color_idx), line);
+                                        }
                                     }
                                 });
                             }
@@ -1426,32 +1509,97 @@ async fn main() -> anyhow::Result<()> {
 
                 let total = overall_start.elapsed().as_secs_f64();
                 let _ = overall_spawn;
+
+                // Probe each ready service for doc/health URLs in parallel.
+                let mut probe_handles = Vec::new();
                 for (name, port) in &ready {
-                    println!(" {} {} on {}",
-                        "✓".green().bold(),
-                        name.bold(),
-                        format!(":{}", port).cyan());
+                    let name = name.clone();
+                    let port = *port;
+                    probe_handles.push(tokio::spawn(async move {
+                        (name, port, probe_service_links(port).await)
+                    }));
                 }
+                let mut probed: Vec<(String, u16, Vec<(&'static str, String)>)> = Vec::new();
+                for h in probe_handles {
+                    if let Ok(r) = h.await { probed.push(r); }
+                }
+
+                // Ready panel — clean, scannable summary of what's reachable.
                 let missing: Vec<&String> = children.iter()
                     .map(|(n, _, _)| n)
                     .filter(|n| !ready.iter().any(|(rn, _)| rn == *n))
                     .collect();
-                for m in &missing {
-                    eprintln!(" {} {} did not bind",
-                        "✗".red().bold(),
-                        m.bold());
+                println!();
+                println!("  {}", "─".repeat(60).dimmed());
+                for (name, port, links) in &probed {
+                    println!("  {} {}  {}",
+                        "✓".green().bold(),
+                        name.bold(),
+                        format!("http://localhost:{}", port).cyan());
+                    for (label, url) in links {
+                        println!("           {} {:<8} {}",
+                            "↳".dimmed(),
+                            label.dimmed(),
+                            url.dimmed());
+                    }
                 }
-                println!("   {} multi-service run started in {} — {}",
+                for m in &missing {
+                    eprintln!("  {} {}  {}",
+                        "✗".red().bold(),
+                        m.bold(),
+                        "did not bind".dimmed());
+                }
+                println!("  {}", "─".repeat(60).dimmed());
+                println!("  {}  started in {} · keys: {} all  {} errors  {} pause  {} service-N  {} quit",
                     "↳".cyan(),
                     format!("{:.1}s", total).dimmed(),
-                    "Ctrl+C to stop all".dimmed());
+                    "a".bold(), "e".bold(), "p".bold(), "1..".bold(), "q".bold());
+                println!();
 
-                // Block until any child exits, then kill the rest. Identify by name
-                // so we can announce which service died and why.
+                // Switch to errors-only by default so the page stays calm after Ready.
+                *filter.write().await = FilterMode::OnlyErrors;
+
+                // Interactive keystroke listener (line-buffered: key + Enter).
+                let names: Vec<String> = children.iter().map(|(n, _, _)| n.clone()).collect();
+                let f_clone = filter.clone();
+                let (quit_tx, mut quit_rx) = tokio::sync::oneshot::channel::<()>();
+                let mut quit_tx_opt = Some(quit_tx);
+                tokio::spawn(async move {
+                    use tokio::io::AsyncBufReadExt;
+                    let stdin = tokio::io::stdin();
+                    let mut reader = tokio::io::BufReader::new(stdin).lines();
+                    while let Ok(Some(line)) = reader.next_line().await {
+                        let key = line.trim().to_lowercase();
+                        let mut mode = f_clone.write().await;
+                        match key.as_str() {
+                            "a" => { *mode = FilterMode::All; eprintln!("  {} showing all logs", "→".cyan()); }
+                            "e" => { *mode = FilterMode::OnlyErrors; eprintln!("  {} errors only", "→".cyan()); }
+                            "p" => { *mode = FilterMode::Paused; eprintln!("  {} paused", "→".cyan()); }
+                            "q" => {
+                                eprintln!("  {} quitting", "→".cyan());
+                                if let Some(tx) = quit_tx_opt.take() { let _ = tx.send(()); }
+                                break;
+                            }
+                            n if n.parse::<usize>().is_ok() => {
+                                let idx: usize = n.parse().unwrap();
+                                if idx >= 1 && idx <= names.len() {
+                                    let name = names[idx - 1].clone();
+                                    eprintln!("  {} {} only", "→".cyan(), name.bold());
+                                    *mode = FilterMode::OnlyService(name);
+                                } else {
+                                    eprintln!("  {} no service at index {}", "✗".red(), idx);
+                                }
+                            }
+                            "" => {}
+                            _ => eprintln!("  {} unknown key '{}' (try a/e/p/1/q)", "?".yellow(), key),
+                        }
+                    }
+                });
+
+                // Block until any child exits OR the user presses 'q'. Then kill the rest.
                 let mut named_children: Vec<(String, tokio::process::Child)> =
                     children.into_iter().map(|(n, _, c)| (n, c)).collect();
-                let exited_name;
-                let exited_code;
+                let exited: Option<(String, Option<i32>)>;
                 loop {
                     let mut hit: Option<(usize, Option<i32>)> = None;
                     for (i, (_, c)) in named_children.iter_mut().enumerate() {
@@ -1461,16 +1609,21 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
                     if let Some((i, code)) = hit {
-                        exited_name = named_children[i].0.clone();
-                        exited_code = code;
+                        exited = Some((named_children[i].0.clone(), code));
                         break;
+                    }
+                    // Also poll the quit signal from the keystroke listener.
+                    match quit_rx.try_recv() {
+                        Ok(()) => { exited = None; break; }
+                        Err(tokio::sync::oneshot::error::TryRecvError::Closed) => { exited = None; break; }
+                        Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
                     }
                     tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                 }
-                eprintln!(" {} {} exited (code {}) — stopping other services",
-                    "✗".red().bold(),
-                    exited_name.bold(),
-                    exited_code.unwrap_or(-1));
+                if let Some((name, code)) = exited {
+                    eprintln!(" {} {} exited (code {}) — stopping other services",
+                        "✗".red().bold(), name.bold(), code.unwrap_or(-1));
+                }
                 for (_, mut c) in named_children { let _ = c.kill().await; }
                 return Ok(());
             }
