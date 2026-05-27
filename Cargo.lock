@@ -1011,6 +1011,7 @@ dependencies = [
  "crush-reliability",
  "crush-runtime-linux",
  "crush-runtime-windows",
+ "crush-services",
  "crush-tui",
  "crush-types",
  "crush-volume",

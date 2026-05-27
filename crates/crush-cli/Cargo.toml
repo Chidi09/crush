@@ -18,6 +18,7 @@ serde_json = { workspace = true }
 crush-types = { workspace = true }
 crush-build = { workspace = true }
 crush-image = { workspace = true }
+crush-services = { workspace = true }
 crush-compat = { workspace = true }
 crush-ai = { workspace = true }
 crush-tui = { workspace = true }
