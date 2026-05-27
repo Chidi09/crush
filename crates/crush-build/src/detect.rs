@@ -398,7 +398,7 @@ impl CrushSpecDetector {
 
         let direct_dep_match = sig.winner().map(|(_, score)| score >= 8.0).unwrap_or(false);
 
-        let (framework, entry, port) = match sig.winner() {
+        let (framework, entry_file, port) = match sig.winner() {
             Some(("FastAPI", _)) => ("FastAPI", "main.py", 8000),
             Some(("Flask", _)) => ("Flask", "app.py", 5000),
             Some(("Django", _)) => ("Django", "manage.py", 8000),
@@ -431,6 +431,29 @@ impl CrushSpecDetector {
             "pip install -r requirements.txt".to_string()
         };
 
+        let py = if has_uv { "uv run python" } else { "python" };
+        let entry = match framework {
+            "FastAPI" | "Starlette" => {
+                // Derive uvicorn module path from file name (main.py → main:app)
+                let module = entry_file.trim_end_matches(".py");
+                if has_uv {
+                    format!("uv run uvicorn {}:app --host 0.0.0.0", module)
+                } else {
+                    format!("uvicorn {}:app --host 0.0.0.0", module)
+                }
+            }
+            "Litestar" => {
+                let module = entry_file.trim_end_matches(".py");
+                if has_uv {
+                    format!("uv run litestar --app {}:app run --host 0.0.0.0", module)
+                } else {
+                    format!("litestar --app {}:app run --host 0.0.0.0", module)
+                }
+            }
+            "Django" => format!("{} manage.py runserver 0.0.0.0:{}", py, port),
+            _ => format!("{} {}", py, entry_file),
+        };
+
         let confidence = if direct_dep_match { 0.99 }
             else if root.join("manage.py").exists() || root.join("app.py").exists() { 0.92 }
             else { 0.85 };
@@ -442,7 +465,7 @@ impl CrushSpecDetector {
             framework_name: framework.to_string(),
             framework_detected: framework != "Python",
             build_command: build_cmd,
-            entry_point: entry.to_string(),
+            entry_point: entry,
             port,
             confidence,
             ..Default::default()
