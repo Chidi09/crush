@@ -9,33 +9,33 @@ impl MultiServiceDetector {
         let mut services = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
-        let well_known = ["apps/", "packages/", "services/", "backend/", "frontend/"];
-        for dir in &well_known {
-            let path = root.join(dir);
+        // Pattern A: implicit monorepo — `backend/` and/or `frontend/` ARE the
+        // services themselves (each contains project markers at its root).
+        // Common in projects without a workspace tool (NCIC, Solexpay-style repos).
+        for direct in &["backend", "frontend", "server", "client", "web", "api"] {
+            let path = root.join(direct);
+            if path.is_dir() {
+                if let Some(sub) = Self::sub_from_dir(&path, direct) {
+                    if seen.insert(sub.name.clone()) {
+                        services.push(sub);
+                    }
+                }
+            }
+        }
+
+        // Pattern B: explicit container dirs — `apps/X`, `packages/X`, `services/X`
+        // are parents that hold many services; iterate their children.
+        for container in &["apps", "packages", "services"] {
+            let path = root.join(container);
             if path.is_dir() {
                 if let Ok(entries) = fs::read_dir(&path) {
                     for entry in entries.flatten() {
                         let sub_path = entry.path();
-                        if sub_path.is_dir() {
-                            if let Some(name) = sub_path.file_name() {
-                                let name_str = name.to_string_lossy().to_string();
-                                if seen.insert(name_str.clone()) {
-                                    let mut sub = SubService {
-                                        name: name_str,
-                                        path: sub_path.to_string_lossy().to_string(),
-                                        runtime_type: "unknown".to_string(),
-                                        port: 0,
-                                    };
-                                    if sub_path.join("package.json").exists() {
-                                        sub.runtime_type = "node".to_string();
-                                        sub.port = 3000;
-                                    } else if sub_path.join("Cargo.toml").exists() {
-                                        sub.runtime_type = "rust".to_string();
-                                        sub.port = 8080;
-                                    } else if sub_path.join("go.mod").exists() {
-                                        sub.runtime_type = "go".to_string();
-                                        sub.port = 8080;
-                                    }
+                        if !sub_path.is_dir() { continue; }
+                        if let Some(name) = sub_path.file_name() {
+                            let name_str = name.to_string_lossy().to_string();
+                            if let Some(sub) = Self::sub_from_dir(&sub_path, &name_str) {
+                                if seen.insert(sub.name.clone()) {
                                     services.push(sub);
                                 }
                             }
@@ -49,6 +49,37 @@ impl MultiServiceDetector {
         Self::check_cargo_workspace(root, &mut services, &mut seen);
 
         services
+    }
+
+    /// Builds a SubService if the dir contains a recognised project marker.
+    /// Picks a sensible default port per runtime + framework.
+    fn sub_from_dir(path: &Path, name: &str) -> Option<SubService> {
+        let (rt, port) = if path.join("package.json").exists() {
+            let pkg = fs::read_to_string(path.join("package.json")).unwrap_or_default();
+            let port = if pkg.contains("\"vite\"") { 5173 }
+                else if pkg.contains("\"next\"") { 3000 }
+                else if pkg.contains("\"@nestjs/core\"") { 3000 }
+                else if pkg.contains("\"fastify\"") { 3000 }
+                else if pkg.contains("\"express\"") { 3000 }
+                else { 3000 };
+            ("node", port)
+        } else if path.join("Cargo.toml").exists() {
+            ("rust", 8080)
+        } else if path.join("go.mod").exists() {
+            ("go", 8080)
+        } else if path.join("pyproject.toml").exists() || path.join("requirements.txt").exists() {
+            ("python", 8000)
+        } else if path.join("pom.xml").exists() || path.join("build.gradle").exists() {
+            ("java", 8080)
+        } else {
+            return None;
+        };
+        Some(SubService {
+            name: name.to_string(),
+            path: path.to_string_lossy().to_string(),
+            runtime_type: rt.to_string(),
+            port,
+        })
     }
 
     fn check_npm_workspaces(root: &Path, services: &mut Vec<SubService>, seen: &mut std::collections::HashSet<String>) {

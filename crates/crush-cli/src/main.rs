@@ -1010,7 +1010,21 @@ async fn main() -> anyhow::Result<()> {
                 format!(" (+ {} service{})", dep_service_names.len(),
                     if dep_service_names.len() == 1 { "" } else { "s" })
             } else { String::new() };
-            println!("   ↳ detected: {}{}", format_detection_line(&stack), extra_note);
+
+            // Multi-service ("implicit monorepo") — backend/+frontend/ with no root
+            // app. Print each leg and short-circuit into a multi-spawn flow.
+            let is_multi_service = stack.is_monorepo
+                && stack.services.len() >= 2
+                && stack.entry_point.is_empty();
+
+            if is_multi_service {
+                let legs = stack.services.iter()
+                    .map(|s| format!("{} ({})", s.name, s.runtime_type))
+                    .collect::<Vec<_>>().join(" · ");
+                println!("   ↳ detected: {} services — {}", stack.services.len(), legs);
+            } else {
+                println!("   ↳ detected: {}{}", format_detection_line(&stack), extra_note);
+            }
 
             // ── 4. Build ──────────────────────────────────────────────────────────
             let cache_dir = data_dir.join("cache");
@@ -1045,6 +1059,99 @@ async fn main() -> anyhow::Result<()> {
                 let t = input.trim().to_lowercase();
                 t.is_empty() || t == "y" || t == "yes"
             };
+
+            if should_run && is_multi_service {
+                let mut children: Vec<(String, u16, tokio::process::Child)> = Vec::new();
+                let overall_spawn = std::time::Instant::now();
+                for sub in &stack.services {
+                    let sub_path = PathBuf::from(&sub.path);
+                    let (install, run) = match sub.runtime_type.as_str() {
+                        "node" => {
+                            let pm = if sub_path.join("bun.lockb").exists() { "bun" }
+                                else if sub_path.join("pnpm-lock.yaml").exists() { "pnpm" }
+                                else if sub_path.join("yarn.lock").exists() { "yarn" }
+                                else { "npm" };
+                            let install = if sub_path.join("node_modules").exists() { None }
+                                else { Some(format!("{} install", pm)) };
+                            let pkg = std::fs::read_to_string(sub_path.join("package.json")).unwrap_or_default();
+                            let script = if pkg.contains("\"dev\"") { "dev" } else { "start" };
+                            (install, format!("{} run {}", pm, script))
+                        }
+                        "go" => (None, "go run .".to_string()),
+                        "rust" => (None, "cargo run".to_string()),
+                        "python" => {
+                            let install = if sub_path.join(".venv").exists() { None }
+                                else { Some("uv sync --no-dev --no-install-project".to_string()) };
+                            (install, "uv run python main.py".to_string())
+                        }
+                        "java" => (None, "mvn spring-boot:run -Dmaven.test.skip=true".to_string()),
+                        other => {
+                            eprintln!("   ↳ {}: don't know how to run runtime '{}', skipping", sub.name, other);
+                            continue;
+                        }
+                    };
+
+                    if let Some(icmd) = install {
+                        println!("   ↳ {}: installing ({})...", sub.name, icmd);
+                        let st = spawn_shell(&icmd, &sub_path, &dep_env).status().await
+                            .map_err(|e| anyhow::anyhow!("install for {} failed: {}", sub.name, e))?;
+                        if !st.success() {
+                            eprintln!("   ↳ {}: install failed, skipping spawn", sub.name);
+                            continue;
+                        }
+                    }
+
+                    println!("   ↳ {}: starting `{}` on :{}...", sub.name, run, sub.port);
+                    let mut cmd = spawn_shell(&run, &sub_path, &dep_env);
+                    cmd.env("PORT", sub.port.to_string());
+                    match cmd.spawn() {
+                        Ok(child) => children.push((sub.name.clone(), sub.port, child)),
+                        Err(e) => eprintln!("   ↳ {}: spawn failed: {}", sub.name, e),
+                    }
+                }
+
+                // Wait for all ports to bind (up to 30s each, in parallel).
+                let mut ready = Vec::new();
+                for _ in 0..300u32 {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    let mut all_up = true;
+                    for (name, port, _) in &children {
+                        if !ready.iter().any(|(n, _): &(String, u16)| n == name) {
+                            if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.is_ok() {
+                                ready.push((name.clone(), *port));
+                            } else { all_up = false; }
+                        }
+                    }
+                    if all_up { break; }
+                }
+
+                let total = overall_start.elapsed().as_secs_f64();
+                let _ = overall_spawn;
+                for (name, port) in &ready {
+                    println!(" ✓ {} on :{}", name, port);
+                }
+                let missing: Vec<&String> = children.iter()
+                    .map(|(n, _, _)| n)
+                    .filter(|n| !ready.iter().any(|(rn, _)| rn == *n))
+                    .collect();
+                for m in &missing {
+                    eprintln!(" ✗ {} did not bind", m);
+                }
+                println!("   ↳ multi-service run started in {:.1}s — Ctrl+C to stop all", total);
+
+                // Block until any child exits, then kill the rest.
+                let mut child_handles = children.into_iter().map(|(_, _, c)| c).collect::<Vec<_>>();
+                loop {
+                    let mut any_exited = false;
+                    for c in child_handles.iter_mut() {
+                        if let Ok(Some(_)) = c.try_wait() { any_exited = true; break; }
+                    }
+                    if any_exited { break; }
+                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
+                }
+                for mut c in child_handles { let _ = c.kill().await; }
+                return Ok(());
+            }
 
             if should_run {
                 let port = port_override.unwrap_or(stack.default_port);
