@@ -101,6 +101,18 @@ impl ChildProcess {
     pub fn handle(&self) -> HANDLE {
         self.process_handle
     }
+
+    pub fn wait(&self) -> anyhow::Result<u32> {
+        use windows_sys::Win32::System::Threading::{WaitForSingleObject, GetExitCodeProcess};
+        unsafe {
+            WaitForSingleObject(self.process_handle, 0xFFFFFFFF);
+            let mut exit_code: u32 = 0;
+            if GetExitCodeProcess(self.process_handle, &mut exit_code) == 0 {
+                return Err(anyhow::anyhow!("Failed to get process exit code: {}", std::io::Error::last_os_error()));
+            }
+            Ok(exit_code)
+        }
+    }
 }
 
 impl Drop for ChildProcess {

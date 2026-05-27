@@ -29,6 +29,29 @@ impl Platform {
         }
     }
 
+    pub fn parse(s: &str) -> Option<Self> {
+        let parts: Vec<&str> = s.split('/').collect();
+        if parts.len() >= 2 {
+            let os = parts[0].to_string();
+            let arch = match parts[1] {
+                "amd64" | "x86_64" => "amd64",
+                "arm64" | "aarch64" => "arm64",
+                other => other,
+            };
+            let variant = parts.get(2).map(|s| s.to_string());
+            Some(Self {
+                os,
+                architecture: arch.to_string(),
+                variant,
+                os_version: None,
+                os_features: Vec::new(),
+                features: Vec::new(),
+            })
+        } else {
+            None
+        }
+    }
+
     pub fn matches(&self, other: &Platform) -> bool {
         if self.os != other.os {
             return false;
@@ -108,5 +131,27 @@ impl MultiArchResolver {
         entry["digest"].as_str()
             .map(|s| s.to_string())
             .ok_or_else(|| CrushError::ImageError("Missing digest in manifest list entry".to_string()))
+    }
+
+    pub fn resolve_manifest_with_platform<'a>(
+        manifest_list: &'a serde_json::Value,
+        preferred_platform: &Platform,
+    ) -> Result<&'a serde_json::Value> {
+        let manifests = manifest_list["manifests"].as_array()
+            .ok_or_else(|| CrushError::ImageError("Invalid manifest list: no manifests array".to_string()))?;
+
+        for entry in manifests {
+            let plat = Platform::from_manifest_entry(entry);
+            if preferred_platform.os == plat.os && preferred_platform.architecture == plat.architecture {
+                if preferred_platform.variant.is_none() || preferred_platform.variant == plat.variant {
+                    return Ok(entry);
+                }
+            }
+        }
+
+        Err(CrushError::ImageError(format!(
+            "No matching platform manifest for preferred platform {}/{}",
+            preferred_platform.os, preferred_platform.architecture
+        )))
     }
 }

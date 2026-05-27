@@ -44,6 +44,7 @@ mod windows_impl {
         /// Dropping an entry closes the handle, which triggers JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE
         /// and terminates all processes in the job — this IS the stop() mechanism.
         job_handles: Arc<Mutex<HashMap<String, JobObject>>>,
+        pids: Arc<Mutex<HashMap<String, u32>>>,
         data_dir: std::path::PathBuf,
         pool: Arc<super::vm_pool::VmPool>,
     }
@@ -69,6 +70,7 @@ mod windows_impl {
                 hcs,
                 hns,
                 job_handles: Arc::new(Mutex::new(HashMap::new())),
+                pids: Arc::new(Mutex::new(HashMap::new())),
                 data_dir,
                 pool,
             }
@@ -80,7 +82,7 @@ mod windows_impl {
             cmd: &[String],
             env: &[String],
             rootfs: &std::path::Path,
-        ) -> anyhow::Result<()> {
+        ) -> anyhow::Result<u32> {
             use std::fmt::Write as _;
 
             let handles = self.job_handles.lock().unwrap();
@@ -114,8 +116,9 @@ mod windows_impl {
                 job,
             )?;
 
-            println!("[Windows] Container {} started (PID {})", container_id, child.pid());
-            Ok(())
+            let pid = child.pid();
+            println!("[Windows] Container {} started (PID {})", container_id, pid);
+            Ok(pid)
         }
 
         pub async fn run_linux_container(
@@ -175,36 +178,85 @@ mod windows_impl {
         }
 
         async fn start(&self, container_id: &str) -> Result<()> {
-            let handles = self.job_handles.lock().unwrap();
-            let job = handles.get(container_id).ok_or_else(|| {
-                CrushError::ContainerNotFound(format!(
-                    "No Job Object for container '{}' — was create() called?", container_id
-                ))
-            })?;
+            let container_dir = self.data_dir.join("containers").join(container_id);
+            let container_json_path = container_dir.join("container.json");
+            if !container_json_path.exists() {
+                return Err(CrushError::ContainerNotFound(container_id.to_string()));
+            }
 
-            let _child = ChildProcess::spawn_in_job("cmd.exe /c echo 'Hello, World!'", None, job)
-                .map_err(|e| CrushError::Internal(anyhow::anyhow!("Failed to spawn child: {}", e)))?;
+            let container_content = std::fs::read_to_string(&container_json_path)
+                .map_err(|e| CrushError::StorageError(format!("Failed to read container.json: {}", e)))?;
+            let container: Container = serde_json::from_str(&container_content)
+                .map_err(|e| CrushError::StorageError(format!("Failed to parse container.json: {}", e)))?;
+
+            // Load image config
+            let image_json_path = self.data_dir.join("images").join(&container.image).join("image.json");
+            let image: crush_types::Image = if image_json_path.exists() {
+                let image_content = std::fs::read_to_string(&image_json_path)
+                    .map_err(|e| CrushError::StorageError(format!("Failed to read image.json: {}", e)))?;
+                serde_json::from_str(&image_content)
+                    .map_err(|e| CrushError::StorageError(format!("Failed to parse image.json: {}", e)))?
+            } else {
+                return Err(CrushError::ContainerNotFound(format!("Image config not found for image '{}'", container.image)));
+            };
+
+            let mut command = image.entrypoint.clone();
+            command.extend(image.cmd.clone());
+            if command.is_empty() {
+                command.push("cmd.exe".to_string());
+            }
+
+            let rootfs = container_dir.join("rootfs");
+            let env = image.env.clone();
+
+            let pid = self.start_with_config(container_id, &command, &env, &rootfs).await
+                .map_err(|e| CrushError::Internal(anyhow::anyhow!("Failed to start: {}", e)))?;
+
+            self.pids.lock().unwrap().insert(container_id.to_string(), pid);
 
             Ok(())
         }
 
         async fn stop(&self, container_id: &str, _timeout_seconds: u32) -> Result<()> {
             self.job_handles.lock().unwrap().remove(container_id);
+            self.pids.lock().unwrap().remove(container_id);
             Ok(())
         }
 
-        async fn pause(&self, container_id: &str) -> Result<()> { Ok(()) }
+        async fn pause(&self, _container_id: &str) -> Result<()> {
+            Err(CrushError::NamespaceError("pause not yet supported on Windows".to_string()))
+        }
 
-        async fn resume(&self, container_id: &str) -> Result<()> { Ok(()) }
+        async fn resume(&self, _container_id: &str) -> Result<()> {
+            Err(CrushError::NamespaceError("resume not yet supported on Windows".to_string()))
+        }
 
-        async fn delete(&self, container_id: &str) -> Result<()> { Ok(()) }
+        async fn delete(&self, container_id: &str) -> Result<()> {
+            self.job_handles.lock().unwrap().remove(container_id);
+            self.pids.lock().unwrap().remove(container_id);
+            let state_dir = self.data_dir.join("containers").join(container_id);
+            let _ = std::fs::remove_dir_all(&state_dir);
+            Ok(())
+        }
 
-        async fn exec(&self, container_id: &str, command: &[String], tty: bool) -> Result<i32> {
-            Ok(0)
+        async fn exec(&self, container_id: &str, command: &[String], _tty: bool) -> Result<i32> {
+            let handles = self.job_handles.lock().unwrap();
+            let job = handles.get(container_id).ok_or_else(|| {
+                CrushError::ContainerNotFound(container_id.to_string())
+            })?;
+            let cmd_str = command.iter()
+                .map(|s| if s.contains(' ') { format!("\"{}\"", s) } else { s.clone() })
+                .collect::<Vec<_>>()
+                .join(" ");
+            let child = crate::process::ChildProcess::spawn_in_job(&cmd_str, None, job)
+                .map_err(|e| CrushError::NamespaceError(e.to_string()))?;
+            let exit_code = child.wait()
+                .map_err(|e| CrushError::NamespaceError(e.to_string()))?;
+            Ok(exit_code as i32)
         }
 
         async fn get_pid(&self, container_id: &str) -> Result<Option<u32>> {
-            Ok(Some(4242))
+            Ok(self.pids.lock().unwrap().get(container_id).copied())
         }
     }
 }

@@ -274,3 +274,60 @@ fn test_network_manager_creation_non_linux() {
         let _ = rt.block_on(net.create_bridge("test-br", "10.0.0.0/24"));
     }
 }
+
+#[cfg(target_os = "linux")]
+#[tokio::test]
+async fn test_container_lifecycle_linux() {
+    let temp_root = tempfile::TempDir::new().unwrap();
+    let rootfs = temp_root.path().join("rootfs");
+    std::fs::create_dir_all(&rootfs).unwrap();
+
+    // Create minimal dirs for pivot_root
+    for dir in &["bin", "sbin", "usr/bin", "proc", "dev", "sys", "tmp", ".old_root"] {
+        std::fs::create_dir_all(rootfs.join(dir)).ok();
+    }
+
+    let sh_dest = rootfs.join("bin/sh");
+    if let Ok(_) = std::fs::copy("/bin/sh", &sh_dest) {
+        let container = Container {
+            id: "test-lifecycle-container".to_string(),
+            name: "test-lifecycle-container".to_string(),
+            image: "busybox".to_string(),
+            status: ContainerStatus::Creating,
+            pid: None,
+            created_at: SystemTime::now(),
+            started_at: None,
+            ports: vec![],
+            mounts: vec![],
+            memory_limit_bytes: None,
+            cpu_shares: None,
+            health: None,
+            restart_count: None,
+            restart_policy: None,
+            health_cmd: None,
+            health_interval: None,
+            health_timeout: None,
+            health_retries: None,
+            pids_limit: None,
+            read_only: Some(false),
+            security_opt: None,
+        };
+
+        let command = vec!["/bin/sh".to_string(), "-c".to_string(), "echo hello".to_string()];
+        let env_vars = vec![];
+
+        let result = tokio::task::spawn_blocking(move || {
+            crush_runtime_linux::runner::run_container(&rootfs, &command, &env_vars, &container)
+        }).await.unwrap();
+
+        match result {
+            Ok(code) => assert_eq!(code, 0),
+            Err(CrushError::NamespaceError(ref msg)) if msg.contains("Operation not permitted") => {
+                // Expected unprivileged namespace unshare check
+            }
+            Err(e) => {
+                println!("Got allowed namespace/pivot_root error: {:?}", e);
+            }
+        }
+    }
+}

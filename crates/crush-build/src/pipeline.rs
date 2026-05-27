@@ -186,14 +186,48 @@ impl BuildPipeline {
             }
         }
 
-        let output = format!("build output for: {}", cmd);
-        let entry = self.cache.put("deps:latest", output.as_bytes(), "deps", false).await?;
+        // Actually run the build command in the project root.
+        let stage_start = std::time::Instant::now();
+        
+        #[cfg(target_os = "windows")]
+        let mut proc = tokio::process::Command::new("cmd");
+        #[cfg(target_os = "windows")]
+        proc.args(["/C", cmd]);
+        #[cfg(not(target_os = "windows"))]
+        let mut proc = {
+            let mut c = tokio::process::Command::new("sh");
+            c.arg("-c").arg(cmd);
+            c
+        };
+
+        let output = proc.current_dir(root)
+            .output()
+            .await
+            .map_err(|e| CrushError::StorageError(format!("Build command spawn failed: {}", e)))?;
+
+        if !output.status.success() {
+            let stderr = String::from_utf8_lossy(&output.stderr);
+            return Err(CrushError::StorageError(format!(
+                "Build command `{}` exited with status {:?}:\n{}",
+                cmd, output.status.code(), stderr
+            )));
+        }
+
+        let elapsed = stage_start.elapsed().as_millis() as u64;
+        let combined = [output.stdout.as_slice(), output.stderr.as_slice()].concat();
+        let size = combined.len() as u64;
+        let cache_key = if lockfile_key.is_empty() {
+            format!("run:{}", cmd)
+        } else {
+            lockfile_key
+        };
+        let entry = self.cache.put(&cache_key, &combined, "deps", false).await?;
 
         Ok(LayerInfo {
             name: format!("deps({})", cmd),
             digest: entry.layer_digest,
-            size_bytes: entry.size_bytes,
-            duration_ms: 100,
+            size_bytes: size,
+            duration_ms: elapsed,
             cached: false,
         })
     }

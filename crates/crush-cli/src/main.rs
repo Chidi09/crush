@@ -35,7 +35,7 @@ use libc;
 #[derive(Parser, Debug)]
 #[command(name = "crush")]
 #[command(author = "Crush Contributors")]
-#[command(version = "0.1.0")]
+#[command(version = "0.2.0")]
 #[command(about = "A from-scratch, production-grade container runtime in Rust", long_about = None)]
 struct Cli {
     #[arg(short, long, help = "Path to custom Crushfile", default_value = "Crushfile")]
@@ -242,6 +242,8 @@ struct DebugArgs {
 struct InspectArgs {
     #[arg(help = "ID or name of resource")]
     id: String,
+    #[arg(long, name = "type", help = "Type of resource to inspect (container, image, network)", default_value = "container")]
+    inspect_type: String,
     #[arg(long, help = "Format output (text, json)", default_value = "json")]
     format: String,
 }
@@ -262,6 +264,8 @@ struct EventsArgs {
 struct PullArgs {
     #[arg(help = "Image reference to pull (e.g. ubuntu:latest)")]
     image: String,
+    #[arg(long, help = "Target platform (e.g. linux/amd64, linux/arm64)", default_value = None)]
+    platform: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -378,6 +382,8 @@ enum VolumeSubcommand {
     Rm { name: String },
     #[command(about = "List persistent volumes")]
     Ls,
+    #[command(about = "Display detailed volume information")]
+    Inspect { name: String },
 }
 
 #[derive(Args, Debug)]
@@ -720,13 +726,78 @@ async fn main() -> anyhow::Result<()> {
             println!("  Port:       {}", stack.default_port);
         }
         Commands::Build(args) => {
+            if let Some(ref plat) = args.platform {
+                std::env::set_var("CRUSH_DEFAULT_PLATFORM", plat);
+            }
             info!("Building image: {} (platforms: {:?})", args.tag, args.platform);
             let detector = StackDetector::new();
             let project_root = std::env::current_dir()?;
             let stack = detector.detect(&project_root).await?;
+
             let cache_dir = data_dir.join("cache");
-            let engine = BuildEngine::new(cache_dir);
-            let digest = engine.execute_layered_build(&project_root, &stack).await?;
+            let cache = crush_build::BuildCache::new(cache_dir.clone());
+            let pipeline = crush_build::BuildPipeline::new(cache).with_progress();
+
+            let crushfile_path = project_root.join("Crushfile");
+            let stages = if crushfile_path.exists() {
+                println!("Parsing Crushfile at: {}", crushfile_path.display());
+                let parsed = crush_build::CrushfileParser::parse(&crushfile_path)
+                    .map_err(|e| CrushError::StorageError(format!("Failed to parse Crushfile: {}", e)))?;
+                parsed.stages.unwrap_or_default()
+            } else {
+                println!("No Crushfile found, synthesising stages from stack detection...");
+                let base_img = match stack.language.to_lowercase() {
+                    l if l.contains("node") => format!("node:{}-alpine", stack.runtime_version),
+                    l if l.contains("rust") => format!("rust:{}-slim", stack.runtime_version),
+                    l if l.contains("python") => format!("python:{}-slim", stack.runtime_version),
+                    _ => "ubuntu:22.04".to_string(),
+                };
+                vec![
+                    crush_build::CrushfileStage {
+                        name: Some("base".to_string()),
+                        stage_type: "base".to_string(),
+                        image: Some(base_img),
+                        command: None,
+                        rule: None,
+                        from: None,
+                        target: None,
+                        platforms: None,
+                    },
+                    crush_build::CrushfileStage {
+                        name: Some("deps".to_string()),
+                        stage_type: "run".to_string(),
+                        image: None,
+                        command: Some(stack.build_command.clone()),
+                        rule: None,
+                        from: None,
+                        target: None,
+                        platforms: None,
+                    },
+                    crush_build::CrushfileStage {
+                        name: Some("source".to_string()),
+                        stage_type: "copy".to_string(),
+                        image: None,
+                        command: None,
+                        rule: Some(".".to_string()),
+                        from: None,
+                        target: None,
+                        platforms: None,
+                    },
+                    crush_build::CrushfileStage {
+                        name: Some("final".to_string()),
+                        stage_type: "config".to_string(),
+                        image: None,
+                        command: None,
+                        rule: None,
+                        from: None,
+                        target: None,
+                        platforms: None,
+                    },
+                ]
+            };
+
+            let pipeline_result = pipeline.execute(&project_root, &stages, &std::collections::HashMap::new()).await?;
+            let digest = pipeline_result.digest;
             println!("Built image {} -> digest: {}", args.tag, digest);
         }
         Commands::Watch(args) => {
@@ -1374,23 +1445,47 @@ async fn main() -> anyhow::Result<()> {
                                     }
                                     
                                     if args.follow {
-                                        let stdout_file = tokio::fs::File::open(&stdout_path).await;
-                                        if let Ok(mut f) = stdout_file {
-                                            use tokio::io::AsyncSeekExt;
-                                            let _ = f.seek(std::io::SeekFrom::End(0)).await;
-                                            let mut buffer = [0u8; 1024];
-                                            loop {
-                                                use tokio::io::AsyncReadExt;
-                                                match f.read(&mut buffer).await {
-                                                    Ok(0) => {
-                                                        tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                                        let mut stdout_offset = if stdout_path.exists() {
+                                            tokio::fs::metadata(&stdout_path).await.map(|m| m.len()).unwrap_or(0)
+                                        } else { 0 };
+                                        let mut stderr_offset = if stderr_path.exists() {
+                                            tokio::fs::metadata(&stderr_path).await.map(|m| m.len()).unwrap_or(0)
+                                        } else { 0 };
+                                        
+                                        loop {
+                                            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                                            if stdout_path.exists() {
+                                                if let Ok(mut f) = tokio::fs::File::open(&stdout_path).await {
+                                                    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+                                                    let len = f.seek(std::io::SeekFrom::End(0)).await.ok().unwrap_or(0);
+                                                    if len > stdout_offset {
+                                                        let _ = f.seek(std::io::SeekFrom::Start(stdout_offset)).await;
+                                                        let mut buf = Vec::new();
+                                                        let _ = f.read_to_end(&mut buf).await;
+                                                        if !buf.is_empty() {
+                                                            print!("{}", String::from_utf8_lossy(&buf));
+                                                            use std::io::Write;
+                                                            let _ = std::io::stdout().flush();
+                                                            stdout_offset += buf.len() as u64;
+                                                        }
                                                     }
-                                                    Ok(n) => {
-                                                        use std::io::Write;
-                                                        let _ = std::io::stdout().write_all(&buffer[..n]);
-                                                        let _ = std::io::stdout().flush();
+                                                }
+                                            }
+                                            if stderr_path.exists() {
+                                                if let Ok(mut f) = tokio::fs::File::open(&stderr_path).await {
+                                                    use tokio::io::{AsyncReadExt, AsyncSeekExt};
+                                                    let len = f.seek(std::io::SeekFrom::End(0)).await.ok().unwrap_or(0);
+                                                    if len > stderr_offset {
+                                                        let _ = f.seek(std::io::SeekFrom::Start(stderr_offset)).await;
+                                                        let mut buf = Vec::new();
+                                                        let _ = f.read_to_end(&mut buf).await;
+                                                        if !buf.is_empty() {
+                                                            eprint!("{}", String::from_utf8_lossy(&buf));
+                                                            use std::io::Write;
+                                                            let _ = std::io::stderr().flush();
+                                                            stderr_offset += buf.len() as u64;
+                                                        }
                                                     }
-                                                    Err(_) => break,
                                                 }
                                             }
                                         }
@@ -1473,32 +1568,97 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Inspect(args) => {
-            info!("Inspecting: {}", args.id);
-            let containers_dir = data_dir.join("containers");
+            info!("Inspecting: {} (type: {})", args.id, args.inspect_type);
             let mut found = false;
-            if containers_dir.exists() {
-                let mut entries = tokio::fs::read_dir(&containers_dir).await?;
-                while let Some(entry) = entries.next_entry().await? {
-                    let json_path = entry.path().join("container.json");
-                    if json_path.exists() {
-                        if let Ok(content) = tokio::fs::read_to_string(&json_path).await {
-                            if let Ok(c) = serde_json::from_str::<Container>(&content) {
-                                if c.id == args.id || c.name == args.id {
-                                    if args.format == "json" {
-                                        println!("{}", serde_json::to_string_pretty(&c)?);
-                                    } else {
-                                        println!("{:#?}", c);
+            
+            if args.inspect_type == "container" {
+                let containers_dir = data_dir.join("containers");
+                if containers_dir.exists() {
+                    let mut entries = tokio::fs::read_dir(&containers_dir).await?;
+                    while let Some(entry) = entries.next_entry().await? {
+                        let json_path = entry.path().join("container.json");
+                        if json_path.exists() {
+                            if let Ok(content) = tokio::fs::read_to_string(&json_path).await {
+                                if let Ok(c) = serde_json::from_str::<Container>(&content) {
+                                    if c.id == args.id || c.name == args.id {
+                                        if args.format == "json" {
+                                            println!("{}", serde_json::to_string_pretty(&c)?);
+                                        } else {
+                                            println!("{:#?}", c);
+                                        }
+                                        found = true;
+                                        break;
                                     }
-                                    found = true;
-                                    break;
                                 }
                             }
                         }
                     }
                 }
-            }
-            if !found {
-                eprintln!("Container {} not found", args.id);
+                if !found {
+                    eprintln!("Error: container '{}' not found", args.id);
+                }
+            } else if args.inspect_type == "image" {
+                if let Ok(Some(img)) = store.database().get_image_by_tag(&args.id).await {
+                    if args.format == "json" {
+                        println!("{}", serde_json::to_string_pretty(&img)?);
+                    } else {
+                        println!("{:#?}", img);
+                    }
+                    found = true;
+                } else if let Ok(Some(img)) = store.database().get_image(&args.id).await {
+                    if args.format == "json" {
+                        println!("{}", serde_json::to_string_pretty(&img)?);
+                    } else {
+                        println!("{:#?}", img);
+                    }
+                    found = true;
+                }
+                if !found {
+                    eprintln!("Error: image '{}' not found", args.id);
+                }
+            } else if args.inspect_type == "network" {
+                let net_path = data_dir.join("networks").join(format!("{}.json", args.id));
+                if net_path.exists() {
+                    if let Ok(content) = tokio::fs::read_to_string(&net_path).await {
+                        if args.format == "json" {
+                            if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&content) {
+                                println!("{}", serde_json::to_string_pretty(&json_val)?);
+                            } else {
+                                println!("{}", content);
+                            }
+                        } else {
+                            println!("{}", content);
+                        }
+                        found = true;
+                    }
+                } else {
+                    let networks_dir = data_dir.join("networks");
+                    if networks_dir.exists() {
+                        let mut entries = tokio::fs::read_dir(&networks_dir).await?;
+                        while let Some(entry) = entries.next_entry().await? {
+                            if entry.path().extension().and_then(|s| s.to_str()) == Some("json") {
+                                if let Ok(content) = tokio::fs::read_to_string(entry.path()).await {
+                                    if let Ok(json_val) = serde_json::from_str::<serde_json::Value>(&content) {
+                                        if json_val.get("name").and_then(|n| n.as_str()) == Some(&args.id) {
+                                            if args.format == "json" {
+                                                println!("{}", serde_json::to_string_pretty(&json_val)?);
+                                            } else {
+                                                println!("{:#?}", json_val);
+                                            }
+                                            found = true;
+                                            break;
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+                if !found {
+                    eprintln!("Error: network '{}' not found", args.id);
+                }
+            } else {
+                eprintln!("Error: unknown resource type '{}'", args.inspect_type);
             }
         }
         Commands::Stats(args) => {
@@ -1614,6 +1774,9 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Pull(args) => {
+            if let Some(ref plat) = args.platform {
+                std::env::set_var("CRUSH_DEFAULT_PLATFORM", plat);
+            }
             info!("Pulling image: {}", args.image);
             let image = store.pull_image(&args.image).await?;
             println!("Successfully pulled image:");
@@ -1703,7 +1866,7 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Export(args) => {
             info!("Exporting image: {} to tarball: {}", args.image, args.output);
-            store.export_image(&args.image, &PathBuf::from(&args.output)).await?;
+            store.export_oci_tarball(&args.image, &PathBuf::from(&args.output)).await?;
             println!("Exported {} → {}", args.image, args.output);
             println!("Load on any Docker host: docker load -i {}", args.output);
         }
@@ -2100,6 +2263,14 @@ async fn main() -> anyhow::Result<()> {
                         );
                     }
                 }
+                VolumeSubcommand::Inspect { name } => {
+                    match driver.inspect(&name).await {
+                        Ok(vol) => {
+                            println!("{}", serde_json::to_string_pretty(&vol)?);
+                        }
+                        Err(e) => eprintln!("Error: {}", e),
+                    }
+                }
             }
         }
         Commands::Registry(args) => {
@@ -2300,10 +2471,12 @@ async fn main() -> anyhow::Result<()> {
         Commands::Daemon(args) => {
             let socket_path = PathBuf::from(&args.socket);
             
-            // Initialize the stateless engine backend
+            // Initialize the native or stateless engine backend
             #[cfg(target_os = "windows")]
             let backend: Arc<dyn crush_types::RuntimeBackend> = Arc::new(WindowsRuntime::new());
-            #[cfg(not(target_os = "windows"))]
+            #[cfg(target_os = "linux")]
+            let backend: Arc<dyn crush_types::RuntimeBackend> = Arc::new(crush_runtime_linux::LinuxRuntime::new());
+            #[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
             let backend: Arc<dyn crush_types::RuntimeBackend> = Arc::new(StatelessEngine::new(data_dir.clone()));
 
             // Compat API server
@@ -2331,18 +2504,73 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Health(args) => {
             info!("Running health check on container: {}", args.id);
-            let cmd_parts: Vec<String> = args.cmd.split_whitespace().map(|s| s.to_string()).collect();
-            let config = HealthCheckConfig {
-                check_type: HealthCheckType::Exec { command: cmd_parts },
-                interval_secs: 30,
-                timeout_secs: args.timeout,
-                retries: args.retries,
-                start_period_secs: 0,
-                start_interval_secs: 5,
-            };
-            let checker = HealthChecker::new(config);
-            let status = checker.check().await;
-            println!("Health status for {}: {:?}", args.id, status);
+            let mut container_found = false;
+            let containers_dir = data_dir.join("containers");
+            if containers_dir.exists() {
+                let mut entries = tokio::fs::read_dir(&containers_dir).await?;
+                while let Some(entry) = entries.next_entry().await? {
+                    let json_path = entry.path().join("container.json");
+                    if json_path.exists() {
+                        if let Ok(content) = tokio::fs::read_to_string(&json_path).await {
+                            if let Ok(mut c) = serde_json::from_str::<Container>(&content) {
+                                if c.id == args.id || c.name == args.id {
+                                    container_found = true;
+                                    let health_cmd = match &c.health_cmd {
+                                        Some(cmd) => cmd.clone(),
+                                        None => {
+                                            println!("No health check configured for container '{}'", args.id);
+                                            std::process::exit(0);
+                                        }
+                                    };
+                                    
+                                    let timeout = c.health_timeout.unwrap_or(args.timeout);
+                                    println!("Running health check command: {}", health_cmd);
+                                    
+                                    #[cfg(target_os = "windows")]
+                                    let mut p = std::process::Command::new("cmd");
+                                    #[cfg(target_os = "windows")]
+                                    p.args(["/C", &health_cmd]);
+                                    
+                                    #[cfg(not(target_os = "windows"))]
+                                    let mut p = std::process::Command::new("sh");
+                                    #[cfg(not(target_os = "windows"))]
+                                    p.args(["-c", &health_cmd]);
+
+                                    let handle = tokio::task::spawn_blocking(move || {
+                                        p.status()
+                                    });
+                                    
+                                    let result = tokio::time::timeout(tokio::time::Duration::from_secs(timeout), handle).await;
+                                    
+                                    let status = match result {
+                                        Ok(Ok(Ok(status))) if status.success() => {
+                                            println!("Status: healthy");
+                                            HealthStatus::Healthy
+                                        }
+                                        Ok(Ok(Ok(status))) => {
+                                            println!("Status: unhealthy (exit code {:?})", status.code());
+                                            HealthStatus::Unhealthy
+                                        }
+                                        _ => {
+                                            println!("Status: unhealthy (timeout or spawn failed)");
+                                            HealthStatus::Unhealthy
+                                        }
+                                    };
+                                    
+                                    c.health = Some(status);
+                                    if let Ok(serialized) = serde_json::to_string_pretty(&c) {
+                                        let _ = tokio::fs::write(&json_path, serialized).await;
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+            if !container_found {
+                eprintln!("Error: container '{}' not found", args.id);
+            }
         }
         Commands::DockerContext(args) => {
             #[cfg(target_os = "windows")]
@@ -2372,25 +2600,44 @@ async fn main() -> anyhow::Result<()> {
             println!();
 
             if args.create {
-                let docker_path = which_docker();
-                if let Some(docker) = docker_path {
-                    println!("Creating Docker context 'crush'...");
-                    let result = std::process::Command::new(&docker)
-                        .args(["context", "create", "crush", "--docker", &format!("host={}", socket)])
-                        .status();
-                    match result {
-                        Ok(s) if s.success() => {
-                            println!("Context 'crush' created.");
-                            let _ = std::process::Command::new(&docker)
-                                .args(["context", "use", "crush"])
-                                .status();
-                            println!("Switched Docker context to 'crush'.");
-                            println!("All docker CLI commands now route to Crush.");
-                        }
-                        _ => eprintln!("Failed to create Docker context. Is docker CLI installed?"),
-                    }
+                use sha2::{Sha256, Digest};
+                let mut hasher = Sha256::new();
+                hasher.update(b"crush");
+                let hash = format!("{:x}", hasher.finalize());
+
+                let home_dir = std::env::var("HOME")
+                    .map(PathBuf::from)
+                    .or_else(|_| std::env::var("USERPROFILE").map(PathBuf::from))
+                    .unwrap_or_else(|_| PathBuf::from("."));
+
+                let context_dir = home_dir.join(".docker").join("contexts").join("meta").join(&hash);
+                if let Err(e) = std::fs::create_dir_all(&context_dir) {
+                    eprintln!("Failed to create context directory: {}", e);
                 } else {
-                    eprintln!("docker CLI not found in PATH. Install Docker CLI (no daemon needed) or set DOCKER_HOST manually.");
+                    let meta_json_path = context_dir.join("meta.json");
+                    let host_url = if cfg!(target_os = "windows") {
+                        "npipe:////./pipe/crush-api".to_string()
+                    } else {
+                        "unix:///var/run/crush.sock".to_string()
+                    };
+                    let meta_json = serde_json::json!({
+                        "Name": "crush",
+                        "Metadata": {},
+                        "Endpoints": {
+                            "docker": {
+                                "Host": host_url,
+                                "SkipTLSVerify": false
+                            }
+                        }
+                    });
+                    if let Ok(serialized) = serde_json::to_string_pretty(&meta_json) {
+                        if std::fs::write(&meta_json_path, serialized).is_ok() {
+                            println!("Docker context 'crush' created successfully at: {}", meta_json_path.display());
+                            println!("Run: docker context use crush");
+                        } else {
+                            eprintln!("Failed to write meta.json");
+                        }
+                    }
                 }
             }
         }

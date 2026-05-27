@@ -166,6 +166,58 @@ impl ImageStore {
 
         Ok(())
     }
+
+    pub async fn export_oci_tarball(&self, image_id: &str, dest: &Path) -> Result<()> {
+        let image = match self.db.get_image_by_digest(image_id).await? {
+            Some(img) => img,
+            None => self.db.get_image_by_tag(image_id).await?
+                .ok_or_else(|| CrushError::ImageError(format!("Image not found: {}", image_id)))?,
+        };
+
+        let file = std::fs::File::create(dest)
+            .map_err(|e| CrushError::StorageError(e.to_string()))?;
+        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(file, flate2::Compression::default()));
+
+        // Write OCI layout marker
+        let layout = r#"{"imageLayoutVersion":"1.0.0"}"#;
+        let mut header = tar::Header::new_gnu();
+        header.set_size(layout.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, "oci-layout", layout.as_bytes())
+            .map_err(|e| CrushError::StorageError(e.to_string()))?;
+
+        // Write each blob
+        for layer_digest in &image.layers {
+            let blob_path = self.blobs.path_for_digest(layer_digest);
+            if blob_path.exists() {
+                tar.append_path_with_name(&blob_path, format!("blobs/sha256/{}", &layer_digest[7..]))
+                    .map_err(|e| CrushError::StorageError(e.to_string()))?;
+            }
+        }
+
+        // Write index.json
+        let index = serde_json::json!({
+            "schemaVersion": 2,
+            "manifests": [{
+                "mediaType": "application/vnd.oci.image.manifest.v1+json",
+                "digest": image.digest,
+                "size": 0,
+                "annotations": { "org.opencontainers.image.ref.name": image.tag }
+            }]
+        });
+        let index_bytes = serde_json::to_vec_pretty(&index)
+            .map_err(|e| CrushError::StorageError(e.to_string()))?;
+        let mut header = tar::Header::new_gnu();
+        header.set_size(index_bytes.len() as u64);
+        header.set_mode(0o644);
+        header.set_cksum();
+        tar.append_data(&mut header, "index.json", index_bytes.as_slice())
+            .map_err(|e| CrushError::StorageError(e.to_string()))?;
+
+        tar.finish().map_err(|e| CrushError::StorageError(e.to_string()))?;
+        Ok(())
+    }
 }
 
 #[async_trait]
@@ -180,7 +232,11 @@ impl StorageBackend for ImageStore {
             let manifest_json = client.fetch_manifest(&registry, &image, &reference).await?;
 
             if manifest_json.get("manifests").is_some() {
-                let entry = multiarch::MultiArchResolver::resolve_manifest(&manifest_json)?;
+                let entry = if let Some(p_str) = std::env::var("CRUSH_DEFAULT_PLATFORM").ok().and_then(|s| multiarch::Platform::parse(&s)) {
+                    multiarch::MultiArchResolver::resolve_manifest_with_platform(&manifest_json, &p_str)?
+                } else {
+                    multiarch::MultiArchResolver::resolve_manifest(&manifest_json)?
+                };
                 let plat_digest = entry["digest"].as_str().unwrap_or("").to_string();
                 let plat_manifest = client.fetch_manifest(&registry, &image, &plat_digest).await?;
                 (plat_manifest, plat_digest)

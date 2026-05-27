@@ -14,7 +14,7 @@ use std::sync::Arc;
 use async_trait::async_trait;
 use nix::sched::CloneFlags;
 use tokio::sync::Mutex;
-use crush_types::{RuntimeBackend, Container, Result, CrushError, ContainerStatus};
+use crush_types::{RuntimeBackend, Container, Image, Result, CrushError, ContainerStatus};
 
 use namespace::NamespaceManager;
 use user_ns::UserNamespaceManager;
@@ -38,7 +38,7 @@ pub struct LinuxRuntime {
 
 impl LinuxRuntime {
     pub fn new() -> Self {
-        Self {
+        let rt = Self {
             ns: NamespaceManager::new(),
             user_ns: UserNamespaceManager::new(),
             seccomp: SeccompFilterCompiler::new(),
@@ -46,7 +46,32 @@ impl LinuxRuntime {
             signals: SignalHandler::new(),
             lifecycle: ContainerLifecycleManager::new(),
             child_pids: Arc::new(Mutex::new(std::collections::HashMap::new())),
+        };
+        if let Ok(handle) = tokio::runtime::Handle::try_current() {
+            let child_pids = rt.child_pids.clone();
+            handle.spawn(async move {
+                let containers_dir = dirs_or_default().join("containers");
+                if let Ok(entries) = std::fs::read_dir(&containers_dir) {
+                    for entry in entries.flatten() {
+                        let pid_file = entry.path().join("pid");
+                        if let Ok(text) = std::fs::read_to_string(&pid_file) {
+                            if let Ok(pid) = text.trim().parse::<u32>() {
+                                #[cfg(unix)]
+                                {
+                                    if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+                                        let id = entry.file_name().to_string_lossy().to_string();
+                                        child_pids.lock().await.insert(id, pid);
+                                    } else {
+                                        let _ = std::fs::remove_file(&pid_file);
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            });
         }
+        rt
     }
 }
 
@@ -84,7 +109,10 @@ impl RuntimeBackend for LinuxRuntime {
         }
 
         if let Some(cpu_shares) = container.cpu_shares {
-            cgroup.enforce_cpu_limit(cpu_shares)?;
+            // Convert Docker cpu_shares (2-262144, default 1024) to cgroup v2
+            // cpu.weight (1-10000, default 100). Linear scale: 1024 -> 100.
+            let weight = ((cpu_shares as u64) * 100 / 1024).clamp(1, 10000);
+            cgroup.enforce_cpu_limit(weight)?;
         }
 
         // Seccomp is NOT applied here — it must run in the container child process
@@ -140,6 +168,7 @@ impl RuntimeBackend for LinuxRuntime {
             let mut pids = self.child_pids.lock().await;
             pids.remove(container_id);
         }
+        let _ = std::fs::remove_file(dirs_or_default().join("containers").join(container_id).join("pid"));
 
         let spec_path = get_spec_path(container_id);
 
@@ -209,53 +238,94 @@ impl RuntimeBackend for LinuxRuntime {
 }
 
 impl LinuxRuntime {
-    async fn spawn_container_process(&self, container_id: &str) -> Result<u32> {
-        // Compile the seccomp BPF filter here in the parent.
-        // It will be applied in the child after fork via pre_exec, before execve.
-        let whitelist = Self::default_syscall_allowlist();
-        let mut _blocked = 0usize;
-        let bpf_bytes = self.seccomp.compile_bpf_filter(&whitelist, &mut _blocked)?;
-
-        let mut cmd = std::process::Command::new("/sbin/init");
-        cmd.arg(container_id)
-            .stdin(std::process::Stdio::null())
-            .stdout(std::process::Stdio::piped())
-            .stderr(std::process::Stdio::piped());
-
-        // Apply seccomp in the child process (after fork, before execve).
-        // This is the correct and only safe place — pre_exec runs exclusively in the child.
-        #[cfg(target_os = "linux")]
-        unsafe {
-            use std::os::unix::process::CommandExt;
-            cmd.pre_exec(move || {
-                let filter_count = bpf_bytes.len() / 8; // SockFilter = 8 bytes
-                let prog = libc::sock_fprog {
-                    len: filter_count as u16,
-                    filter: bpf_bytes.as_ptr() as *mut libc::sock_filter,
-                };
-                // SECCOMP_MODE_FILTER = 2
-                let ret = libc::prctl(libc::PR_SET_SECCOMP, 2u64, &prog as *const _ as u64);
-                if ret != 0 {
-                    return Err(std::io::Error::last_os_error());
+    pub async fn restore_pids(&self) {
+        let containers_dir = dirs_or_default().join("containers");
+        if let Ok(entries) = std::fs::read_dir(&containers_dir) {
+            for entry in entries.flatten() {
+                let pid_file = entry.path().join("pid");
+                if let Ok(text) = std::fs::read_to_string(&pid_file) {
+                    if let Ok(pid) = text.trim().parse::<u32>() {
+                        // Verify the process is still alive
+                        #[cfg(unix)]
+                        {
+                            if unsafe { libc::kill(pid as libc::pid_t, 0) } == 0 {
+                                let id = entry.file_name().to_string_lossy().to_string();
+                                self.child_pids.lock().await.insert(id, pid);
+                            } else {
+                                // Process is dead — clean up stale pid file
+                                let _ = std::fs::remove_file(&pid_file);
+                            }
+                        }
+                    }
                 }
-                Ok(())
-            });
-        }
-
-        let child = tokio::process::Command::from(cmd).spawn();
-
-        match child {
-            Ok(mut c) => {
-                let pid = c.id().ok_or_else(|| {
-                    CrushError::NamespaceError("Failed to get child PID".to_string())
-                })?;
-                tokio::spawn(async move { let _ = c.wait().await; });
-                Ok(pid)
             }
-            Err(e) => Err(CrushError::NamespaceError(format!(
-                "Failed to spawn container process: {}. Is /sbin/init available?", e
-            ))),
         }
+    }
+
+    async fn spawn_container_process(&self, container_id: &str) -> Result<u32> {
+        let container_dir = dirs_or_default().join("containers").join(container_id);
+        let container_json_path = container_dir.join("container.json");
+        if !container_json_path.exists() {
+            return Err(CrushError::ContainerNotFound(container_id.to_string()));
+        }
+
+        let container_content = std::fs::read_to_string(&container_json_path)
+            .map_err(|e| CrushError::StorageError(format!("Failed to read container.json: {}", e)))?;
+        let container: Container = serde_json::from_str(&container_content)
+            .map_err(|e| CrushError::StorageError(format!("Failed to parse container.json: {}", e)))?;
+
+        // Load image config
+        let image_json_path = dirs_or_default().join("images").join(&container.image).join("image.json");
+        let image: Image = if image_json_path.exists() {
+            let image_content = std::fs::read_to_string(&image_json_path)
+                .map_err(|e| CrushError::StorageError(format!("Failed to read image.json: {}", e)))?;
+            serde_json::from_str(&image_content)
+                .map_err(|e| CrushError::StorageError(format!("Failed to parse image.json: {}", e)))?
+        } else {
+            return Err(CrushError::ContainerNotFound(format!("Image config not found for image '{}'", container.image)));
+        };
+
+        let mut command = image.entrypoint.clone();
+        command.extend(image.cmd.clone());
+        if command.is_empty() {
+            command.push("/bin/sh".to_string());
+        }
+
+        let rootfs = container_dir.join("rootfs");
+        let env = image.env.clone();
+
+        // Run container in a blocking task
+        let rootfs_clone = rootfs.clone();
+        let command_clone = command.clone();
+        let env_clone = env.clone();
+        let container_clone = container.clone();
+        let container_id_clone = container_id.to_string();
+
+        tokio::task::spawn_blocking(move || {
+            let res = runner::run_container(&rootfs_clone, &command_clone, &env_clone, &container_clone);
+            // On exit, clean up the pid file
+            let pid_file = dirs_or_default().join("containers").join(&container_id_clone).join("pid");
+            let _ = std::fs::remove_file(pid_file);
+            res
+        });
+
+        // Poll for the PID file to be written (up to 2 seconds)
+        let pid_path = container_dir.join("pid");
+        let mut attempts = 0;
+        let pid = loop {
+            if let Ok(pid_str) = std::fs::read_to_string(&pid_path) {
+                if let Ok(p) = pid_str.trim().parse::<u32>() {
+                    break p;
+                }
+            }
+            if attempts > 100 {
+                return Err(CrushError::NamespaceError("Failed to retrieve spawned container PID".to_string()));
+            }
+            tokio::time::sleep(tokio::time::Duration::from_millis(20)).await;
+            attempts += 1;
+        };
+
+        Ok(pid)
     }
 
     fn default_syscall_allowlist() -> Vec<String> {

@@ -841,29 +841,71 @@ impl TuiApp {
     }
 
     // Non-interactive fallback for piped / non-TTY output
+    fn format_status(c: &Container) -> String {
+        match c.status {
+            ContainerStatus::Running => {
+                if let Some(started) = c.started_at {
+                    let secs = started.elapsed().unwrap_or_default().as_secs();
+                    format!("Up {}", Self::humanize_duration(secs))
+                } else {
+                    "Up".to_string()
+                }
+            }
+            ContainerStatus::Stopped => "Exited".to_string(),
+            ContainerStatus::Paused  => "Paused".to_string(),
+            ContainerStatus::Created => "Created".to_string(),
+            ContainerStatus::Creating => "Creating".to_string(),
+        }
+    }
+    
+    fn humanize_duration(secs: u64) -> String {
+        if secs < 60 { format!("{} seconds", secs) }
+        else if secs < 3600 { format!("{} minutes", secs / 60) }
+        else if secs < 86400 { format!("{} hours", secs / 3600) }
+        else { format!("{} days", secs / 86400) }
+    }
+
+    // Non-interactive fallback for piped / non-TTY output
     pub fn draw_containers_table(&self, containers: &[Container]) {
         println!("\x1b[1m\x1b[38;5;208m  ><(((°>  CRUSH  container runtime\x1b[0m");
-        println!("\x1b[38;5;240m  ┌──────────────┬──────────────────────┬─────────────┬──────────┬──────────────┐\x1b[0m");
-        println!("\x1b[38;5;244m  │ ID           │ NAME                 │ IMAGE       │ STATUS   │ METRICS      │\x1b[0m");
-        println!("\x1b[38;5;240m  ├──────────────┼──────────────────────┼─────────────┼──────────┼──────────────┤\x1b[0m");
         if containers.is_empty() {
-            println!("  │ \x1b[31mNo containers\x1b[0m — run `crush run <image>` to start one                               │");
-        } else {
-            for c in containers {
-                let id  = if c.id.len()    > 12 { &c.id[..12]    } else { &c.id    };
-                let nm  = if c.name.len()  > 20 { &c.name[..20]  } else { &c.name  };
-                let img = if c.image.len() > 11 { &c.image[..11] } else { &c.image };
-                let st  = match c.status {
-                    ContainerStatus::Running => "\x1b[32m● Running\x1b[0m ",
-                    ContainerStatus::Paused  => "\x1b[33m⏸ Paused\x1b[0m  ",
-                    ContainerStatus::Stopped => "\x1b[31m○ Stopped\x1b[0m ",
-                    _                        => "\x1b[34m◌ Creating\x1b[0m",
-                };
-                println!("  │ \x1b[38;5;248m{:<12}\x1b[0m │ \x1b[1m{:<20}\x1b[0m │ {:<11} │ {:<18} │ --%/--M      │",
-                    id, nm, img, st);
-            }
+            println!("  No containers running — run `crush run <image>` to start one");
+            return;
         }
-        println!("\x1b[38;5;240m  └──────────────┴──────────────────────┴─────────────┴──────────┴──────────────┘\x1b[0m");
+
+        let name_w = containers.iter().map(|c| c.name.len()).max().unwrap_or(4).max(4).min(40);
+        let image_w = containers.iter().map(|c| c.image.len()).max().unwrap_or(5).max(5).min(40);
+        let status_w = containers.iter().map(|c| Self::format_status(c).len()).max().unwrap_or(10).max(10).min(30);
+
+        // Print header
+        println!(
+            "  \x1b[1m{:<12}  {:<name_w$}  {:<image_w$}  {:<status_w$}  METRICS\x1b[0m",
+            "CONTAINER ID", "NAME", "IMAGE", "STATUS",
+            name_w = name_w, image_w = image_w, status_w = status_w
+        );
+
+        for c in containers {
+            let id = if c.id.len() > 12 { &c.id[..12] } else { &c.id };
+            let name = if c.name.len() > name_w { &c.name[..name_w] } else { &c.name };
+            let image = if c.image.len() > image_w { &c.image[..image_w] } else { &c.image };
+            let status = Self::format_status(c);
+
+            let status_styled = match c.status {
+                ContainerStatus::Running => format!("\x1b[32m{}\x1b[0m", status),
+                ContainerStatus::Paused => format!("\x1b[33m{}\x1b[0m", status),
+                ContainerStatus::Stopped => format!("\x1b[31m{}\x1b[0m", status),
+                _ => format!("\x1b[34m{}\x1b[0m", status),
+            };
+
+            // Calculate length of unstyled status for formatting alignment
+            let status_len = status.len();
+
+            println!(
+                "  {:<12}  {:<name_w$}  {:<image_w$}  {}{}  --%/--M",
+                id, name, image, status_styled, " ".repeat(status_w - status_len),
+                name_w = name_w, image_w = image_w
+            );
+        }
     }
 
     pub fn draw_sparklines_graph(&self, name: &str, cpu_history: &[f32], mem_history: &[f32]) {
