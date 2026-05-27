@@ -37,6 +37,14 @@ pub struct SubService {
     pub path: String,
     pub runtime_type: String,
     pub port: u16,
+    #[serde(default)]
+    pub entry_point: String,
+    #[serde(default)]
+    pub dev_entry_point: String,
+    #[serde(default)]
+    pub build_command: String,
+    #[serde(default)]
+    pub dev_install_command: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -48,6 +56,10 @@ pub struct Detection {
     pub framework_detected: bool,
     pub build_command: String,
     pub entry_point: String,
+    #[serde(default)]
+    pub dev_entry_point: String,
+    #[serde(default)]
+    pub dev_install_command: String,
     pub port: u16,
     pub confidence: f32,
     pub env_required: Vec<String>,
@@ -241,14 +253,35 @@ impl CrushSpecDetector {
             else { "Monorepo".to_string() }
         } else { framework };
 
+        let pm = Self::pick_node_pm(root);
+        let (dev_entry, dev_install, entry_prod, final_build_cmd) = if has_deno {
+            ("deno task dev".to_string(), "".to_string(), entry.clone(), build_cmd)
+        } else {
+            let dev_entry = format!("{} run dev", pm);
+            let dev_install = format!("{} install", pm);
+            let entry_prod = match surfaced_framework.as_str() {
+                "Vite" => format!("{} exec vite preview -- --port $PORT --host 0.0.0.0", pm),
+                "Next.js" => format!("{} run start", pm),
+                "Nuxt" => format!("{} run preview", pm),
+                "SvelteKit" => "node build/index.js".to_string(),
+                "Remix" => format!("{} run start", pm),
+                "Astro" => format!("{} run preview", pm),
+                _ => entry.clone(),
+            };
+            let final_build_cmd = format!("{} install && {}", pm, build_cmd);
+            (dev_entry, dev_install, entry_prod, final_build_cmd)
+        };
+
         Some(Detection {
             project_name: pkg_name.to_string(),
             runtime_type: rt,
             runtime_version: version,
             framework_name: surfaced_framework.clone(),
             framework_detected: !surfaced_framework.is_empty(),
-            build_command: build_cmd,
-            entry_point: entry,
+            build_command: final_build_cmd,
+            entry_point: entry_prod,
+            dev_entry_point: dev_entry,
+            dev_install_command: dev_install,
             port,
             confidence: confidence.min(1.0),
             env_required: vec![],
@@ -530,6 +563,81 @@ impl CrushSpecDetector {
             _ => format!("{} {}", py, entry_file),
         };
 
+        let dev_install = build_cmd.clone();
+        let final_build_cmd = if framework == "Django" {
+            format!("{} && {} manage.py collectstatic --noinput", build_cmd, py)
+        } else {
+            build_cmd.clone()
+        };
+
+        let workers = if cfg!(target_os = "windows") { "" } else { " --workers 2" };
+        let entry_prod = match framework {
+            "FastAPI" | "Starlette" => {
+                if has_uv {
+                    format!("{}uvicorn{} {} --host 0.0.0.0 --port $PORT{}", venv_bin, exe_suffix, asgi_target, workers)
+                } else {
+                    format!("uvicorn {} --host 0.0.0.0 --port $PORT{}", asgi_target, workers)
+                }
+            }
+            "Litestar" => {
+                let module = entry_file.trim_end_matches(".py");
+                if has_uv {
+                    format!("{}litestar{} --app {}:app run --host 0.0.0.0 --port $PORT{}", venv_bin, exe_suffix, module, workers)
+                } else {
+                    format!("litestar --app {}:app run --host 0.0.0.0 --port $PORT{}", module, workers)
+                }
+            }
+            "Flask" => {
+                let module = entry_file.trim_end_matches(".py");
+                if cfg!(target_os = "windows") {
+                    if has_uv {
+                        format!("{}flask{} --app {} run --host=0.0.0.0 --port=$PORT", venv_bin, exe_suffix, module)
+                    } else {
+                        format!("flask --app {} run --host=0.0.0.0 --port=$PORT", module)
+                    }
+                } else {
+                    format!("gunicorn {}:app -b 0.0.0.0:$PORT", module)
+                }
+            }
+            "Django" => {
+                if cfg!(target_os = "windows") {
+                    format!("{} manage.py runserver 0.0.0.0:$PORT", py)
+                } else {
+                    let project_dir_name = root.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    format!("gunicorn {}.wsgi -b 0.0.0.0:$PORT", project_dir_name)
+                }
+            }
+            _ => format!("{} {}", py, entry_file),
+        };
+
+        let dev_entry = match framework {
+            "FastAPI" | "Starlette" => {
+                if has_uv {
+                    format!("{}uvicorn{} {} --host 0.0.0.0 --port $PORT --reload", venv_bin, exe_suffix, asgi_target)
+                } else {
+                    format!("uvicorn {} --host 0.0.0.0 --port $PORT --reload", asgi_target)
+                }
+            }
+            "Litestar" => {
+                let module = entry_file.trim_end_matches(".py");
+                if has_uv {
+                    format!("{}litestar{} --app {}:app run --host 0.0.0.0 --port $PORT", venv_bin, exe_suffix, module)
+                } else {
+                    format!("litestar --app {}:app run --host 0.0.0.0 --port $PORT", module)
+                }
+            }
+            "Flask" => {
+                let module = entry_file.trim_end_matches(".py");
+                if has_uv {
+                    format!("{}flask{} --app {} run --host=0.0.0.0 --port=$PORT", venv_bin, exe_suffix, module)
+                } else {
+                    format!("flask --app {} run --host=0.0.0.0 --port=$PORT", module)
+                }
+            }
+            "Django" => format!("{} manage.py runserver 0.0.0.0:$PORT", py),
+            _ => format!("{} {}", py, entry_file),
+        };
+
         let confidence = if direct_dep_match { 0.99 }
             else if root.join("manage.py").exists() || root.join("app.py").exists() { 0.92 }
             else { 0.85 };
@@ -540,8 +648,10 @@ impl CrushSpecDetector {
             runtime_version: version,
             framework_name: framework.to_string(),
             framework_detected: framework != "Python",
-            build_command: build_cmd,
-            entry_point: entry,
+            build_command: final_build_cmd,
+            entry_point: entry_prod,
+            dev_entry_point: dev_entry,
+            dev_install_command: dev_install,
             port,
             confidence,
             ..Default::default()
@@ -615,6 +725,8 @@ impl CrushSpecDetector {
             framework_detected,
             build_command: "cargo build --release".to_string(),
             entry_point: format!("target/release/{}", bin_target),
+            dev_entry_point: "cargo run".to_string(),
+            dev_install_command: "".to_string(),
             port,
             confidence: 0.99,
             ..Default::default()
@@ -659,14 +771,27 @@ impl CrushSpecDetector {
             "."
         };
 
+        let build_cmd = if main_path == "." {
+            format!("go build -o {} .", bin_name)
+        } else {
+            format!("go build -o {} {}", bin_name, main_path)
+        };
+        let run_cmd = if main_path == "." {
+            "go run .".to_string()
+        } else {
+            format!("go run {}", main_path)
+        };
+
         Some(Detection {
             project_name: bin_name.to_string(),
             runtime_type: RuntimeType::Go,
             runtime_version: go_ver,
             framework_name: framework.to_string(),
             framework_detected: !framework.is_empty(),
-            build_command: "go build -o app .".to_string(),
+            build_command: build_cmd,
             entry_point: format!("./{}", bin_name),
+            dev_entry_point: run_cmd,
+            dev_install_command: "".to_string(),
             port: 8080,
             confidence: 0.95,
             ..Default::default()
@@ -698,26 +823,28 @@ impl CrushSpecDetector {
             } else { ("Java (Gradle)", 8080) }
         };
 
-        let build = if has_maven { "mvn package -DskipTests".to_string() } else { "gradle bootJar".to_string() };
-
-        // Native run command: prefer framework plugins that handle deps+compile+run
-        // in one shot, so we don't need a separate install step.
-        // `-Dmaven.test.skip=true` skips BOTH test compilation and execution —
-        // `-DskipTests` only skips execution and still fails on broken test sources.
-        let entry = match framework {
-            "Spring Boot" => {
-                if has_maven { "mvn spring-boot:run -Dmaven.test.skip=true".to_string() }
-                else { "gradle bootRun -x test -x compileTestJava".to_string() }
-            }
-            "Quarkus" => {
-                if has_maven { "mvn quarkus:dev -Dmaven.test.skip=true".to_string() }
-                else { "gradle quarkusDev -x test -x compileTestJava".to_string() }
-            }
-            "Micronaut" => {
-                if has_maven { "mvn mn:run -Dmaven.test.skip=true".to_string() }
-                else { "gradle run -x test -x compileTestJava".to_string() }
-            }
-            _ => "target/*.jar".to_string(),
+        let (build_cmd, entry_prod, dev_entry) = if has_maven {
+            (
+                "mvn -B package -DskipTests".to_string(),
+                "java -jar target/*.jar".to_string(),
+                match framework {
+                    "Spring Boot" => "mvn spring-boot:run -Dmaven.test.skip=true".to_string(),
+                    "Quarkus" => "mvn quarkus:dev -Dmaven.test.skip=true".to_string(),
+                    "Micronaut" => "mvn mn:run -Dmaven.test.skip=true".to_string(),
+                    _ => "mvn spring-boot:run -Dmaven.test.skip=true".to_string(),
+                }
+            )
+        } else {
+            (
+                "gradle bootJar -x test".to_string(),
+                "java -jar build/libs/*.jar".to_string(),
+                match framework {
+                    "Spring Boot" => "gradle bootRun -x test".to_string(),
+                    "Quarkus" => "gradle quarkusDev -x test".to_string(),
+                    "Micronaut" => "gradle run -x test".to_string(),
+                    _ => "gradle bootRun -x test".to_string(),
+                }
+            )
         };
 
         Some(Detection {
@@ -726,12 +853,11 @@ impl CrushSpecDetector {
             runtime_version: version,
             framework_name: framework.to_string(),
             framework_detected: true,
-            build_command: build,
-            entry_point: entry,
+            build_command: build_cmd,
+            entry_point: entry_prod,
+            dev_entry_point: dev_entry,
+            dev_install_command: "".to_string(),
             port,
-            // Java build files (pom.xml/build.gradle) are unambiguous markers.
-            // Beat Node's baseline (0.93) so a package.json sitting alongside
-            // them for JS tooling (MJML, ESLint, etc.) doesn't hijack detection.
             confidence: 0.99,
             ..Default::default()
         })
@@ -750,14 +876,15 @@ impl CrushSpecDetector {
             .unwrap_or_else(|| "app".to_string());
 
         Some(Detection {
-            project_name,
+            project_name: project_name.clone(),
             runtime_type: RuntimeType::DotNet,
             runtime_version: version,
             framework_name: if has_global { "ASP.NET Core" } else { ".NET" }.to_string(),
             framework_detected: true,
-            build_command: "dotnet restore".to_string(),
-            // `dotnet run` handles deps + compile + run in one shot, like Spring's mvn run.
-            entry_point: "dotnet run".to_string(),
+            build_command: "dotnet publish -c Release -o out".to_string(),
+            entry_point: format!("dotnet out/{}.dll", project_name),
+            dev_entry_point: "dotnet watch run".to_string(),
+            dev_install_command: "".to_string(),
             port: 5000,
             confidence: 0.95,
             ..Default::default()
@@ -790,14 +917,31 @@ impl CrushSpecDetector {
         let direct_gem = has_gem("rails") || has_gem("sinatra") || has_gem("hanami") || has_gem("grape");
         let confidence = if direct_gem { 0.99 } else if !framework.is_empty() { 0.93 } else { 0.87 };
 
+        let dev_install = "bundle install".to_string();
+        let (build_cmd, entry_prod, dev_entry) = if framework == "Rails" {
+            (
+                "bundle install && bundle exec rails assets:precompile".to_string(),
+                "bundle exec rails assets:precompile && RAILS_ENV=production bundle exec rails server -b 0.0.0.0 -p $PORT".to_string(),
+                "bundle exec rails server -b 0.0.0.0 -p $PORT".to_string()
+            )
+        } else {
+            (
+                "bundle install".to_string(),
+                entry.clone(),
+                entry.clone()
+            )
+        };
+
         Some(Detection {
             project_name: root.file_name().unwrap_or_default().to_string_lossy().to_string(),
             runtime_type: RuntimeType::Ruby,
             runtime_version: version,
             framework_name: framework.to_string(),
             framework_detected: !framework.is_empty(),
-            build_command: "bundle install".to_string(),
-            entry_point: entry,
+            build_command: build_cmd,
+            entry_point: entry_prod,
+            dev_entry_point: dev_entry,
+            dev_install_command: dev_install,
             port,
             confidence,
             ..Default::default()
@@ -837,14 +981,33 @@ impl CrushSpecDetector {
 
         let confidence = if direct_dep { 0.99 } else if !framework.is_empty() { 0.90 } else { 0.85 };
 
+        let dev_install = "composer install".to_string();
+        let (build_cmd, entry_prod, dev_entry) = if framework == "Laravel" {
+            (
+                "composer install --no-dev --optimize-autoloader && php artisan config:cache".to_string(),
+                "php artisan serve --host=0.0.0.0 --port=$PORT".to_string(),
+                "php artisan serve --host=0.0.0.0 --port=$PORT".to_string()
+            )
+        } else {
+            let p_str = port.to_string();
+            let entry_with_port = entry.replace(&p_str, "$PORT");
+            (
+                "composer install --no-dev --optimize-autoloader".to_string(),
+                entry_with_port.clone(),
+                entry_with_port
+            )
+        };
+
         Some(Detection {
             project_name: root.file_name().unwrap_or_default().to_string_lossy().to_string(),
             runtime_type: RuntimeType::Php,
             runtime_version: VersionResolver::resolve(root, None),
             framework_name: framework.to_string(),
             framework_detected: !framework.is_empty(),
-            build_command: "composer install".to_string(),
-            entry_point: entry,
+            build_command: build_cmd,
+            entry_point: entry_prod,
+            dev_entry_point: dev_entry,
+            dev_install_command: dev_install,
             port,
             confidence,
             ..Default::default()
@@ -856,14 +1019,30 @@ impl CrushSpecDetector {
         let has_phoenix = root.join("lib").is_dir()
             && Self::find_file(root, "_web.ex").is_some();
         let entry = if has_phoenix { "mix phx.server" } else { "mix run --no-halt" };
+        let proj_name = root.file_name().unwrap_or_default().to_string_lossy().to_string();
+        let dev_install = "mix deps.get".to_string();
+        let (build_cmd, entry_prod) = if has_phoenix {
+            (
+                "mix deps.get && MIX_ENV=prod mix release".to_string(),
+                format!("_build/prod/rel/{}/bin/{} start", proj_name, proj_name)
+            )
+        } else {
+            (
+                "mix deps.get && MIX_ENV=prod mix compile".to_string(),
+                "MIX_ENV=prod mix run --no-halt".to_string()
+            )
+        };
+
         Some(Detection {
-            project_name: root.file_name().unwrap_or_default().to_string_lossy().to_string(),
+            project_name: proj_name,
             runtime_type: RuntimeType::Elixir,
             runtime_version: VersionResolver::resolve(root, None),
             framework_name: if has_phoenix { "Phoenix" } else { "" }.to_string(),
             framework_detected: has_phoenix,
-            build_command: "mix deps.get".to_string(),
-            entry_point: entry.to_string(),
+            build_command: build_cmd,
+            entry_point: entry_prod,
+            dev_entry_point: entry.to_string(),
+            dev_install_command: dev_install,
             port: if has_phoenix { 4000 } else { 8080 },
             confidence: if has_phoenix { 0.97 } else { 0.85 },
             ..Default::default()
@@ -881,6 +1060,8 @@ impl CrushSpecDetector {
             framework_detected: has_vapor,
             build_command: "swift build -c release".to_string(),
             entry_point: ".build/release/app".to_string(),
+            dev_entry_point: "swift run".to_string(),
+            dev_install_command: "".to_string(),
             port: if has_vapor { 8080 } else { 8080 },
             confidence: 0.85,
             ..Default::default()
@@ -896,6 +1077,8 @@ impl CrushSpecDetector {
             framework_detected: false,
             build_command: "echo 'No build required'".to_string(),
             entry_point: "entrypoint.sh".to_string(),
+            dev_entry_point: "entrypoint.sh".to_string(),
+            dev_install_command: "".to_string(),
             port: 80,
             confidence: 0.5,
             ..Default::default()
@@ -1041,6 +1224,8 @@ impl Default for Detection {
             framework_detected: false,
             build_command: String::new(),
             entry_point: String::new(),
+            dev_entry_point: String::new(),
+            dev_install_command: String::new(),
             port: 80,
             confidence: 0.0,
             env_required: vec![],

@@ -204,9 +204,14 @@ async fn test_build_engine_creates_layer() {
         language: "Test".to_string(),
         runtime_version: "1.0".to_string(),
         build_command: "echo test".to_string(),
+        dev_install_command: "".to_string(),
         entry_point: "test".to_string(),
+        dev_entry_point: "".to_string(),
         default_port: 8080,
         confidence: 1.0,
+        base_image: "ubuntu:22.04".to_string(),
+        is_monorepo: false,
+        services: vec![],
     };
 
     let digest = engine.execute_layered_build(&temp_dir, &stack).await.unwrap();

@@ -44,7 +44,11 @@ pub struct InferredStack {
     pub language: String,
     pub runtime_version: String,
     pub build_command: String,
+    #[serde(default)]
+    pub dev_install_command: String,
     pub entry_point: String,
+    #[serde(default)]
+    pub dev_entry_point: String,
     pub default_port: u16,
     pub confidence: f32,
     pub base_image: String,
@@ -67,7 +71,9 @@ impl From<Detection> for InferredStack {
             language: format!("{} ({})", d.runtime_type.as_str(), d.framework_name),
             runtime_version: d.runtime_version,
             build_command: d.build_command,
+            dev_install_command: d.dev_install_command,
             entry_point: d.entry_point,
+            dev_entry_point: d.dev_entry_point,
             default_port: d.port,
             confidence: d.confidence,
             base_image: d.base_image,

@@ -60,6 +60,9 @@ struct Cli {
     #[arg(short, long, help = "Run in non-interactive mode")]
     no_interactive: bool,
 
+    #[arg(long, short = 'D', help = "Run dev-mode (HMR / watch / reload) instead of prod")]
+    dev: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -1370,76 +1373,101 @@ async fn main() -> anyhow::Result<()> {
                 let overall_spawn = std::time::Instant::now();
                 for sub in &stack.services {
                     let sub_path = PathBuf::from(&sub.path);
-                    let (install, run) = match sub.runtime_type.as_str() {
-                        "node" => {
-                            let pm = if sub_path.join("bun.lockb").exists() { "bun" }
-                                else if sub_path.join("pnpm-lock.yaml").exists() { "pnpm" }
-                                else if sub_path.join("yarn.lock").exists() { "yarn" }
-                                else { "npm" };
-                            let install = if sub_path.join("node_modules").exists() { None }
-                                else { Some(format!("{} install", pm)) };
-                            let pkg = std::fs::read_to_string(sub_path.join("package.json")).unwrap_or_default();
-                            let script = if pkg.contains("\"dev\"") { "dev" } else { "start" };
-                            (install, format!("{} run {}", pm, script))
-                        }
-                        "go" => (None, "go run .".to_string()),
-                        "rust" => (None, "cargo run".to_string()),
-                        "python" => {
-                            let install = if sub_path.join(".venv").exists() { None }
-                                else { Some("uv sync --no-dev --no-install-project".to_string()) };
-                            (install, "uv run python main.py".to_string())
-                        }
-                        "java" => (None, "mvn spring-boot:run -Dmaven.test.skip=true".to_string()),
-                        "ruby" => {
-                            // Rails has bin/rails; bare Sinatra has app.rb
-                            let run = if sub_path.join("bin/rails").exists()
-                                || sub_path.join("config/application.rb").exists() {
-                                "bundle exec rails server -b 0.0.0.0 -p 3000".to_string()
-                            } else {
-                                "bundle exec ruby app.rb".to_string()
+                    let install = if cli.dev {
+                        if sub.dev_install_command.is_empty() {
+                            None
+                        } else {
+                            let needs_install = match sub.runtime_type.as_str() {
+                                "node" => !sub_path.join("node_modules").exists(),
+                                "python" => !sub_path.join(".venv").exists(),
+                                "php" => !sub_path.join("vendor").exists(),
+                                "elixir" => !sub_path.join("deps").exists(),
+                                _ => true,
                             };
-                            (Some("bundle install".to_string()), run)
+                            if needs_install { Some(sub.dev_install_command.clone()) } else { None }
                         }
-                        "php" => {
-                            let install = if sub_path.join("vendor").exists() { None }
-                                else { Some("composer install".to_string()) };
-                            let run = if sub_path.join("artisan").exists() {
-                                "php artisan serve --host=0.0.0.0 --port=8000".to_string()
-                            } else {
-                                "php -S 0.0.0.0:8080 -t public".to_string()
-                            };
-                            (install, run)
-                        }
-                        "dotnet" => (None, "dotnet run".to_string()),
-                        "elixir" => {
-                            let install = if sub_path.join("deps").exists() { None }
-                                else { Some("mix deps.get".to_string()) };
-                            let has_phoenix = sub_path.join("lib").is_dir()
-                                && std::fs::read_dir(sub_path.join("lib")).ok()
-                                    .map(|mut d| d.any(|e| e.ok()
-                                        .and_then(|e| e.file_name().to_str().map(|s| s.ends_with("_web"))).unwrap_or(false)))
-                                    .unwrap_or(false);
-                            let run = if has_phoenix { "mix phx.server" } else { "mix run --no-halt" };
-                            (install, run.to_string())
-                        }
-                        other => {
-                            eprintln!("   ↳ {}: don't know how to run runtime '{}', skipping", sub.name, other);
-                            continue;
+                    } else {
+                        if sub.build_command.is_empty() {
+                            None
+                        } else {
+                            Some(sub.build_command.clone())
                         }
                     };
 
+                    let run = if cli.dev { sub.dev_entry_point.clone() } else { sub.entry_point.clone() };
+
                     if let Some(icmd) = install {
-                        println!("   {} {}: installing {}",
-                            "↳".cyan(),
-                            sub.name.bold(),
-                            format!("({})", icmd).dimmed());
-                        let st = spawn_shell(&icmd, &sub_path, &dep_env).status().await
-                            .map_err(|e| anyhow::anyhow!("install for {} failed: {}", sub.name, e))?;
-                        if !st.success() {
-                            eprintln!("   {} {}: install failed, skipping spawn",
-                                "✗".red().bold(),
-                                sub.name.bold());
-                            continue;
+                        let build_start = std::time::Instant::now();
+                        let color_idx = children.len();
+                        let n = sub.name.clone();
+                        if cli.dev {
+                            println!("   {} {}: installing dependencies {}",
+                                "↳".cyan(),
+                                sub.name.bold(),
+                                format!("({})", icmd).dimmed());
+                        } else {
+                            println!("   {} {}: building... {}",
+                                "⚙".yellow().bold(),
+                                sub.name.bold(),
+                                format!("({})", icmd).dimmed());
+                        }
+
+                        let mut cmd = spawn_shell(&icmd, &sub_path, &dep_env);
+                        cmd.stdout(std::process::Stdio::piped());
+                        cmd.stderr(std::process::Stdio::piped());
+
+                        match cmd.spawn() {
+                            Ok(mut child) => {
+                                if let Some(stdout) = child.stdout.take() {
+                                    let n_clone = n.clone();
+                                    tokio::spawn(async move {
+                                        use tokio::io::AsyncBufReadExt;
+                                        let reader = tokio::io::BufReader::new(stdout);
+                                        let mut lines = reader.lines();
+                                        while let Ok(Some(line)) = lines.next_line().await {
+                                            println!("{} {}", colour_prefix(&n_clone, color_idx), line);
+                                        }
+                                    });
+                                }
+                                if let Some(stderr) = child.stderr.take() {
+                                    let n_clone = n.clone();
+                                    tokio::spawn(async move {
+                                        use tokio::io::AsyncBufReadExt;
+                                        let reader = tokio::io::BufReader::new(stderr);
+                                        let mut lines = reader.lines();
+                                        while let Ok(Some(line)) = lines.next_line().await {
+                                            eprintln!("{} {}", colour_prefix(&n_clone, color_idx), line);
+                                        }
+                                    });
+                                }
+
+                                let status = child.wait().await
+                                    .map_err(|e| anyhow::anyhow!("build/install for {} failed: {}", sub.name, e))?;
+                                if !status.success() {
+                                    eprintln!("   {} {}: build/install failed",
+                                        "✗".red().bold(),
+                                        sub.name.bold());
+                                    for (_, _, mut c) in children {
+                                        let _ = c.kill().await;
+                                    }
+                                    anyhow::bail!("Build/install failed for {}", sub.name);
+                                }
+                            }
+                            Err(e) => {
+                                eprintln!("   {} {}: spawn failed: {}",
+                                    "✗".red().bold(), sub.name.bold(), e);
+                                for (_, _, mut c) in children {
+                                    let _ = c.kill().await;
+                                }
+                                anyhow::bail!("Spawn failed for {}", sub.name);
+                            }
+                        }
+
+                        if !cli.dev {
+                            println!("   {} {}: built in {:.1}s",
+                                "✓".green().bold(),
+                                sub.name.bold(),
+                                build_start.elapsed().as_secs_f64());
                         }
                     }
 
@@ -1560,8 +1588,10 @@ async fn main() -> anyhow::Result<()> {
                     "a".bold(), "e".bold(), "p".bold(), "1..".bold(), "q".bold());
                 println!();
 
-                // Switch to errors-only by default so the page stays calm after Ready.
-                *filter.write().await = FilterMode::OnlyErrors;
+                // Switch to errors-only by default in prod mode so the page stays calm after Ready.
+                if !cli.dev {
+                    *filter.write().await = FilterMode::OnlyErrors;
+                }
 
                 // Interactive keystroke listener (line-buffered: key + Enter).
                 let names: Vec<String> = children.iter().map(|(n, _, _)| n.clone()).collect();
@@ -1634,70 +1664,87 @@ async fn main() -> anyhow::Result<()> {
 
             if should_run {
                 let port = port_override.unwrap_or(stack.default_port);
-                let entry_str = app_command_override.as_deref().unwrap_or(&stack.entry_point);
+                let entry = if cli.dev { &stack.dev_entry_point } else { &stack.entry_point };
+                let install = if cli.dev { &stack.dev_install_command } else { &stack.build_command };
+
+                let entry_str = app_command_override.as_deref().unwrap_or(entry);
                 let parts: Vec<&str> = entry_str.split_whitespace().collect();
                 if parts.is_empty() {
                     eprintln!("No entry point detected — run your app manually.");
                     return Ok(());
                 }
 
-                // If dependencies aren't installed yet, run build_command first.
-                // The "cached layer" only tarballs source — it never installed anything.
-                // Triggers:
-                //   - entry is a relative path into .venv / node_modules and missing
-                //   - Node project with no node_modules dir at root
-                //   - Python project with no .venv dir at root
-                // Decide install step based on the *detected stack*, not raw file
-                // existence — a Java project can have a stray package.json for JS
-                // tooling (MJML, eslint) that must not trigger `npm install`.
                 let lang = stack.language.split(' ').next().unwrap_or("").to_lowercase();
-                let entry_bin = parts[0];
-                let install_cmd: Option<String> = match lang.as_str() {
-                    "node" | "typescript" | "bun" | "deno" => {
-                        if project_root.join("node_modules").exists() { None }
-                        else {
-                            let pm = if project_root.join("bun.lockb").exists() { "bun" }
-                                else if project_root.join("pnpm-lock.yaml").exists() { "pnpm" }
-                                else if project_root.join("yarn.lock").exists() { "yarn" }
-                                else { "npm" };
-                            Some(format!("{} install", pm))
-                        }
+                
+                let install_cmd: Option<String> = if cli.dev {
+                    if install.is_empty() {
+                        None
+                    } else {
+                        let needs_install = match lang.as_str() {
+                            "node" | "typescript" | "bun" | "deno" => !project_root.join("node_modules").exists(),
+                            "python" => !project_root.join(".venv").exists(),
+                            "php" => !project_root.join("vendor").exists(),
+                            "elixir" => !project_root.join("deps").exists(),
+                            _ => true,
+                        };
+                        if needs_install { Some(install.clone()) } else { None }
                     }
-                    "python" => {
-                        if project_root.join(".venv").exists() && !stack.entry_point.contains(".venv") {
-                            None
-                        } else if std::path::Path::new(entry_bin).is_relative()
-                            && entry_bin.contains(".venv")
-                            && project_root.join(entry_bin).exists()
-                        {
-                            None
-                        } else if stack.build_command.is_empty() { None }
-                        else { Some(stack.build_command.clone()) }
-                    }
-                    "ruby" => Some("bundle install".to_string()),
-                    "php" => {
-                        if project_root.join("vendor").exists() { None }
-                        else { Some("composer install".to_string()) }
-                    }
-                    "elixir" => {
-                        if project_root.join("deps").exists() { None }
-                        else { Some("mix deps.get".to_string()) }
-                    }
-                    // Java/Go/Rust/.NET: their run commands fetch deps automatically
-                    // (`mvn spring-boot:run`, `go run`, `cargo run`, `dotnet run`).
-                    _ => None,
+                } else {
+                    if install.is_empty() { None } else { Some(install.clone()) }
                 };
 
                 if let Some(ref icmd) = install_cmd {
-                    println!("   {} installing dependencies {}",
-                        "↳".cyan(),
-                        format!("({})", icmd).dimmed());
-                    let bstatus = spawn_shell(icmd, &project_root, &dep_env)
-                        .status()
-                        .await
-                        .map_err(|e| anyhow::anyhow!("Failed to run `{}`: {}", icmd, e))?;
-                    if !bstatus.success() {
-                        anyhow::bail!("Dependency install failed: `{}`", icmd);
+                    let build_start = std::time::Instant::now();
+                    if cli.dev {
+                        println!("   {} installing dependencies {}",
+                            "↳".cyan(),
+                            format!("({})", icmd).dimmed());
+                    } else {
+                        println!("   {} building... {}",
+                            "⚙".yellow().bold(),
+                            format!("({})", icmd).dimmed());
+                    }
+
+                    let mut cmd = spawn_shell(icmd, &project_root, &dep_env);
+                    cmd.stdout(std::process::Stdio::piped());
+                    cmd.stderr(std::process::Stdio::piped());
+
+                    match cmd.spawn() {
+                        Ok(mut child) => {
+                            if let Some(stdout) = child.stdout.take() {
+                                tokio::spawn(async move {
+                                    use tokio::io::AsyncBufReadExt;
+                                    let reader = tokio::io::BufReader::new(stdout);
+                                    let mut lines = reader.lines();
+                                    while let Ok(Some(line)) = lines.next_line().await {
+                                        println!("   {}", line);
+                                    }
+                                });
+                            }
+                            if let Some(stderr) = child.stderr.take() {
+                                tokio::spawn(async move {
+                                    use tokio::io::AsyncBufReadExt;
+                                    let reader = tokio::io::BufReader::new(stderr);
+                                    let mut lines = reader.lines();
+                                    while let Ok(Some(line)) = lines.next_line().await {
+                                        eprintln!("   {}", line);
+                                    }
+                                });
+                            }
+
+                            let status = child.wait().await
+                                .map_err(|e| anyhow::anyhow!("Failed to run `{}`: {}", icmd, e))?;
+                            if !status.success() {
+                                anyhow::bail!("Build failed: `{}`", icmd);
+                            }
+                        }
+                        Err(e) => anyhow::bail!("Failed to spawn `{}`: {}", icmd, e),
+                    }
+
+                    if !cli.dev {
+                        println!("   {} built in {:.1}s",
+                            "✓".green().bold(),
+                            build_start.elapsed().as_secs_f64());
                     }
                 }
 
