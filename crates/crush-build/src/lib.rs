@@ -162,7 +162,12 @@ impl BuildEngine {
             let path = entry.path();
             if path.is_dir() {
                 let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-                if name == "target" || name == "node_modules" || name == ".git" { continue; }
+                if matches!(name.as_str(),
+                    "target" | "node_modules" | ".git" | ".venv" | "venv" | "env"
+                    | "__pycache__" | ".mypy_cache" | ".pytest_cache" | ".ruff_cache"
+                    | ".tox" | ".nox" | "dist" | "build" | ".next" | ".nuxt"
+                    | ".cache" | ".idea" | ".vscode"
+                ) { continue; }
                 self.collect_files(&path, result)?;
             } else if path.is_file() {
                 if let Ok(data) = fs::read(&path) { result.push(data); }
