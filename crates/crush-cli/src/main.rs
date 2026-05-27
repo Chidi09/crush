@@ -62,6 +62,8 @@ struct Cli {
 
     #[arg(long, short = 'D', help = "Run dev-mode (HMR / watch / reload) instead of prod")]
     dev: bool,
+    #[arg(long, help = "Force a rebuild even if existing artifacts look fresh")]
+    rebuild: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -991,6 +993,142 @@ fn colour_prefix(name: &str, idx: usize) -> String {
     }
 }
 
+/// Walks `root` and returns the latest mtime among files matching `pred`.
+/// Skips heavy/build directories (node_modules, .next, target, dist, .venv, etc).
+fn latest_mtime<F: Fn(&std::path::Path) -> bool>(root: &std::path::Path, pred: F) -> Option<std::time::SystemTime> {
+    fn is_skip(name: &str) -> bool {
+        matches!(name,
+            "node_modules" | ".next" | "target" | "dist" | "build" | ".turbo" |
+            ".venv" | "venv" | "__pycache__" | ".git" | ".cache" | ".pnpm" |
+            "vendor" | "deps" | "_build" | "out" | "bin" | "obj" | ".gradle" | ".mvn")
+    }
+    let mut latest: Option<std::time::SystemTime> = None;
+    let mut stack: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
+    while let Some(dir) = stack.pop() {
+        let entries = match std::fs::read_dir(&dir) { Ok(e) => e, Err(_) => continue };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            let name = match p.file_name().and_then(|n| n.to_str()) { Some(n) => n.to_string(), None => continue };
+            if name.starts_with('.') && name != ".env" { continue; }
+            let ft = match entry.file_type() { Ok(t) => t, Err(_) => continue };
+            if ft.is_dir() {
+                if is_skip(&name) { continue; }
+                stack.push(p);
+            } else if pred(&p) {
+                if let Ok(meta) = entry.metadata() {
+                    if let Ok(m) = meta.modified() {
+                        latest = Some(latest.map_or(m, |cur| cur.max(m)));
+                    }
+                }
+            }
+        }
+    }
+    latest
+}
+
+fn mtime(p: &std::path::Path) -> Option<std::time::SystemTime> {
+    std::fs::metadata(p).ok().and_then(|m| m.modified().ok())
+}
+
+/// Returns Some(reason) if the existing build artifact is newer than every
+/// source/dep input we care about. Returns None when we should rebuild
+/// (artifact missing, source newer, or stack unknown).
+fn build_freshness(root: &std::path::Path, language: &str) -> Option<String> {
+    let lang = language.to_lowercase();
+
+    if lang.starts_with("node") || lang.starts_with("javascript") || lang.starts_with("typescript") {
+        let artifacts = [".next/BUILD_ID", "dist/index.js", "build/index.html", ".output/server/index.mjs", ".svelte-kit/output/server/index.js"];
+        let mut artifact_mtime: Option<std::time::SystemTime> = None;
+        let mut artifact_path: Option<String> = None;
+        for a in artifacts {
+            if let Some(m) = mtime(&root.join(a)) {
+                if artifact_mtime.map_or(true, |cur| m > cur) {
+                    artifact_mtime = Some(m);
+                    artifact_path = Some(a.to_string());
+                }
+            }
+        }
+        let am = artifact_mtime?;
+        let inputs_latest = latest_mtime(root, |p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            matches!(name, "package.json" | "package-lock.json" | "pnpm-lock.yaml" | "yarn.lock" | "bun.lockb" | "tsconfig.json")
+                || p.extension().and_then(|e| e.to_str()).map_or(false, |e|
+                    matches!(e, "ts" | "tsx" | "js" | "jsx" | "mjs" | "cjs" | "vue" | "svelte" | "astro" | "css" | "scss" | "html"))
+        })?;
+        if am > inputs_latest {
+            return Some(format!("{} newer than sources", artifact_path.unwrap_or_default()));
+        }
+        return None;
+    }
+
+    if lang.starts_with("go") {
+        let candidates = ["bin", "."];
+        let mut artifact_mtime: Option<std::time::SystemTime> = None;
+        let mut artifact_path: Option<String> = None;
+        for dir in candidates {
+            if let Ok(entries) = std::fs::read_dir(root.join(dir)) {
+                for e in entries.flatten() {
+                    let p = e.path();
+                    let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                    let looks_bin = name.ends_with(".exe") || (!name.contains('.') && p.is_file());
+                    if !looks_bin { continue; }
+                    if let Ok(m) = e.metadata().and_then(|md| md.modified()) {
+                        if artifact_mtime.map_or(true, |cur| m > cur) {
+                            artifact_mtime = Some(m);
+                            artifact_path = Some(format!("{}/{}", dir, name));
+                        }
+                    }
+                }
+            }
+        }
+        let am = artifact_mtime?;
+        let inputs_latest = latest_mtime(root, |p| {
+            let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+            name == "go.mod" || name == "go.sum"
+                || p.extension().and_then(|e| e.to_str()) == Some("go")
+        })?;
+        if am > inputs_latest {
+            return Some(format!("{} newer than sources", artifact_path.unwrap_or_default()));
+        }
+        return None;
+    }
+
+    if lang.starts_with("java") {
+        let target = root.join("target");
+        if !target.is_dir() { return None; }
+        let mut artifact_mtime: Option<std::time::SystemTime> = None;
+        let mut artifact_path: Option<String> = None;
+        if let Ok(entries) = std::fs::read_dir(&target) {
+            for e in entries.flatten() {
+                let p = e.path();
+                let name = p.file_name().and_then(|n| n.to_str()).unwrap_or("");
+                if !name.ends_with(".jar") { continue; }
+                if name.ends_with("-sources.jar") || name.ends_with("-javadoc.jar") { continue; }
+                if let Ok(m) = e.metadata().and_then(|md| md.modified()) {
+                    if artifact_mtime.map_or(true, |cur| m > cur) {
+                        artifact_mtime = Some(m);
+                        artifact_path = Some(format!("target/{}", name));
+                    }
+                }
+            }
+        }
+        let am = artifact_mtime?;
+        let src_main = root.join("src").join("main");
+        let inputs_latest = latest_mtime(&src_main, |p| {
+            p.extension().and_then(|e| e.to_str()).map_or(false, |e|
+                matches!(e, "java" | "kt" | "kts" | "scala" | "groovy" | "xml" | "yml" | "yaml" | "properties"))
+        }).or_else(|| mtime(&root.join("pom.xml")))?;
+        let pom_mtime = mtime(&root.join("pom.xml")).unwrap_or(inputs_latest);
+        let cmp = inputs_latest.max(pom_mtime);
+        if am > cmp {
+            return Some(format!("{} newer than sources", artifact_path.unwrap_or_default()));
+        }
+        return None;
+    }
+
+    None
+}
+
 /// Shared sink for URLs discovered in child process output.
 type UrlSink = std::sync::Arc<tokio::sync::Mutex<Vec<String>>>;
 
@@ -1447,6 +1585,17 @@ async fn main() -> anyhow::Result<()> {
                     } else {
                         if sub.build_command.is_empty() {
                             None
+                        } else if !cli.rebuild {
+                            if let Some(reason) = build_freshness(&sub_path, &sub.runtime_type) {
+                                println!("   {} {}: build fresh — {} {}",
+                                    "✓".green().bold(),
+                                    sub.name.bold(),
+                                    reason.dimmed(),
+                                    "(--rebuild to force)".dimmed());
+                                None
+                            } else {
+                                Some(sub.build_command.clone())
+                            }
                         } else {
                             Some(sub.build_command.clone())
                         }
@@ -1775,7 +1924,21 @@ async fn main() -> anyhow::Result<()> {
                         if needs_install { Some(install.clone()) } else { None }
                     }
                 } else {
-                    if install.is_empty() { None } else { Some(install.clone()) }
+                    if install.is_empty() {
+                        None
+                    } else if !cli.rebuild {
+                        if let Some(reason) = build_freshness(&project_root, &stack.language) {
+                            println!("   {} build fresh — {} {}",
+                                "✓".green().bold(),
+                                reason.dimmed(),
+                                "(--rebuild to force)".dimmed());
+                            None
+                        } else {
+                            Some(install.clone())
+                        }
+                    } else {
+                        Some(install.clone())
+                    }
                 };
 
                 if let Some(ref icmd) = install_cmd {
