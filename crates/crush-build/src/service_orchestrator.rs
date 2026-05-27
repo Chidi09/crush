@@ -520,7 +520,10 @@ pub enum StartedService {
 pub fn native_driver_for(image: &str) -> Option<&'static str> {
     let name = image.split('/').last().unwrap_or(image).split(':').next().unwrap_or(image);
     match name {
-        n if n.starts_with("postgres") || n.starts_with("pgvector") || n.starts_with("timescale") => Some("postgres"),
+        // Only vanilla postgres goes native — images that bundle extensions
+        // (pgvector, timescale, postgis, etc.) MUST run in a container so the
+        // extension binaries are present.
+        "postgres" => Some("postgres"),
         n if n.starts_with("redis") || n.starts_with("valkey") || n.starts_with("keydb") || n.starts_with("garnet") => Some("redis"),
         _ => None,
     }
