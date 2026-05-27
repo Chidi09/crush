@@ -969,6 +969,27 @@ async fn main() -> anyhow::Result<()> {
                     return Ok(());
                 }
 
+                // If the entry binary is a relative venv/node_modules path that
+                // doesn't exist yet, run the build_command to install deps first.
+                // (The "cached layer" only tarballs source — it never installed anything.)
+                let entry_bin = parts[0];
+                let needs_install = std::path::Path::new(entry_bin).is_relative()
+                    && (entry_bin.contains(".venv") || entry_bin.contains("node_modules"))
+                    && !project_root.join(entry_bin).exists();
+                if needs_install && !stack.build_command.is_empty() {
+                    println!("   ↳ installing dependencies...");
+                    let bparts: Vec<&str> = stack.build_command.split_whitespace().collect();
+                    let bstatus = tokio::process::Command::new(bparts[0])
+                        .args(&bparts[1..])
+                        .current_dir(&project_root)
+                        .status()
+                        .await
+                        .map_err(|e| anyhow::anyhow!("Failed to run `{}`: {}", stack.build_command, e))?;
+                    if !bstatus.success() {
+                        anyhow::bail!("Dependency install failed: `{}`", stack.build_command);
+                    }
+                }
+
                 let spawn_start = std::time::Instant::now();
                 let mut cmd = tokio::process::Command::new(parts[0]);
                 cmd.args(&parts[1..])
