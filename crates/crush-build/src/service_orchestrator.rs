@@ -2,6 +2,7 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::fs;
 use serde::{Serialize, Deserialize};
+use crush_services::ServiceDriver;
 
 // ── 2a. Compose YAML deserialization types ──────────────────────────
 
