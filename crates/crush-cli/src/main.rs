@@ -708,6 +708,26 @@ fn install_unix(current_exe: &std::path::Path) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// Spawns a command line through the OS shell so PATH lookups resolve `.cmd`,
+/// `.bat`, and `.ps1` shims (pnpm, npm, yarn, uvicorn are all .cmd on Windows
+/// when installed via nvm/scoop/Volta). On Unix, executes directly via the
+/// program parts to preserve argv handling.
+fn spawn_shell(cmdline: &str, cwd: &std::path::Path, env: &[(String, String)]) -> tokio::process::Command {
+    let mut cmd = if cfg!(target_os = "windows") {
+        let mut c = tokio::process::Command::new("cmd");
+        c.arg("/c").arg(cmdline);
+        c
+    } else {
+        let parts: Vec<&str> = cmdline.split_whitespace().collect();
+        let mut c = tokio::process::Command::new(parts[0]);
+        c.args(&parts[1..]);
+        c
+    };
+    cmd.current_dir(cwd);
+    for (k, v) in env { cmd.env(k, v); }
+    cmd
+}
+
 fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
@@ -995,26 +1015,40 @@ async fn main() -> anyhow::Result<()> {
                 let py_uninstalled = project_root.join("pyproject.toml").exists()
                     && !project_root.join(".venv").exists();
                 let needs_install = entry_missing || node_uninstalled || py_uninstalled;
-                if needs_install && !stack.build_command.is_empty() {
-                    println!("   ↳ installing dependencies...");
-                    let bparts: Vec<&str> = stack.build_command.split_whitespace().collect();
-                    let bstatus = tokio::process::Command::new(bparts[0])
-                        .args(&bparts[1..])
-                        .current_dir(&project_root)
+
+                // Resolve the *install* command — separate concern from build_command
+                // (which may be `<pm> run build`, the wrong thing for native runs).
+                let install_cmd: Option<String> = if !needs_install {
+                    None
+                } else if project_root.join("package.json").exists() {
+                    let pm = if project_root.join("bun.lockb").exists() { "bun" }
+                        else if project_root.join("pnpm-lock.yaml").exists() { "pnpm" }
+                        else if project_root.join("yarn.lock").exists() { "yarn" }
+                        else { "npm" };
+                    Some(format!("{} install", pm))
+                } else if project_root.join("pyproject.toml").exists()
+                    || project_root.join("requirements.txt").exists()
+                {
+                    // For Python, build_command is the install command (extracted from Dockerfile or default)
+                    if stack.build_command.is_empty() { None } else { Some(stack.build_command.clone()) }
+                } else {
+                    None
+                };
+
+                if let Some(ref icmd) = install_cmd {
+                    println!("   ↳ installing dependencies ({})...", icmd);
+                    let bstatus = spawn_shell(icmd, &project_root, &dep_env)
                         .status()
                         .await
-                        .map_err(|e| anyhow::anyhow!("Failed to run `{}`: {}", stack.build_command, e))?;
+                        .map_err(|e| anyhow::anyhow!("Failed to run `{}`: {}", icmd, e))?;
                     if !bstatus.success() {
-                        anyhow::bail!("Dependency install failed: `{}`", stack.build_command);
+                        anyhow::bail!("Dependency install failed: `{}`", icmd);
                     }
                 }
 
                 let spawn_start = std::time::Instant::now();
-                let mut cmd = tokio::process::Command::new(parts[0]);
-                cmd.args(&parts[1..])
-                   .current_dir(&project_root)
-                   .env("PORT", port.to_string());
-                for (k, v) in &dep_env { cmd.env(k, v); }
+                let mut cmd = spawn_shell(entry_str, &project_root, &dep_env);
+                cmd.env("PORT", port.to_string());
 
                 let mut child = cmd.spawn()
                     .map_err(|e| anyhow::anyhow!("Failed to start `{}`: {}", entry_str, e))?;
