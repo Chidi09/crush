@@ -205,8 +205,10 @@ impl CrushSpecDetector {
         else { RuntimeType::Node };
 
         let pkg_name = json["name"].as_str().unwrap_or("app");
-        let manifest_ver = json["version"].as_str();
-        let version = VersionResolver::resolve(root, manifest_ver);
+        // package.json#version is the *package's* version, not the Node runtime
+        // version. The runtime constraint lives in `engines.node`.
+        let engines_node = json["engines"]["node"].as_str();
+        let version = VersionResolver::resolve(root, engines_node);
 
         let (framework, confidence_bump) = self.detect_node_framework(&json, root);
         let framework_detected = !framework.is_empty();
@@ -699,7 +701,10 @@ impl CrushSpecDetector {
             build_command: build,
             entry_point: "target/*.jar".to_string(),
             port,
-            confidence: 0.9,
+            // Java build files (pom.xml/build.gradle) are unambiguous markers.
+            // Beat Node's baseline (0.93) so a package.json sitting alongside
+            // them for JS tooling (MJML, ESLint, etc.) doesn't hijack detection.
+            confidence: 0.99,
             ..Default::default()
         })
     }
