@@ -64,7 +64,9 @@ static VULN_PATTERN_DEFS: &[VulnPatternDef] = &[
     VulnPatternDef {
         id: "HARDCODED_ADMIN",
         languages: &[Language::Any],
-        pattern: r#"(?i)(?:admin|root|administrator)\s*[=:]\s*["'][A-Za-z0-9!@#$%^&*]{3,}["']"#,
+        // Require a password/credential context word before the admin/root key so we don't
+        // fire on object labels like `role: { admin: "Admin" }` or enum values.
+        pattern: r#"(?i)(?:password|passwd|pwd|credential|secret)\s*[=:]\s*["'](?:admin|root|administrator|password|123|pass)[^"']{0,20}["']"#,
         severity: Severity::High,
         description: "Hardcoded admin credentials",
         fix: "Load credentials from environment variables or secrets manager",
