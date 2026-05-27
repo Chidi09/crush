@@ -1012,10 +1012,14 @@ async fn main() -> anyhow::Result<()> {
             } else { String::new() };
 
             // Multi-service ("implicit monorepo") — backend/+frontend/ with no root
-            // app. Print each leg and short-circuit into a multi-spawn flow.
+            // app. Fire when 2+ services were found AND the root detection landed on
+            // the generic fallback (no real framework matched at the root level).
+            let root_is_generic = stack.language.starts_with("generic")
+                || stack.entry_point == "entrypoint.sh"
+                || stack.entry_point.is_empty();
             let is_multi_service = stack.is_monorepo
                 && stack.services.len() >= 2
-                && stack.entry_point.is_empty();
+                && root_is_generic;
 
             if is_multi_service {
                 let legs = stack.services.iter()
