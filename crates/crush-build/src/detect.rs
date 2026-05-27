@@ -416,16 +416,18 @@ impl CrushSpecDetector {
         };
 
         let build_cmd = if has_uv {
-            // Base command: from Dockerfile if available, otherwise a safe default.
+            // Strip --frozen: the lockfile was generated on the Docker/CI platform
+            // (usually Linux) and --frozen prevents uv from resolving native wheels
+            // for the current OS, which forces source builds that can fail.
             let base = Self::extract_uv_sync_from_dockerfile(root)
+                .map(|cmd| {
+                    cmd.split_whitespace()
+                        .filter(|w| *w != "--frozen")
+                        .collect::<Vec<_>>()
+                        .join(" ")
+                })
                 .unwrap_or_else(|| "uv sync --no-dev --no-install-project".to_string());
-            // Always add --no-build-package for the project itself to prevent uv_build
-            // from failing on projects without a proper src/{package}/__init__.py.
-            if let Some(pkg_name) = Self::read_pyproject_name(root) {
-                format!("{} --no-build-package {}", base, pkg_name)
-            } else {
-                base
-            }
+            base
         } else if has_pdm {
             "pdm install --prod".to_string()
         } else if has_poetry {
@@ -440,26 +442,14 @@ impl CrushSpecDetector {
             "pip install -r requirements.txt".to_string()
         };
 
-        // When using uv run, skip building the project package if it has a
-        // non-standard src/ layout that uv_build can't resolve.
-        let no_build_flag = if has_uv {
-            Self::read_pyproject_name(root)
-                .map(|n| format!(" --no-build-package {}", n))
-                .unwrap_or_default()
-        } else {
-            String::new()
-        };
-
-        let py = if has_uv {
-            format!("uv run{} python", no_build_flag)
-        } else {
-            "python".to_string()
-        };
+        let py = if has_uv { "uv run --no-sync python" } else { "python" };
         let entry = match framework {
             "FastAPI" | "Starlette" => {
                 let module = entry_file.trim_end_matches(".py");
                 if has_uv {
-                    format!("uv run{} uvicorn {}:app --host 0.0.0.0", no_build_flag, module)
+                    // --no-sync: deps already installed by the build step; skip re-sync
+                    // so uv doesn't try to install the project package again.
+                    format!("uv run --no-sync uvicorn {}:app --host 0.0.0.0", module)
                 } else {
                     format!("uvicorn {}:app --host 0.0.0.0", module)
                 }
@@ -467,7 +457,7 @@ impl CrushSpecDetector {
             "Litestar" => {
                 let module = entry_file.trim_end_matches(".py");
                 if has_uv {
-                    format!("uv run{} litestar --app {}:app run --host 0.0.0.0", no_build_flag, module)
+                    format!("uv run --no-sync litestar --app {}:app run --host 0.0.0.0", module)
                 } else {
                     format!("litestar --app {}:app run --host 0.0.0.0", module)
                 }
