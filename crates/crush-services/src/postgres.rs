@@ -120,7 +120,11 @@ impl ServiceDriver for PostgresDriver {
             fs::create_dir_all(data_dir).context("Failed to create Postgres data directory")?;
 
             let password = config.password.clone().unwrap_or_else(|| "postgres".to_string());
-            let pwfile = data_dir.join(".crush_initpw");
+            // Write the pwfile to the PARENT of data_dir — initdb requires the
+            // data directory to be completely empty.
+            let pwfile = data_dir.parent()
+                .unwrap_or(data_dir)
+                .join(".crush_initpw");
             fs::write(&pwfile, &password)
                 .context("Failed to write initdb password file")?;
 

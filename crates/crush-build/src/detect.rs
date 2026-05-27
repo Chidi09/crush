@@ -440,13 +440,26 @@ impl CrushSpecDetector {
             "pip install -r requirements.txt".to_string()
         };
 
-        let py = if has_uv { "uv run python" } else { "python" };
+        // When using uv run, skip building the project package if it has a
+        // non-standard src/ layout that uv_build can't resolve.
+        let no_build_flag = if has_uv {
+            Self::read_pyproject_name(root)
+                .map(|n| format!(" --no-build-package {}", n))
+                .unwrap_or_default()
+        } else {
+            String::new()
+        };
+
+        let py = if has_uv {
+            format!("uv run{} python", no_build_flag)
+        } else {
+            "python".to_string()
+        };
         let entry = match framework {
             "FastAPI" | "Starlette" => {
-                // Derive uvicorn module path from file name (main.py → main:app)
                 let module = entry_file.trim_end_matches(".py");
                 if has_uv {
-                    format!("uv run uvicorn {}:app --host 0.0.0.0", module)
+                    format!("uv run{} uvicorn {}:app --host 0.0.0.0", no_build_flag, module)
                 } else {
                     format!("uvicorn {}:app --host 0.0.0.0", module)
                 }
@@ -454,7 +467,7 @@ impl CrushSpecDetector {
             "Litestar" => {
                 let module = entry_file.trim_end_matches(".py");
                 if has_uv {
-                    format!("uv run litestar --app {}:app run --host 0.0.0.0", module)
+                    format!("uv run{} litestar --app {}:app run --host 0.0.0.0", no_build_flag, module)
                 } else {
                     format!("litestar --app {}:app run --host 0.0.0.0", module)
                 }
