@@ -5,7 +5,21 @@ use async_trait::async_trait;
 use std::time::Duration;
 
 use crate::driver::{ServiceDriver, RunningService, ServiceConfig, ServiceKind};
-use crate::binary_cache::BinaryCache;
+use crate::binary_cache::{BinaryCache, BinarySpec, ArchiveType};
+
+// EDB portable binaries — plain zip, no installer required.
+// Extracts to pgsql/bin/pg_ctl.exe (and friends).
+#[cfg(target_os = "windows")]
+const POSTGRES_PORTABLE_VERSION: &str = "17.5-1";
+
+#[cfg(target_os = "windows")]
+static POSTGRES_PORTABLE_SPEC: BinarySpec = BinarySpec {
+    service: "postgres",
+    version: "17.5-1",
+    url: "https://get.enterprisedb.com/postgresql/postgresql-17.5-1-windows-x64-binaries.zip",
+    sha256: "",
+    archive_type: ArchiveType::Zip,
+};
 
 pub struct PostgresDriver {
     pub cache: BinaryCache,
@@ -16,8 +30,28 @@ impl PostgresDriver {
         Self { cache: BinaryCache::new(cache_dir) }
     }
 
+    // Check PATH first, then common install locations, then crush's own cache.
+    pub fn find_pg_ctl_with_cache(&self) -> Option<PathBuf> {
+        if let Some(p) = Self::find_pg_ctl() {
+            return Some(p);
+        }
+        // Cached portable install (Windows only)
+        #[cfg(target_os = "windows")]
+        {
+            let cached = self.cache.root
+                .join("postgres")
+                .join(POSTGRES_PORTABLE_VERSION)
+                .join("pgsql")
+                .join("bin")
+                .join("pg_ctl.exe");
+            if cached.exists() {
+                return Some(cached);
+            }
+        }
+        None
+    }
+
     pub fn find_pg_ctl() -> Option<PathBuf> {
-        // Check PATH first
         let probe = if cfg!(target_os = "windows") { "pg_ctl.exe" } else { "pg_ctl" };
         if std::process::Command::new(probe)
             .arg("--version")
@@ -30,7 +64,6 @@ impl PostgresDriver {
             return Some(PathBuf::from(probe));
         }
 
-        // Windows: scan common EDB install locations
         #[cfg(target_os = "windows")]
         for major in &["17", "16", "15", "14", "13"] {
             let candidate = PathBuf::from(format!(
@@ -56,26 +89,28 @@ impl ServiceDriver for PostgresDriver {
     fn default_port(&self) -> u16 { 5432 }
 
     async fn ensure_ready(&self, _data_dir: &Path, _cache_dir: &Path) -> Result<()> {
-        if Self::find_pg_ctl().is_none() {
+        if self.find_pg_ctl_with_cache().is_none() {
             #[cfg(target_os = "windows")]
-            anyhow::bail!(
-                "PostgreSQL not found.\n  Install: winget install PostgreSQL.PostgreSQL\n  Or download from: https://www.enterprisedb.com/downloads/postgres-postgresql-downloads"
-            );
+            {
+                println!("   ↳ PostgreSQL not found — downloading portable binaries (~30 MB)...");
+                self.cache.ensure(&POSTGRES_PORTABLE_SPEC).await
+                    .context("Failed to download portable PostgreSQL")?;
+                println!("   ↳ PostgreSQL ready.");
+            }
             #[cfg(not(target_os = "windows"))]
             anyhow::bail!(
-                "PostgreSQL not found.\n  Ubuntu/Debian: sudo apt install postgresql\n  macOS: brew install postgresql@16"
+                "PostgreSQL not found.\n  Ubuntu/Debian: sudo apt install postgresql\n  macOS: brew install postgresql@17"
             );
         }
         Ok(())
     }
 
     async fn start(&self, config: &ServiceConfig, data_dir: &Path) -> Result<RunningService> {
-        let pg_ctl = Self::find_pg_ctl()
-            .context("pg_ctl not found — install PostgreSQL first")?;
+        let pg_ctl = self.find_pg_ctl_with_cache()
+            .context("pg_ctl not found — run crush again to re-download")?;
 
         fs::create_dir_all(data_dir).context("Failed to create Postgres data directory")?;
 
-        // Initialise cluster on first run
         if !Self::is_initialized(data_dir) {
             let password = config.password.clone().unwrap_or_else(|| "postgres".to_string());
             let pwfile = data_dir.join(".crush_initpw");
@@ -105,7 +140,6 @@ impl ServiceDriver for PostgresDriver {
             }
         }
 
-        // Start server; -w waits until ready (up to -t 30 seconds)
         let log_file = data_dir.join("crush_pg.log");
         let port_opt = format!("-p {}", config.port);
 
@@ -131,7 +165,6 @@ impl ServiceDriver for PostgresDriver {
             );
         }
 
-        // Read PID from postmaster.pid (written by Postgres after -w succeeds)
         let pid = fs::read_to_string(data_dir.join("postmaster.pid"))
             .ok()
             .and_then(|s| s.lines().next()?.trim().parse::<u32>().ok())
@@ -147,7 +180,7 @@ impl ServiceDriver for PostgresDriver {
     }
 
     async fn stop(&self, service: &RunningService) -> Result<()> {
-        if let Some(pg_ctl) = Self::find_pg_ctl() {
+        if let Some(pg_ctl) = self.find_pg_ctl_with_cache() {
             let _ = tokio::process::Command::new(&pg_ctl)
                 .args([
                     "stop",
