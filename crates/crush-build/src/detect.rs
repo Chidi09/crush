@@ -773,10 +773,11 @@ impl CrushSpecDetector {
             "."
         };
 
+        let go_bin = if std::env::consts::OS == "windows" { format!("{}.exe", bin_name) } else { bin_name.to_string() };
         let build_cmd = if main_path == "." {
-            format!("go build -o {} .", bin_name)
+            format!("go build -o {} .", go_bin)
         } else {
-            format!("go build -o {} {}", bin_name, main_path)
+            format!("go build -o {} {}", go_bin, main_path)
         };
         let run_cmd = if main_path == "." {
             "go run .".to_string()

@@ -997,8 +997,16 @@ fn colour_prefix(name: &str, idx: usize) -> String {
 /// program parts to preserve argv handling.
 fn spawn_shell(cmdline: &str, cwd: &std::path::Path, env: &[(String, String)]) -> tokio::process::Command {
     let mut cmd = if cfg!(target_os = "windows") {
+        // cmd.exe parses `./foo` as command `.` with arg `/foo`. Rewrite a
+        // leading `./` to `.\` so the binary resolves correctly. Forward
+        // slashes mid-path are fine; only the leading ./ is ambiguous.
+        let fixed = if cmdline.starts_with("./") {
+            format!(".\\{}", &cmdline[2..])
+        } else {
+            cmdline.to_string()
+        };
         let mut c = tokio::process::Command::new("cmd");
-        c.arg("/c").arg(cmdline);
+        c.arg("/c").arg(fixed);
         c
     } else {
         let parts: Vec<&str> = cmdline.split_whitespace().collect();

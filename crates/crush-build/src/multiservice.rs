@@ -195,13 +195,14 @@ impl MultiServiceDetector {
             }
             "go" => {
                 let main_path = if path.join("cmd").is_dir() { "cmd/main.go" } else if path.join("main.go").exists() { "main.go" } else { "." };
+                let bin = if std::env::consts::OS == "windows" { format!("{}.exe", name) } else { name.to_string() };
                 let build_cmd = if main_path == "." {
-                    format!("go build -o {} .", name)
+                    format!("go build -o {} .", bin)
                 } else {
-                    format!("go build -o {} {}", name, main_path)
+                    format!("go build -o {} {}", bin, main_path)
                 };
                 let run_cmd = if main_path == "." { "go run .".to_string() } else { format!("go run {}", main_path) };
-                (format!("./{}", name), run_cmd, build_cmd, "".to_string())
+                (format!("./{}", bin), run_cmd, build_cmd, "".to_string())
             }
             "rust" => (
                 format!("target/release/{}", name),
