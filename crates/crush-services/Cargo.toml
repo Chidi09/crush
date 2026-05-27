@@ -14,7 +14,6 @@ sha2 = { workspace = true }
 hex = { workspace = true }
 reqwest = { workspace = true }
 async-trait = { workspace = true }
-pg-embed = { version = "0.7", features = ["rt_tokio_migrate"] }
 zip = { version = "0.6", default-features = false, features = ["deflate"] }
 flate2 = { workspace = true }
 tar = { workspace = true }
