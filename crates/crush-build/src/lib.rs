@@ -182,7 +182,12 @@ impl BuildEngine {
             let entry = entry.map_err(|e| CrushError::StorageError(e.to_string()))?;
             let path = entry.path();
             let name = path.file_name().unwrap_or_default().to_string_lossy().to_string();
-            if name == "target" || name == "node_modules" || name == ".git" { continue; }
+            if matches!(name.as_str(),
+                "target" | "node_modules" | ".git" | ".venv" | "venv" | "env"
+                | "__pycache__" | ".mypy_cache" | ".pytest_cache" | ".ruff_cache"
+                | ".tox" | ".nox" | "dist" | "build" | ".next" | ".nuxt"
+                | ".cache" | ".idea" | ".vscode"
+            ) { continue; }
             if path.is_dir() {
                 prefix.push(name);
                 self.add_files_to_tar(&path, tar, prefix)?;
