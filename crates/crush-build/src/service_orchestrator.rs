@@ -227,6 +227,48 @@ pub fn parse_compose(path: &Path) -> anyhow::Result<ParsedCompose> {
     })
 }
 
+/// Synthesizes connection env vars (DATABASE_URL, REDIS_URL, etc.) that the
+/// app needs to reach a dep service crush started. Without this the app falls
+/// back to whatever default the framework picks (often SQLite or 127.0.0.1).
+pub fn synthesize_dep_env(dep: &DepService) -> Vec<(String, String)> {
+    let mut out = Vec::new();
+    let img = dep.image.split(':').next().unwrap_or(&dep.image);
+    let img_name = img.split('/').last().unwrap_or(img);
+    let host_port = dep.ports.first().map(|(hp, _)| *hp);
+    let env_get = |k: &str| dep.env.iter().find(|(ek, _)| ek == k).map(|(_, v)| v.clone());
+
+    if img_name.starts_with("postgres") || img_name.starts_with("pgvector") || img_name.starts_with("timescale") {
+        let user = env_get("POSTGRES_USER").unwrap_or_else(|| "postgres".into());
+        let pass = env_get("POSTGRES_PASSWORD").unwrap_or_else(|| "postgres".into());
+        let db = env_get("POSTGRES_DB").unwrap_or_else(|| user.clone());
+        let port = host_port.unwrap_or(5432);
+        out.push(("POSTGRES_HOST".into(), "localhost".into()));
+        out.push(("POSTGRES_PORT".into(), port.to_string()));
+        out.push(("POSTGRES_USER".into(), user.clone()));
+        out.push(("POSTGRES_PASSWORD".into(), pass.clone()));
+        out.push(("POSTGRES_DB".into(), db.clone()));
+        out.push(("DATABASE_URL".into(),
+            format!("postgresql://{}:{}@localhost:{}/{}", user, pass, port, db)));
+    } else if img_name.starts_with("redis") || img_name.starts_with("keydb") || img_name.starts_with("dragonflydb") {
+        let port = host_port.unwrap_or(6379);
+        out.push(("REDIS_HOST".into(), "localhost".into()));
+        out.push(("REDIS_PORT".into(), port.to_string()));
+        out.push(("REDIS_URL".into(), format!("redis://localhost:{}", port)));
+    } else if img_name.starts_with("mysql") || img_name.starts_with("mariadb") {
+        let user = env_get("MYSQL_USER").or_else(|| env_get("MARIADB_USER")).unwrap_or_else(|| "root".into());
+        let pass = env_get("MYSQL_PASSWORD").or_else(|| env_get("MARIADB_PASSWORD"))
+            .or_else(|| env_get("MYSQL_ROOT_PASSWORD")).unwrap_or_default();
+        let db = env_get("MYSQL_DATABASE").or_else(|| env_get("MARIADB_DATABASE")).unwrap_or_default();
+        let port = host_port.unwrap_or(3306);
+        out.push(("DATABASE_URL".into(),
+            format!("mysql://{}:{}@localhost:{}/{}", user, pass, port, db)));
+    } else if img_name.starts_with("mongo") {
+        let port = host_port.unwrap_or(27017);
+        out.push(("MONGODB_URL".into(), format!("mongodb://localhost:{}", port)));
+    }
+    out
+}
+
 // ── 2e. Backend detection ───────────────────────────────────────────
 
 #[derive(Debug, Clone, PartialEq, Eq)]

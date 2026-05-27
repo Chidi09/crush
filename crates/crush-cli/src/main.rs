@@ -12,6 +12,7 @@ use crush_build::{
     save_service_state, load_service_state, clear_service_state,
     ServiceState, RunningContainer,
     StartedService, start_dep_service_smart,
+    synthesize_dep_env,
 };
 use crush_services::{
     save_native_state, load_native_state, clear_native_state,
@@ -865,11 +866,13 @@ async fn main() -> anyhow::Result<()> {
                                         };
                                         println!("ok  {}", note);
                                         dep_service_names.push(dep.name.clone());
+                                        dep_env.extend(synthesize_dep_env(dep));
                                         running_natives.push(running);
                                     }
                                     Ok(StartedService::Container(cname)) => {
                                         println!("ok  [container]");
                                         dep_service_names.push(dep.name.clone());
+                                        dep_env.extend(synthesize_dep_env(dep));
                                         running_containers.push(RunningContainer {
                                             service_name: dep.name.clone(),
                                             container_name: cname,
@@ -904,8 +907,16 @@ async fn main() -> anyhow::Result<()> {
                             }
                         }
                         if let Some(hints) = parsed.app_hints {
+                            // App-hint env wins over synthesized defaults
+                            // (user explicitly set them in compose).
                             let rewritten = rewrite_env_hostnames(&hints.env, &dep_service_names);
-                            dep_env = rewritten;
+                            for (k, v) in rewritten {
+                                if let Some(slot) = dep_env.iter_mut().find(|(ek, _)| ek == &k) {
+                                    slot.1 = v;
+                                } else {
+                                    dep_env.push((k, v));
+                                }
+                            }
                             app_command_override = hints.command;
                             port_override = hints.port;
                         }
