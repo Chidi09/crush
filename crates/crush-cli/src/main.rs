@@ -1492,19 +1492,23 @@ async fn main() -> anyhow::Result<()> {
                     }
                 }
 
-                // Wait for all ports to bind (up to 30s each, in parallel).
-                let mut ready = Vec::new();
+                // Wait for ports to bind. Break as soon as every service is
+                // either bound or dead — no point waiting 30s for a crashed
+                // backend just to print the Ready panel.
+                let mut ready: Vec<(String, u16)> = Vec::new();
                 for _ in 0..300u32 {
                     tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                    let mut all_up = true;
-                    for (name, port, _) in &children {
-                        if !ready.iter().any(|(n, _): &(String, u16)| n == name) {
-                            if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.is_ok() {
-                                ready.push((name.clone(), *port));
-                            } else { all_up = false; }
+                    let mut still_waiting = false;
+                    for (name, port, child) in children.iter_mut() {
+                        if ready.iter().any(|(n, _)| n == name) { continue; }
+                        if let Ok(Some(_)) = child.try_wait() { continue; } // crashed/exited
+                        if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.is_ok() {
+                            ready.push((name.clone(), *port));
+                        } else {
+                            still_waiting = true;
                         }
                     }
-                    if all_up { break; }
+                    if !still_waiting { break; }
                 }
 
                 let total = overall_start.elapsed().as_secs_f64();
