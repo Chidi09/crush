@@ -1471,6 +1471,7 @@ async fn main() -> anyhow::Result<()> {
                         }
                     }
 
+                    let run = run.replace("$PORT", &sub.port.to_string());
                     println!("   {} {}: starting {} on {}",
                         "↳".cyan(),
                         sub.name.bold(),

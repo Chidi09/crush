@@ -488,9 +488,11 @@ impl CrushSpecDetector {
             _ => {
                 // Fall back to file-name heuristics
                 if root.join("manage.py").exists() { ("Django", "manage.py", 8000) }
-                else if root.join("app.py").exists() { ("Flask", "app.py", 5000) }
-                else if root.join("main.py").exists() { ("FastAPI", "main.py", 8000) }
-                else { ("Python", "main.py", 8080) }
+                else if root.join("app.py").exists() && has_py_dep("flask") { ("Flask", "app.py", 5000) }
+                else if root.join("main.py").exists() && has_py_dep("fastapi") { ("FastAPI", "main.py", 8000) }
+                else { 
+                    ("Python Script", if root.join("main.py").exists() { "main.py" } else { "app.py" }, 8080) 
+                }
             }
         };
 
@@ -724,7 +726,7 @@ impl CrushSpecDetector {
             framework_name: framework,
             framework_detected,
             build_command: "cargo build --release".to_string(),
-            entry_point: format!("target/release/{}", bin_target),
+            entry_point: if cfg!(target_os = "windows") { format!("target/release/{}.exe", bin_target) } else { format!("target/release/{}", bin_target) },
             dev_entry_point: "cargo run".to_string(),
             dev_install_command: "".to_string(),
             port,
@@ -789,7 +791,7 @@ impl CrushSpecDetector {
             framework_name: framework.to_string(),
             framework_detected: !framework.is_empty(),
             build_command: build_cmd,
-            entry_point: format!("./{}", bin_name),
+            entry_point: if cfg!(target_os = "windows") { format!("{}\\{}.exe", ".", bin_name) } else { format!("./{}", bin_name) },
             dev_entry_point: run_cmd,
             dev_install_command: "".to_string(),
             port: 8080,
