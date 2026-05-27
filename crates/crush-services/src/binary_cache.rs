@@ -19,7 +19,7 @@ pub struct BinarySpec {
 pub enum ArchiveType { Zip, TarGz, Exe }
 
 pub struct BinaryCache {
-    root: PathBuf,
+    pub root: PathBuf,
 }
 
 impl BinaryCache {

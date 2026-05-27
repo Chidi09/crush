@@ -108,12 +108,16 @@ impl ServiceDriver for RedisCompatDriver {
     }
 
     async fn start(&self, config: &ServiceConfig, data_dir: &Path) -> Result<RunningService> {
-        let (bin_path, is_system) = if cfg!(target_os = "windows") {
+        #[cfg(target_os = "windows")]
+        let (bin_path, is_system) = {
             let dest_dir = self.cache.root.join("garnet").join(GARNET_SPEC.version);
             let path = self.get_executable_path(&dest_dir)
                 .context("Microsoft Garnet binary not found in cache")?;
             (path, false)
-        } else {
+        };
+
+        #[cfg(not(target_os = "windows"))]
+        let (bin_path, is_system) = {
             if let Some(sys_cmd) = self.find_system_server() {
                 (PathBuf::from(sys_cmd), true)
             } else {
@@ -133,7 +137,7 @@ impl ServiceDriver for RedisCompatDriver {
                 }
 
                 (path, false)
-            };
+            }
         };
 
         let mut cmd = tokio::process::Command::new(bin_path);

@@ -1,16 +1,17 @@
 use std::path::{Path, PathBuf};
-use std::fs::{self, File};
-use std::io::Write;
+use std::fs;
 use anyhow::{Result, Context};
 use async_trait::async_trait;
 use std::time::Duration;
 
 use pg_embed::postgres::{PgEmbed, PgSettings};
-use pg_embed::pg_fetch::{PgFetchSettings, PG_V16};
+use pg_embed::pg_fetch::{PgFetchSettings, PG_V15};
 use pg_embed::pg_enums::PgAuthMethod;
 
 use crate::driver::{ServiceDriver, RunningService, ServiceConfig, ServiceKind};
-use crate::binary_cache::{BinaryCache, BinarySpec, ArchiveType};
+use crate::binary_cache::BinaryCache;
+#[cfg(target_os = "windows")]
+use crate::binary_cache::{BinarySpec, ArchiveType};
 
 #[cfg(target_os = "windows")]
 static PGVECTOR_SPEC: BinarySpec = BinarySpec {
@@ -176,7 +177,7 @@ impl ServiceDriver for PostgresDriver {
         };
 
         let fetch_settings = PgFetchSettings {
-            version: PG_V16,
+            version: PG_V15,
             ..Default::default()
         };
 
