@@ -35,7 +35,7 @@ use libc;
 #[derive(Parser, Debug)]
 #[command(name = "crush")]
 #[command(author = "Crush Contributors")]
-#[command(version = "0.5.0")]
+#[command(version = "0.5.1")]
 #[command(about = "A from-scratch, production-grade container runtime in Rust", long_about = None)]
 #[command(subcommand_required = false, arg_required_else_help = false)]
 struct Cli {
