@@ -416,10 +416,16 @@ impl CrushSpecDetector {
         };
 
         let build_cmd = if has_uv {
-            // Prefer the exact uv sync command from the Dockerfile so flags like
-            // --no-install-project and --frozen are respected automatically.
-            Self::extract_uv_sync_from_dockerfile(root)
-                .unwrap_or_else(|| "uv sync --no-dev --no-install-project".to_string())
+            // Base command: from Dockerfile if available, otherwise a safe default.
+            let base = Self::extract_uv_sync_from_dockerfile(root)
+                .unwrap_or_else(|| "uv sync --no-dev --no-install-project".to_string());
+            // Always add --no-build-package for the project itself to prevent uv_build
+            // from failing on projects without a proper src/{package}/__init__.py.
+            if let Some(pkg_name) = Self::read_pyproject_name(root) {
+                format!("{} --no-build-package {}", base, pkg_name)
+            } else {
+                base
+            }
         } else if has_pdm {
             "pdm install --prod".to_string()
         } else if has_poetry {
@@ -473,6 +479,12 @@ impl CrushSpecDetector {
             confidence,
             ..Default::default()
         })
+    }
+
+    fn read_pyproject_name(root: &Path) -> Option<String> {
+        let content = fs::read_to_string(root.join("pyproject.toml")).ok()?;
+        let val: serde_json::Value = toml::from_str(&content).ok()?;
+        val["project"]["name"].as_str().map(|s| s.to_string())
     }
 
     fn extract_uv_sync_from_dockerfile(root: &Path) -> Option<String> {

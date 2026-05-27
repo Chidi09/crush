@@ -48,7 +48,7 @@ use libc;
 #[derive(Parser, Debug)]
 #[command(name = "crush")]
 #[command(author = "Crush Contributors")]
-#[command(version = "0.7.4")]
+#[command(version = "0.7.5")]
 #[command(about = "A from-scratch, production-grade container runtime in Rust", long_about = None)]
 #[command(subcommand_required = false, arg_required_else_help = false)]
 struct Cli {
@@ -3585,7 +3585,12 @@ fn dirs_or_default() -> PathBuf {
     let base = if cfg!(target_os = "linux") {
         PathBuf::from("/var/lib/crush")
     } else if cfg!(target_os = "windows") {
-        PathBuf::from(std::env::var("PROGRAMDATA").unwrap_or_else(|_| "C:\\ProgramData\\Crush".to_string()))
+        // Use %LOCALAPPDATA%\Crush — user-writable, no admin required.
+        // %PROGRAMDATA% is system-wide and requires elevation.
+        let local_app_data = std::env::var("LOCALAPPDATA")
+            .unwrap_or_else(|_| format!("{}\\AppData\\Local",
+                std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".to_string())));
+        PathBuf::from(local_app_data).join("Crush")
     } else {
         dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("crush")
     };
