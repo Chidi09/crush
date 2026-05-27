@@ -18,10 +18,11 @@ members = [
     "crates/crush-tui",
     "crates/crush-api",
     "crates/crush-proto",
+    "crates/crush-deploy",
 ]
 
 [workspace.package]
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 authors = ["Crush Contributors"]
 license = "MIT OR Apache-2.0"
@@ -91,6 +92,8 @@ crush-tui = { path = "crates/crush-tui" }
 crush-api = { path = "crates/crush-api" }
 crush-reliability = { path = "crates/crush-reliability" }
 crush-volume = { path = "crates/crush-volume" }
+crush-deploy = { path = "crates/crush-deploy" }
+ssh2 = "0.9"
 
 [profile.release]
 opt-level = 3

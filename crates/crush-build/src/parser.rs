@@ -12,6 +12,77 @@ pub struct Crushfile {
     pub env: Option<HashMap<String, String>>,
     pub secrets: Option<Vec<CrushfileSecret>>,
     pub platform: Option<Vec<String>>,
+    pub deploy: Option<CrushfileDeploy>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CrushfileDeploy {
+    /// "hetzner" | "ssh" | "aws" | "gcp" | "digitalocean" | "fly"
+    pub provider: String,
+    pub region: Option<String>,
+    pub server_type: Option<String>,
+    pub image: Option<String>,
+    pub domain: Option<String>,
+    pub env: Option<Vec<String>>,
+    pub registry: Option<String>,
+    pub hetzner: Option<DeployHetzner>,
+    pub ssh: Option<DeploySsh>,
+    pub aws: Option<DeployAws>,
+    pub gcp: Option<DeployGcp>,
+    pub digitalocean: Option<DeployDigitalOcean>,
+    pub fly: Option<DeployFly>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployHetzner {
+    pub api_token: String,
+    pub server_name: Option<String>,
+    pub ssh_key_name: Option<String>,
+    pub datacenter: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeploySsh {
+    pub host: String,
+    pub port: Option<u16>,
+    pub user: Option<String>,
+    pub key: Option<String>,
+    pub password: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployAws {
+    pub access_key_id: String,
+    pub secret_access_key: String,
+    pub region: String,
+    pub instance_type: Option<String>,
+    pub ami: Option<String>,
+    pub key_pair: Option<String>,
+    pub security_group: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployGcp {
+    pub project_id: String,
+    pub service_account_key: Option<String>,
+    pub zone: String,
+    pub machine_type: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployDigitalOcean {
+    pub api_token: String,
+    pub size: Option<String>,
+    pub region: Option<String>,
+    pub ssh_key_name: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployFly {
+    pub api_token: String,
+    pub app_name: Option<String>,
+    pub region: Option<String>,
+    pub vm_size: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

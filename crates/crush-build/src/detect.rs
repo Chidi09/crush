@@ -59,6 +59,22 @@ pub struct Detection {
     pub base_image: String,
 }
 
+struct Signals {
+    scores: std::collections::HashMap<String, f32>,
+}
+
+impl Signals {
+    fn new() -> Self { Self { scores: std::collections::HashMap::new() } }
+    fn add(&mut self, framework: &str, weight: f32) {
+        *self.scores.entry(framework.to_string()).or_insert(0.0) += weight;
+    }
+    fn winner(&self) -> Option<(&str, f32)> {
+        self.scores.iter()
+            .max_by(|a, b| a.1.partial_cmp(b.1).unwrap_or(std::cmp::Ordering::Equal))
+            .map(|(k, v)| (k.as_str(), *v))
+    }
+}
+
 pub struct CrushSpecDetector;
 
 impl CrushSpecDetector {
@@ -183,8 +199,14 @@ impl CrushSpecDetector {
 
         let (framework, confidence_bump) = self.detect_node_framework(&json, root);
         let framework_detected = !framework.is_empty();
-        let mut confidence = if has_ts { 0.97 } else { 0.93 };
-        confidence += confidence_bump;
+        let mut confidence = if framework_detected && confidence_bump >= 0.09 {
+            0.99 // direct dependency match — near-certain
+        } else if has_ts {
+            0.97
+        } else {
+            0.93
+        };
+        if confidence < 0.99 { confidence += confidence_bump; }
 
         let scripts = json["scripts"].as_object();
         let build_cmd = self.infer_node_build(&json, root, has_ts, has_deno);
@@ -213,34 +235,51 @@ impl CrushSpecDetector {
 
     fn detect_node_framework(&self, json: &serde_json::Value, root: &Path) -> (String, f32) {
         let deps = Self::merge_deps(json);
+        let dep_set: std::collections::HashSet<&str> = deps.iter().map(|s| s.as_str()).collect();
         let has_file = |name: &str| root.join(name).exists();
+        let script_contains = |key: &str, needle: &str| {
+            json["scripts"][key].as_str().map(|s| s.contains(needle)).unwrap_or(false)
+        };
 
-        if has_file("svelte.config.js") || has_file("svelte.config.ts")
-            || deps.iter().any(|d| d == "@sveltejs/kit") {
-            ("SvelteKit".to_string(), 0.05)
-        } else if has_file("astro.config.mjs") || has_file("astro.config.ts") || has_file("astro.config.js")
-            || deps.iter().any(|d| d == "astro") {
-            ("Astro".to_string(), 0.05)
-        } else if deps.iter().any(|d| d == "solid-js") && deps.iter().any(|d| d == "@solidjs/start") {
-            ("SolidStart".to_string(), 0.05)
-        } else if has_file("qwik.config.ts") || deps.iter().any(|d| d == "@builder.io/qwik") {
-            ("Qwik".to_string(), 0.04)
-        } else if deps.iter().any(|d| d == "next") || has_file("next.config.js") || has_file("next.config.ts") {
-            ("Next.js".to_string(), 0.05)
-        } else if deps.iter().any(|d| d == "nuxt") || has_file("nuxt.config.ts") || has_file("nuxt.config.js") {
-            ("Nuxt".to_string(), 0.05)
-        } else if deps.iter().any(|d| d == "@nestjs/core") || has_file("nest-cli.json") {
-            ("NestJS".to_string(), 0.04)
-        } else if deps.iter().any(|d| d == "express") {
-            ("Express".to_string(), 0.02)
-        } else if deps.iter().any(|d| d == "fastify") {
-            ("Fastify".to_string(), 0.02)
-        } else if deps.iter().any(|d| d == "hono") {
-            ("Hono".to_string(), 0.02)
-        } else if deps.iter().any(|d| d == "remix") || has_file("remix.config.js") {
-            ("Remix".to_string(), 0.04)
-        } else {
-            (String::new(), 0.0)
+        let mut s = Signals::new();
+
+        // High-confidence: specific config files
+        if has_file("next.config.js") || has_file("next.config.ts") || has_file("next.config.mjs") { s.add("Next.js", 10.0); }
+        if has_file("nuxt.config.ts") || has_file("nuxt.config.js") { s.add("Nuxt", 10.0); }
+        if has_file("svelte.config.js") || has_file("svelte.config.ts") { s.add("SvelteKit", 10.0); }
+        if has_file("astro.config.mjs") || has_file("astro.config.ts") { s.add("Astro", 10.0); }
+        if has_file("nest-cli.json") || has_file(".nestrc") { s.add("NestJS", 10.0); }
+        if has_file("remix.config.js") || has_file("remix.config.ts") { s.add("Remix", 10.0); }
+        if has_file("qwik.config.ts") { s.add("Qwik", 10.0); }
+
+        // High-confidence: explicit dependencies
+        if dep_set.contains("next") { s.add("Next.js", 8.0); }
+        if dep_set.contains("nuxt") { s.add("Nuxt", 8.0); }
+        if dep_set.contains("@sveltejs/kit") { s.add("SvelteKit", 8.0); }
+        if dep_set.contains("astro") { s.add("Astro", 8.0); }
+        if dep_set.contains("@nestjs/core") { s.add("NestJS", 8.0); }
+        if dep_set.contains("remix") || dep_set.contains("@remix-run/node") { s.add("Remix", 8.0); }
+        if dep_set.contains("@builder.io/qwik") { s.add("Qwik", 8.0); }
+        if dep_set.contains("@solidjs/start") { s.add("SolidStart", 8.0); }
+        if dep_set.contains("fastify") { s.add("Fastify", 8.0); }
+        if dep_set.contains("express") { s.add("Express", 6.0); }
+        if dep_set.contains("hono") { s.add("Hono", 8.0); }
+        if dep_set.contains("elysia") { s.add("Elysia", 8.0); }
+        if dep_set.contains("@trpc/server") { s.add("tRPC", 4.0); }
+
+        // Medium-confidence: start script patterns
+        if script_contains("dev", "next dev") || script_contains("start", "next start") { s.add("Next.js", 5.0); }
+        if script_contains("dev", "nuxt dev") { s.add("Nuxt", 5.0); }
+        if has_file("vite.config.ts") || has_file("vite.config.js") { s.add("Vite", 5.0); }
+        if script_contains("dev", "fastify") || script_contains("start", "fastify") { s.add("Fastify", 4.0); }
+        if script_contains("dev", "svelte-kit") { s.add("SvelteKit", 4.0); }
+
+        match s.winner() {
+            Some((framework, score)) if score >= 4.0 => {
+                let is_direct_dep = score >= 8.0;
+                (framework.to_string(), if is_direct_dep { 0.09 } else { (score / 20.0).min(0.07) })
+            }
+            _ => (String::new(), 0.0),
         }
     }
 
@@ -333,21 +372,36 @@ impl CrushSpecDetector {
             } else { "3.11".to_string() }
         } else { "3.11".to_string() };
 
-        let (framework, entry, port) = if root.join("manage.py").exists() {
-            ("Django", "manage.py", 8000)
-        } else if root.join("app.py").exists() || root.join("application.py").exists() {
-            let app = if root.join("app.py").exists() { "app.py" } else { "application.py" };
-            if Self::file_contains(root.join(app), "flask").unwrap_or(false) {
-                ("Flask", app, 5000)
-            } else {
-                ("FastAPI", app, 8000)
+        let py_deps = Self::parse_python_deps(root);
+        let has_py_dep = |name: &str| py_deps.iter().any(|d| d == name);
+
+        let mut sig = Signals::new();
+        if has_py_dep("fastapi") { sig.add("FastAPI", 10.0); }
+        if has_py_dep("flask") { sig.add("Flask", 10.0); }
+        if has_py_dep("django") { sig.add("Django", 10.0); }
+        if has_py_dep("tornado") { sig.add("Tornado", 8.0); }
+        if has_py_dep("aiohttp") { sig.add("aiohttp", 8.0); }
+        if has_py_dep("starlette") && !has_py_dep("fastapi") { sig.add("Starlette", 7.0); }
+        if has_py_dep("litestar") { sig.add("Litestar", 8.0); }
+        if root.join("manage.py").exists() { sig.add("Django", 9.0); }
+
+        let direct_dep_match = sig.winner().map(|(_, score)| score >= 8.0).unwrap_or(false);
+
+        let (framework, entry, port) = match sig.winner() {
+            Some(("FastAPI", _)) => ("FastAPI", "main.py", 8000),
+            Some(("Flask", _)) => ("Flask", "app.py", 5000),
+            Some(("Django", _)) => ("Django", "manage.py", 8000),
+            Some(("Tornado", _)) => ("Tornado", "main.py", 8888),
+            Some(("aiohttp", _)) => ("aiohttp", "main.py", 8080),
+            Some(("Starlette", _)) => ("Starlette", "main.py", 8000),
+            Some(("Litestar", _)) => ("Litestar", "app.py", 8000),
+            _ => {
+                // Fall back to file-name heuristics
+                if root.join("manage.py").exists() { ("Django", "manage.py", 8000) }
+                else if root.join("app.py").exists() { ("Flask", "app.py", 5000) }
+                else if root.join("main.py").exists() { ("FastAPI", "main.py", 8000) }
+                else { ("Python", "main.py", 8080) }
             }
-        } else if root.join("main.py").exists() {
-            ("FastAPI", "main.py", 8000)
-        } else if root.join("api.py").exists() {
-            ("FastAPI", "api.py", 8000)
-        } else {
-            ("Python", "main.py", 8080)
         };
 
         let build_cmd = if has_uv {
@@ -366,7 +420,9 @@ impl CrushSpecDetector {
             "pip install -r requirements.txt".to_string()
         };
 
-        let confidence = if root.join("manage.py").exists() || root.join("app.py").exists() { 0.92 } else { 0.85 };
+        let confidence = if direct_dep_match { 0.99 }
+            else if root.join("manage.py").exists() || root.join("app.py").exists() { 0.92 }
+            else { 0.85 };
 
         Some(Detection {
             project_name: root.file_name().unwrap_or_default().to_string_lossy().to_string(),
@@ -544,19 +600,36 @@ impl CrushSpecDetector {
         if !has_gemfile && !has_ruby_version { return None; }
 
         let version = VersionResolver::resolve(root, None);
-        let is_rails = root.join("config/application.rb").exists()
-            || root.join("bin/rails").exists();
+        let gems = Self::parse_gemfile(root);
+        let has_gem = |name: &str| gems.iter().any(|g| g == name);
+
+        let (framework, entry, port) = if has_gem("rails") {
+            ("Rails", "config.ru", 3000)
+        } else if has_gem("sinatra") {
+            ("Sinatra", "app.rb", 4567)
+        } else if has_gem("hanami") {
+            ("Hanami", "config.ru", 2300)
+        } else if has_gem("grape") {
+            ("Grape", "app.rb", 9292)
+        } else if root.join("config/application.rb").exists() || root.join("bin/rails").exists() {
+            ("Rails", "config.ru", 3000)
+        } else {
+            ("", "app.rb", 8080)
+        };
+
+        let direct_gem = has_gem("rails") || has_gem("sinatra") || has_gem("hanami") || has_gem("grape");
+        let confidence = if direct_gem { 0.99 } else if !framework.is_empty() { 0.93 } else { 0.87 };
 
         Some(Detection {
             project_name: root.file_name().unwrap_or_default().to_string_lossy().to_string(),
             runtime_type: RuntimeType::Ruby,
             runtime_version: version,
-            framework_name: if is_rails { "Rails" } else { "" }.to_string(),
-            framework_detected: is_rails,
+            framework_name: framework.to_string(),
+            framework_detected: !framework.is_empty(),
             build_command: "bundle install".to_string(),
-            entry_point: if is_rails { "config.ru".to_string() } else { "app.rb".to_string() },
-            port: if is_rails { 3000 } else { 8080 },
-            confidence: 0.87,
+            entry_point: entry.to_string(),
+            port,
+            confidence,
             ..Default::default()
         })
     }
@@ -564,17 +637,30 @@ impl CrushSpecDetector {
     fn try_php(&self, root: &Path) -> Option<Detection> {
         if !root.join("composer.json").exists() { return None; }
 
-        let is_laravel = root.join("artisan").exists()
-            || Self::file_contains(root.join("composer.json"), "laravel/framework").unwrap_or(false);
-        let is_symfony = Self::file_contains(root.join("composer.json"), "symfony/framework-bundle").unwrap_or(false);
+        let deps = Self::parse_composer_deps(root);
+        let has_dep = |name: &str| deps.iter().any(|d| d.contains(name));
 
-        let (framework, entry, port, confidence) = if is_laravel {
-            ("Laravel", "public/index.php", 8000, 0.92f32)
-        } else if is_symfony {
-            ("Symfony", "public/index.php", 8000, 0.90)
-        } else {
-            ("", "public/index.php", 8080, 0.85)
+        let mut sig = Signals::new();
+        if has_dep("laravel/framework") { sig.add("Laravel", 10.0); }
+        if has_dep("symfony/framework-bundle") { sig.add("Symfony", 10.0); }
+        if has_dep("slim/slim") { sig.add("Slim", 8.0); }
+        if has_dep("codeigniter4") { sig.add("CodeIgniter", 8.0); }
+        if has_dep("cakephp/cakephp") { sig.add("CakePHP", 8.0); }
+        if root.join("artisan").exists() { sig.add("Laravel", 9.0); }
+        if root.join("bin/console").exists() { sig.add("Symfony", 7.0); }
+
+        let direct_dep = sig.winner().map(|(_, score)| score >= 8.0).unwrap_or(false);
+
+        let (framework, entry, port) = match sig.winner() {
+            Some(("Laravel", _)) => ("Laravel", "public/index.php", 8000),
+            Some(("Symfony", _)) => ("Symfony", "public/index.php", 8000),
+            Some(("Slim", _)) => ("Slim", "public/index.php", 8080),
+            Some(("CodeIgniter", _)) => ("CodeIgniter", "public/index.php", 8080),
+            Some(("CakePHP", _)) => ("CakePHP", "webroot/index.php", 8080),
+            _ => ("", "public/index.php", 8080),
         };
+
+        let confidence = if direct_dep { 0.99 } else if !framework.is_empty() { 0.90 } else { 0.85 };
 
         Some(Detection {
             project_name: root.file_name().unwrap_or_default().to_string_lossy().to_string(),
@@ -683,6 +769,72 @@ impl CrushSpecDetector {
         }
         if let Some(d) = json["peerDependencies"].as_object() {
             deps.extend(d.keys().cloned());
+        }
+        deps
+    }
+
+    fn parse_python_deps(root: &Path) -> Vec<String> {
+        let mut deps = Vec::new();
+
+        if let Ok(content) = fs::read_to_string(root.join("requirements.txt")) {
+            for line in content.lines() {
+                let line = line.trim();
+                if line.is_empty() || line.starts_with('#') || line.starts_with('-') { continue; }
+                let name = line.split(['=', '>', '<', '!', '[', ';']).next()
+                    .unwrap_or("").trim().to_lowercase();
+                if !name.is_empty() { deps.push(name); }
+            }
+        }
+
+        if let Ok(content) = fs::read_to_string(root.join("pyproject.toml")) {
+            if let Ok(val) = toml::from_str::<serde_json::Value>(&content) {
+                if let Some(arr) = val["project"]["dependencies"].as_array() {
+                    for dep in arr {
+                        if let Some(s) = dep.as_str() {
+                            let name = s.split(['=', '>', '<', '!', '[', ';', ' ']).next()
+                                .unwrap_or("").trim().to_lowercase();
+                            if !name.is_empty() { deps.push(name); }
+                        }
+                    }
+                }
+                if let Some(obj) = val["tool"]["poetry"]["dependencies"].as_object() {
+                    for key in obj.keys() {
+                        if key.to_lowercase() != "python" { deps.push(key.to_lowercase()); }
+                    }
+                }
+            }
+        }
+
+        deps
+    }
+
+    fn parse_gemfile(root: &Path) -> Vec<String> {
+        let mut gems = Vec::new();
+        if let Ok(content) = fs::read_to_string(root.join("Gemfile")) {
+            for line in content.lines() {
+                let line = line.trim();
+                if line.starts_with("gem ") {
+                    let name = line.trim_start_matches("gem ")
+                        .trim_matches(&[' ', '\'', '"'][..])
+                        .split(['\'', '"', ','])
+                        .next().unwrap_or("").trim().to_lowercase();
+                    if !name.is_empty() { gems.push(name); }
+                }
+            }
+        }
+        gems
+    }
+
+    fn parse_composer_deps(root: &Path) -> Vec<String> {
+        let mut deps = Vec::new();
+        if let Ok(content) = fs::read_to_string(root.join("composer.json")) {
+            if let Ok(val) = serde_json::from_str::<serde_json::Value>(&content) {
+                for section in &["require", "require-dev"] {
+                    if let Some(obj) = val[section].as_object() {
+                        deps.extend(obj.keys().map(|k| k.to_lowercase()));
+                    }
+                }
+            }
         }
         deps
     }

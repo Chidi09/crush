@@ -80,6 +80,83 @@ fn get_linux_proc_metrics(pid: u32) -> (f32, f32) {
     (cpu_pct, mem_mb)
 }
 
+struct IoPidTick {
+    rx: u64,
+    tx: u64,
+    dr: u64,
+    dw: u64,
+    time: std::time::Instant,
+}
+
+fn get_io_cache() -> &'static Mutex<HashMap<u32, IoPidTick>> {
+    static CACHE: OnceLock<Mutex<HashMap<u32, IoPidTick>>> = OnceLock::new();
+    CACHE.get_or_init(|| Mutex::new(HashMap::new()))
+}
+
+fn get_io_rates(_pid: u32) -> (f32, f32, f32, f32) {
+    #[cfg(target_os = "linux")]
+    {
+        let mut rx_total: u64 = 0;
+        let mut tx_total: u64 = 0;
+        let mut dr_total: u64 = 0;
+        let mut dw_total: u64 = 0;
+
+        // /proc/<pid>/net/dev: lines like "  eth0: rx_bytes ... tx_bytes ..."
+        if let Ok(content) = std::fs::read_to_string(format!("/proc/{}/net/dev", _pid)) {
+            for line in content.lines().skip(2) {
+                let parts: Vec<&str> = line.split_whitespace().collect();
+                if parts.len() >= 10 {
+                    rx_total += parts[1].parse::<u64>().unwrap_or(0);
+                    tx_total += parts[9].parse::<u64>().unwrap_or(0);
+                }
+            }
+        }
+
+        // /proc/<pid>/io: read_bytes / write_bytes
+        if let Ok(content) = std::fs::read_to_string(format!("/proc/{}/io", _pid)) {
+            for line in content.lines() {
+                if line.starts_with("read_bytes:") {
+                    dr_total = line.split(':').nth(1).unwrap_or("0").trim().parse().unwrap_or(0);
+                } else if line.starts_with("write_bytes:") {
+                    dw_total = line.split(':').nth(1).unwrap_or("0").trim().parse().unwrap_or(0);
+                }
+            }
+        }
+
+        let now = std::time::Instant::now();
+        if let Ok(mut cache) = get_io_cache().lock() {
+            let rates = if let Some(prev) = cache.get(&_pid) {
+                let dt = now.duration_since(prev.time).as_secs_f32().max(0.01);
+                (
+                    (rx_total.saturating_sub(prev.rx) as f32 / dt),
+                    (tx_total.saturating_sub(prev.tx) as f32 / dt),
+                    (dr_total.saturating_sub(prev.dr) as f32 / dt),
+                    (dw_total.saturating_sub(prev.dw) as f32 / dt),
+                )
+            } else { (0.0, 0.0, 0.0, 0.0) };
+            cache.insert(_pid, IoPidTick { rx: rx_total, tx: tx_total, dr: dr_total, dw: dw_total, time: now });
+            return rates;
+        }
+        (0.0, 0.0, 0.0, 0.0)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        (0.0, 0.0, 0.0, 0.0)
+    }
+}
+
+fn format_rate(bytes_per_sec: f32) -> String {
+    if bytes_per_sec >= 1_073_741_824.0 {
+        format!("{:.1}GB/s", bytes_per_sec / 1_073_741_824.0)
+    } else if bytes_per_sec >= 1_048_576.0 {
+        format!("{:.1}MB/s", bytes_per_sec / 1_048_576.0)
+    } else if bytes_per_sec >= 1024.0 {
+        format!("{:.0}KB/s", bytes_per_sec / 1024.0)
+    } else {
+        format!("{:.0}B/s", bytes_per_sec)
+    }
+}
+
 // ─── Public types (existing API preserved) ────────────────────────────────────
 
 pub struct AppState {
@@ -188,6 +265,10 @@ struct App {
     containers: Vec<Container>,
     cpu_history: HashMap<String, VecDeque<f32>>,
     mem_history: HashMap<String, VecDeque<f32>>,
+    net_rx_history: HashMap<String, VecDeque<f32>>,
+    net_tx_history: HashMap<String, VecDeque<f32>>,
+    disk_r_history: HashMap<String, VecDeque<f32>>,
+    disk_w_history: HashMap<String, VecDeque<f32>>,
     table_state: TableState,
     active_tab: usize,
     tick: u64,
@@ -266,6 +347,10 @@ Suggested Patch:
             containers,
             cpu_history,
             mem_history,
+            net_rx_history: HashMap::new(),
+            net_tx_history: HashMap::new(),
+            disk_r_history: HashMap::new(),
+            disk_w_history: HashMap::new(),
             table_state,
             active_tab: initial_tab,
             tick: 0,
@@ -353,6 +438,21 @@ Suggested Patch:
             let m = self.mem_history.entry(c.id.clone()).or_default();
             m.push_back(mem_now);
             if m.len() > 60 { m.pop_front(); }
+
+            // Net / disk metrics from /proc/<pid>/net/dev and /proc/<pid>/io
+            let (rx_rate, tx_rate, dr_rate, dw_rate) = if let Some(pid) = c.pid {
+                get_io_rates(pid)
+            } else { (0.0, 0.0, 0.0, 0.0) };
+
+            let push_metric = |map: &mut HashMap<String, VecDeque<f32>>, key: &str, val: f32| {
+                let h = map.entry(key.to_string()).or_default();
+                h.push_back(val);
+                if h.len() > 60 { h.pop_front(); }
+            };
+            push_metric(&mut self.net_rx_history, &c.id, rx_rate);
+            push_metric(&mut self.net_tx_history, &c.id, tx_rate);
+            push_metric(&mut self.disk_r_history, &c.id, dr_rate);
+            push_metric(&mut self.disk_w_history, &c.id, dw_rate);
         }
     }
 
@@ -552,9 +652,12 @@ fn render_stats(f: &mut Frame, area: Rect, app: &mut App) {
             .constraints([
                 Constraint::Length(1), // id line
                 Constraint::Length(1), // gap
-                Constraint::Length(4), // cpu sparkline
-                Constraint::Length(1), // gap
-                Constraint::Length(4), // mem sparkline
+                Constraint::Length(3), // cpu sparkline
+                Constraint::Length(3), // mem sparkline
+                Constraint::Length(3), // net in sparkline
+                Constraint::Length(3), // net out sparkline
+                Constraint::Length(3), // disk r sparkline
+                Constraint::Length(3), // disk w sparkline
                 Constraint::Fill(1),
             ])
             .split(left_inner);
@@ -574,13 +677,12 @@ fn render_stats(f: &mut Frame, area: Rect, app: &mut App) {
             .map(|h| h.iter().map(|&v| v as u64).collect())
             .unwrap_or_default();
         let cpu_now = cpu_data.last().copied().unwrap_or(0);
-        let cpu_label = format!(" CPU  {}% ", cpu_now);
         f.render_widget(
             Sparkline::default()
                 .block(Block::default()
                     .borders(Borders::LEFT)
                     .border_style(Style::default().fg(ORANGE))
-                    .title(Span::styled(cpu_label, Style::default().fg(ORANGE).add_modifier(Modifier::BOLD))))
+                    .title(Span::styled(format!(" CPU  {}% ", cpu_now), Style::default().fg(ORANGE).add_modifier(Modifier::BOLD))))
                 .data(&cpu_data)
                 .style(Style::default().fg(ORANGE)),
             rows[2],
@@ -590,16 +692,77 @@ fn render_stats(f: &mut Frame, area: Rect, app: &mut App) {
             .map(|h| h.iter().map(|&v| v as u64).collect())
             .unwrap_or_default();
         let mem_now = mem_data.last().copied().unwrap_or(0);
-        let mem_label = format!(" MEM  {} MB ", mem_now);
         f.render_widget(
             Sparkline::default()
                 .block(Block::default()
                     .borders(Borders::LEFT)
                     .border_style(Style::default().fg(CYAN))
-                    .title(Span::styled(mem_label, Style::default().fg(CYAN).add_modifier(Modifier::BOLD))))
+                    .title(Span::styled(format!(" MEM  {} MB ", mem_now), Style::default().fg(CYAN).add_modifier(Modifier::BOLD))))
                 .data(&mem_data)
                 .style(Style::default().fg(CYAN)),
+            rows[3],
+        );
+
+        let net_rx_data: Vec<u64> = app.net_rx_history.get(&c.id)
+            .map(|h| h.iter().map(|&v| v as u64).collect())
+            .unwrap_or_default();
+        let rx_now = app.net_rx_history.get(&c.id).and_then(|h| h.back().copied()).unwrap_or(0.0);
+        let rx_color = if rx_now > 10_000_000.0 { STOP_RED } else if rx_now > 1_000_000.0 { PAUSE_YELLOW } else { RUN_GREEN };
+        f.render_widget(
+            Sparkline::default()
+                .block(Block::default()
+                    .borders(Borders::LEFT)
+                    .border_style(Style::default().fg(rx_color))
+                    .title(Span::styled(format!(" NET IN  {} ", format_rate(rx_now)), Style::default().fg(rx_color).add_modifier(Modifier::BOLD))))
+                .data(&net_rx_data)
+                .style(Style::default().fg(rx_color)),
             rows[4],
+        );
+
+        let net_tx_data: Vec<u64> = app.net_tx_history.get(&c.id)
+            .map(|h| h.iter().map(|&v| v as u64).collect())
+            .unwrap_or_default();
+        let tx_now = app.net_tx_history.get(&c.id).and_then(|h| h.back().copied()).unwrap_or(0.0);
+        let tx_color = if tx_now > 10_000_000.0 { STOP_RED } else if tx_now > 1_000_000.0 { PAUSE_YELLOW } else { RUN_GREEN };
+        f.render_widget(
+            Sparkline::default()
+                .block(Block::default()
+                    .borders(Borders::LEFT)
+                    .border_style(Style::default().fg(tx_color))
+                    .title(Span::styled(format!(" NET OUT  {} ", format_rate(tx_now)), Style::default().fg(tx_color).add_modifier(Modifier::BOLD))))
+                .data(&net_tx_data)
+                .style(Style::default().fg(tx_color)),
+            rows[5],
+        );
+
+        let disk_r_data: Vec<u64> = app.disk_r_history.get(&c.id)
+            .map(|h| h.iter().map(|&v| v as u64).collect())
+            .unwrap_or_default();
+        let dr_now = app.disk_r_history.get(&c.id).and_then(|h| h.back().copied()).unwrap_or(0.0);
+        f.render_widget(
+            Sparkline::default()
+                .block(Block::default()
+                    .borders(Borders::LEFT)
+                    .border_style(Style::default().fg(DIM))
+                    .title(Span::styled(format!(" DISK R  {} ", format_rate(dr_now)), Style::default().fg(Color::White).add_modifier(Modifier::BOLD))))
+                .data(&disk_r_data)
+                .style(Style::default().fg(Color::White)),
+            rows[6],
+        );
+
+        let disk_w_data: Vec<u64> = app.disk_w_history.get(&c.id)
+            .map(|h| h.iter().map(|&v| v as u64).collect())
+            .unwrap_or_default();
+        let dw_now = app.disk_w_history.get(&c.id).and_then(|h| h.back().copied()).unwrap_or(0.0);
+        f.render_widget(
+            Sparkline::default()
+                .block(Block::default()
+                    .borders(Borders::LEFT)
+                    .border_style(Style::default().fg(DIM))
+                    .title(Span::styled(format!(" DISK W  {} ", format_rate(dw_now)), Style::default().fg(Color::White).add_modifier(Modifier::BOLD))))
+                .data(&disk_w_data)
+                .style(Style::default().fg(Color::White)),
+            rows[7],
         );
     }
 

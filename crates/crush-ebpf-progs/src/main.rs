@@ -186,6 +186,80 @@ fn try_tc_egress(ctx: &TcContext) -> Result<i32, ()> {
 }
 
 // ---------------------------------------------------------------------------
+// Metrics: per-cgroup network bytes
+// ---------------------------------------------------------------------------
+//
+// Attached as cgroup_skb on INGRESS and EGRESS for each container cgroup.
+// Key: cgroup_id (u64). Value: cumulative bytes as u64.
+
+#[map]
+static NET_BYTES_MAP: HashMap<u64, u64> = HashMap::with_max_entries(4096, 0);
+
+#[map]
+static NET_TX_MAP: HashMap<u64, u64> = HashMap::with_max_entries(4096, 0);
+
+#[aya_bpf::macros::cgroup_skb]
+pub fn crush_net_ingress(ctx: aya_bpf::programs::SkBuffContext) -> i32 {
+    let cgroup_id = unsafe { aya_bpf::helpers::bpf_get_current_cgroup_id() };
+    let len = ctx.len() as u64;
+    if let Some(val) = unsafe { NET_BYTES_MAP.get_ptr_mut(&cgroup_id) } {
+        unsafe { *val += len; }
+    } else {
+        let _ = unsafe { NET_BYTES_MAP.insert(&cgroup_id, &len, 0) };
+    }
+    1
+}
+
+#[aya_bpf::macros::cgroup_skb]
+pub fn crush_net_egress(ctx: aya_bpf::programs::SkBuffContext) -> i32 {
+    let cgroup_id = unsafe { aya_bpf::helpers::bpf_get_current_cgroup_id() };
+    let len = ctx.len() as u64;
+    if let Some(val) = unsafe { NET_TX_MAP.get_ptr_mut(&cgroup_id) } {
+        unsafe { *val += len; }
+    } else {
+        let _ = unsafe { NET_TX_MAP.insert(&cgroup_id, &len, 0) };
+    }
+    1
+}
+
+// ---------------------------------------------------------------------------
+// Metrics: per-cgroup block I/O
+// ---------------------------------------------------------------------------
+
+#[map]
+static BLOCK_READ_MAP: HashMap<u64, u64> = HashMap::with_max_entries(4096, 0);
+
+#[map]
+static BLOCK_WRITE_MAP: HashMap<u64, u64> = HashMap::with_max_entries(4096, 0);
+
+#[aya_bpf::macros::tracepoint]
+pub fn crush_block_rq_complete(ctx: aya_bpf::programs::TracePointContext) -> u32 {
+    let cgroup_id = unsafe { aya_bpf::helpers::bpf_get_current_cgroup_id() };
+    let nr_sector: u32 = unsafe { ctx.read_at(20).unwrap_or(0) };
+    let bytes = (nr_sector as u64) * 512;
+    let rwbs_byte: u8 = unsafe { ctx.read_at(24).unwrap_or(b'?') };
+
+    match rwbs_byte {
+        b'R' => {
+            if let Some(val) = unsafe { BLOCK_READ_MAP.get_ptr_mut(&cgroup_id) } {
+                unsafe { *val += bytes; }
+            } else {
+                let _ = unsafe { BLOCK_READ_MAP.insert(&cgroup_id, &bytes, 0) };
+            }
+        }
+        b'W' | b'F' => {
+            if let Some(val) = unsafe { BLOCK_WRITE_MAP.get_ptr_mut(&cgroup_id) } {
+                unsafe { *val += bytes; }
+            } else {
+                let _ = unsafe { BLOCK_WRITE_MAP.insert(&cgroup_id, &bytes, 0) };
+            }
+        }
+        _ => {}
+    }
+    0
+}
+
+// ---------------------------------------------------------------------------
 // Panic handler (required for no_std)
 // ---------------------------------------------------------------------------
 

@@ -35,7 +35,7 @@ use libc;
 #[derive(Parser, Debug)]
 #[command(name = "crush")]
 #[command(author = "Crush Contributors")]
-#[command(version = "0.2.0")]
+#[command(version = "0.4.0")]
 #[command(about = "A from-scratch, production-grade container runtime in Rust", long_about = None)]
 struct Cli {
     #[arg(short, long, help = "Path to custom Crushfile", default_value = "Crushfile")]
@@ -112,6 +112,8 @@ enum Commands {
     Install,
     #[command(about = "Run health checks on a container")]
     Health(HealthArgs),
+    #[command(about = "Deploy a project to cloud infrastructure defined in the Crushfile")]
+    Deploy(DeployArgs),
     #[command(about = "Configure Docker CLI and tools to use Crush as the container backend")]
     DockerContext(DockerContextArgs),
     #[command(about = "Generate shell completion scripts")]
@@ -439,6 +441,18 @@ struct HealthArgs {
     timeout: u64,
     #[arg(long, help = "Retry count", default_value_t = 3)]
     retries: u32,
+}
+
+#[derive(Args, Debug)]
+pub struct DeployArgs {
+    #[arg(long, help = "Override the provider from Crushfile (hetzner, ssh, aws, gcp, digitalocean, fly)")]
+    provider: Option<String>,
+    #[arg(long, help = "Stream deployment logs after deploy completes")]
+    logs: bool,
+    #[arg(long, help = "Show current deployment status")]
+    status: bool,
+    #[arg(long, help = "Destroy the deployment and remove the server")]
+    destroy: bool,
 }
 
 fn format_mem(bytes: u64) -> String {
@@ -3126,6 +3140,117 @@ async fn main() -> anyhow::Result<()> {
                 let _ = mounter.unmount_all(&c.id).await;
             }
         }
+        Commands::Deploy(args) => {
+            use crush_deploy::{DeploymentState, DeployProvider};
+            use crush_build::parser::CrushfileParser;
+
+            let root = std::env::current_dir()?;
+            let crushfile_path = root.join("Crushfile");
+            let crushfile = CrushfileParser::parse(&crushfile_path)
+                .map_err(|e| anyhow::anyhow!("Failed to parse Crushfile: {}", e))?;
+
+            let deploy_config = crushfile.deploy.as_ref()
+                .ok_or_else(|| anyhow::anyhow!(
+                    "No [deploy] section in Crushfile.\n\
+                     Add one like:\n\n  \
+                     [deploy]\n  provider = \"hetzner\"\n\n  \
+                     [deploy.hetzner]\n  api_token = \"${{HETZNER_API_TOKEN}}\"\n"
+                ))?;
+
+            let project = crushfile.project.as_ref()
+                .and_then(|p| p.name.clone())
+                .unwrap_or_else(|| root.file_name().unwrap_or_default().to_string_lossy().to_string());
+
+            let provider_name = args.provider.as_deref()
+                .unwrap_or(&deploy_config.provider)
+                .to_string();
+
+            let state = DeploymentState::new();
+
+            if args.status {
+                if let Some(info) = state.load(&project) {
+                    let provider = build_provider(&provider_name, deploy_config)?;
+                    let status = provider.status(&info).await?;
+                    println!("Project:  {}", info.project);
+                    println!("Provider: {}", info.provider);
+                    println!("Server:   {} ({})", info.server_id, info.public_ip);
+                    println!("Deployed: {}", info.deployed_at);
+                    println!("Status:   {:?}", status);
+                    if let Some(ref domain) = info.domain {
+                        println!("Domain:   {}", domain);
+                    } else {
+                        println!("URL:      http://{}:{}", info.public_ip, info.port);
+                    }
+                } else {
+                    println!("No deployment found for '{}'", project);
+                }
+                return Ok(());
+            }
+
+            if args.destroy {
+                if let Some(info) = state.load(&project) {
+                    let provider = build_provider(&provider_name, deploy_config)?;
+                    println!("Destroying deployment for '{}'...", project);
+                    provider.destroy(&info).await?;
+                    state.remove(&project);
+                    println!("Deployment destroyed.");
+                } else {
+                    println!("No deployment found for '{}'", project);
+                }
+                return Ok(());
+            }
+
+            // Build the project image
+            println!("[1/4] Building image...");
+            let detector = crush_build::StackDetector::new();
+            let stack = detector.detect(&root).await
+                .map_err(|e| anyhow::anyhow!("Stack detection failed: {}", e))?;
+            println!("  Detected: {} (confidence {:.0}%)", stack.language, stack.confidence * 100.0);
+            let cache_dir = data_dir.join("cache");
+            let engine = crush_build::BuildEngine::new(cache_dir);
+            let digest = engine.execute_layered_build(&root, &stack).await
+                .map_err(|e| anyhow::anyhow!("Build failed: {}", e))?;
+            println!("  Build complete: {}", &digest[..12]);
+
+            // Export to a tarball
+            println!("[2/4] Exporting OCI tarball...");
+            let tar_path = std::env::temp_dir().join(format!("{}-deploy.tar", project));
+            store.export_oci_tarball(&digest, &tar_path).await
+                .map_err(|e| anyhow::anyhow!("Export failed: {}", e))?;
+
+            // Provision infra
+            println!("[3/4] Provisioning {}...", provider_name);
+            let provider = build_provider(&provider_name, deploy_config)?;
+            let region = deploy_config.region.as_deref().unwrap_or("");
+            let size = deploy_config.server_type.as_deref().unwrap_or("");
+            let mut info = provider.provision(&project, region, size).await?;
+            info.image_digest = digest.clone();
+            info.port = stack.default_port;
+
+            // Deploy
+            println!("[4/4] Deploying to {}...", info.public_ip);
+            let env = deploy_config.env.clone().unwrap_or_default();
+            provider.deploy(&info, &tar_path, stack.default_port, &env).await?;
+            info.status = crush_deploy::DeployStatus::Running;
+
+            state.save(&info)?;
+
+            println!("\nDeployed successfully!");
+            println!("  URL: http://{}:{}", info.public_ip, info.port);
+            if let Some(ref domain) = deploy_config.domain {
+                println!("  Domain: {} (point DNS A record to {})", domain, info.public_ip);
+                info.domain = Some(domain.clone());
+                state.save(&info)?;
+            }
+
+            let _ = std::fs::remove_file(&tar_path);
+
+            if args.logs {
+                println!("\nContainer logs:");
+                let logs = provider.logs(&info, 50).await?;
+                print!("{}", logs);
+            }
+        }
         Commands::__Complete(args) => {
             match args.category.as_str() {
                 "containers" => {
@@ -3179,6 +3304,55 @@ async fn main() -> anyhow::Result<()> {
     }
 
     Ok(())
+}
+
+fn build_provider(
+    name: &str,
+    config: &crush_build::parser::CrushfileDeploy,
+) -> anyhow::Result<Box<dyn crush_deploy::DeployProvider>> {
+    match name {
+        "hetzner" => {
+            let h = config.hetzner.as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Missing [deploy.hetzner] section"))?;
+            Ok(Box::new(crush_deploy::HetznerProvider::new(
+                &h.api_token,
+                h.ssh_key_name.as_deref(),
+            )))
+        }
+        "ssh" => {
+            let s = config.ssh.as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Missing [deploy.ssh] section"))?;
+            Ok(Box::new(crush_deploy::SshProvider::new(
+                &s.host,
+                s.port.unwrap_or(22),
+                s.user.as_deref().unwrap_or("root"),
+                s.key.as_deref(),
+            )))
+        }
+        "aws" => {
+            let a = config.aws.as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Missing [deploy.aws] section"))?;
+            Ok(Box::new(crush_deploy::AwsProvider::new(a)))
+        }
+        "gcp" => {
+            let g = config.gcp.as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Missing [deploy.gcp] section"))?;
+            Ok(Box::new(crush_deploy::GcpProvider::new(g)))
+        }
+        "digitalocean" => {
+            let d = config.digitalocean.as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Missing [deploy.digitalocean] section"))?;
+            Ok(Box::new(crush_deploy::DigitalOceanProvider::new(d)))
+        }
+        "fly" => {
+            let f = config.fly.as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Missing [deploy.fly] section"))?;
+            Ok(Box::new(crush_deploy::FlyProvider::new(f)))
+        }
+        other => Err(anyhow::anyhow!(
+            "Unknown provider '{}'. Options: hetzner, ssh, aws, gcp, digitalocean, fly", other
+        )),
+    }
 }
 
 fn dirs_or_default() -> PathBuf {

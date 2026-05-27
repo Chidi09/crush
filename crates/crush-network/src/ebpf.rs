@@ -1,6 +1,14 @@
 use std::process::Command;
 use crush_types::{Result, CrushError};
 
+#[derive(Debug, Default, Clone)]
+pub struct ContainerMetrics {
+    pub rx_bytes: u64,
+    pub tx_bytes: u64,
+    pub block_read_bytes: u64,
+    pub block_write_bytes: u64,
+}
+
 pub enum EbpfAvailability {
     Available,
     NoBtf,
@@ -247,6 +255,61 @@ impl EbpfManager {
 
         map.remove(&(host_port as u32))
             .map_err(|e| CrushError::NetworkError(format!("PORT_MAPPINGS remove: {}", e)))?;
+        Ok(())
+    }
+
+    pub fn read_container_metrics(&self, cgroup_id: u64) -> ContainerMetrics {
+        use aya::maps::HashMap;
+        let mut m = ContainerMetrics::default();
+
+        if let Some(map_ref) = self.bpf.map("NET_BYTES_MAP") {
+            if let Ok(map) = HashMap::<_, u64, u64>::try_from(map_ref) {
+                m.rx_bytes = map.get(&cgroup_id, 0).unwrap_or(0);
+            }
+        }
+        if let Some(map_ref) = self.bpf.map("NET_TX_MAP") {
+            if let Ok(map) = HashMap::<_, u64, u64>::try_from(map_ref) {
+                m.tx_bytes = map.get(&cgroup_id, 0).unwrap_or(0);
+            }
+        }
+        if let Some(map_ref) = self.bpf.map("BLOCK_READ_MAP") {
+            if let Ok(map) = HashMap::<_, u64, u64>::try_from(map_ref) {
+                m.block_read_bytes = map.get(&cgroup_id, 0).unwrap_or(0);
+            }
+        }
+        if let Some(map_ref) = self.bpf.map("BLOCK_WRITE_MAP") {
+            if let Ok(map) = HashMap::<_, u64, u64>::try_from(map_ref) {
+                m.block_write_bytes = map.get(&cgroup_id, 0).unwrap_or(0);
+            }
+        }
+        m
+    }
+
+    pub fn attach_metrics(&mut self, container_id: &str) -> Result<()> {
+        use aya::programs::{CgroupSkb, CgroupSkbAttachType};
+
+        let cgroup_path = format!("/sys/fs/cgroup/crush/{}", container_id);
+
+        let ingress: &mut CgroupSkb = self.bpf
+            .program_mut("crush_net_ingress")
+            .ok_or_else(|| CrushError::NetworkError("crush_net_ingress not found".into()))?
+            .try_into()
+            .map_err(|e| CrushError::NetworkError(format!("ingress cast: {}", e)))?;
+        ingress.load()
+            .map_err(|e| CrushError::NetworkError(format!("ingress load: {}", e)))?;
+        ingress.attach(std::path::Path::new(&cgroup_path), CgroupSkbAttachType::Ingress)
+            .map_err(|e| CrushError::NetworkError(format!("ingress attach {}: {}", cgroup_path, e)))?;
+
+        let egress: &mut CgroupSkb = self.bpf
+            .program_mut("crush_net_egress")
+            .ok_or_else(|| CrushError::NetworkError("crush_net_egress not found".into()))?
+            .try_into()
+            .map_err(|e| CrushError::NetworkError(format!("egress cast: {}", e)))?;
+        egress.load()
+            .map_err(|e| CrushError::NetworkError(format!("egress load: {}", e)))?;
+        egress.attach(std::path::Path::new(&cgroup_path), CgroupSkbAttachType::Egress)
+            .map_err(|e| CrushError::NetworkError(format!("egress attach {}: {}", cgroup_path, e)))?;
+
         Ok(())
     }
 }
