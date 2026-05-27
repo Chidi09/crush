@@ -21,6 +21,7 @@ use crush_services::{
 };
 use crush_image::ImageStore;
 use crush_compat::{DockerfileParser, ComposeLoader, DockerInstruction};
+use owo_colors::{OwoColorize, Stream::Stdout};
 use crush_ai::AiEngine;
 use crush_tui::TuiApp;
 
@@ -1023,11 +1024,19 @@ async fn main() -> anyhow::Result<()> {
 
             if is_multi_service {
                 let legs = stack.services.iter()
-                    .map(|s| format!("{} ({})", s.name, s.runtime_type))
+                    .map(|s| format!("{} ({})",
+                        s.name.if_supports_color(Stdout, |t| t.bold()),
+                        s.runtime_type.if_supports_color(Stdout, |t| t.cyan())))
                     .collect::<Vec<_>>().join(" · ");
-                println!("   ↳ detected: {} services — {}", stack.services.len(), legs);
+                println!("   {} detected: {} services — {}",
+                    "↳".if_supports_color(Stdout, |t| t.cyan()),
+                    stack.services.len().if_supports_color(Stdout, |t| t.bold()),
+                    legs);
             } else {
-                println!("   ↳ detected: {}{}", format_detection_line(&stack), extra_note);
+                println!("   {} detected: {}{}",
+                    "↳".if_supports_color(Stdout, |t| t.cyan()),
+                    format_detection_line(&stack).if_supports_color(Stdout, |t| t.bold()),
+                    extra_note.if_supports_color(Stdout, |t| t.dimmed()));
             }
 
             // ── 4. Build ──────────────────────────────────────────────────────────
@@ -1038,17 +1047,25 @@ async fn main() -> anyhow::Result<()> {
             let build_elapsed = build_start.elapsed();
 
             if outcome.was_cached {
-                println!("   ↳ dependencies layer cached (unchanged)");
+                println!("   {} dependencies layer cached {}",
+                    "↳".if_supports_color(Stdout, |t| t.cyan()),
+                    "(unchanged)".if_supports_color(Stdout, |t| t.dimmed()));
             }
 
             let image_name = format!("{}:latest", project_name);
             let size_mb = outcome.size_bytes as f64 / (1024.0 * 1024.0);
 
             if outcome.was_cached {
-                println!(" ✓ crushed to image {} ({:.0} MB)", image_name, size_mb);
+                println!(" {} crushed to image {} {}",
+                    "✓".if_supports_color(Stdout, |t| t.green().bold()),
+                    image_name.if_supports_color(Stdout, |t| t.bold()),
+                    format!("({:.0} MB)", size_mb).if_supports_color(Stdout, |t| t.dimmed()));
             } else {
-                println!(" ✓ crushed to image {} ({:.1}s · {:.0} MB)",
-                    image_name, build_elapsed.as_secs_f64(), size_mb);
+                println!(" {} crushed to image {} {}",
+                    "✓".if_supports_color(Stdout, |t| t.green().bold()),
+                    image_name.if_supports_color(Stdout, |t| t.bold()),
+                    format!("({:.1}s · {:.0} MB)", build_elapsed.as_secs_f64(), size_mb)
+                        .if_supports_color(Stdout, |t| t.dimmed()));
             }
 
             // ── 5. Prompt + native run ────────────────────────────────────────────
@@ -1096,16 +1113,25 @@ async fn main() -> anyhow::Result<()> {
                     };
 
                     if let Some(icmd) = install {
-                        println!("   ↳ {}: installing ({})...", sub.name, icmd);
+                        println!("   {} {}: installing {}",
+                            "↳".if_supports_color(Stdout, |t| t.cyan()),
+                            sub.name.if_supports_color(Stdout, |t| t.bold()),
+                            format!("({})", icmd).if_supports_color(Stdout, |t| t.dimmed()));
                         let st = spawn_shell(&icmd, &sub_path, &dep_env).status().await
                             .map_err(|e| anyhow::anyhow!("install for {} failed: {}", sub.name, e))?;
                         if !st.success() {
-                            eprintln!("   ↳ {}: install failed, skipping spawn", sub.name);
+                            eprintln!("   {} {}: install failed, skipping spawn",
+                                "✗".if_supports_color(Stdout, |t| t.red().bold()),
+                                sub.name.if_supports_color(Stdout, |t| t.bold()));
                             continue;
                         }
                     }
 
-                    println!("   ↳ {}: starting `{}` on :{}...", sub.name, run, sub.port);
+                    println!("   {} {}: starting {} on {}",
+                        "↳".if_supports_color(Stdout, |t| t.cyan()),
+                        sub.name.if_supports_color(Stdout, |t| t.bold()),
+                        format!("`{}`", run).if_supports_color(Stdout, |t| t.dimmed()),
+                        format!(":{}", sub.port).if_supports_color(Stdout, |t| t.cyan()));
                     let mut cmd = spawn_shell(&run, &sub_path, &dep_env);
                     cmd.env("PORT", sub.port.to_string());
                     match cmd.spawn() {
@@ -1132,16 +1158,24 @@ async fn main() -> anyhow::Result<()> {
                 let total = overall_start.elapsed().as_secs_f64();
                 let _ = overall_spawn;
                 for (name, port) in &ready {
-                    println!(" ✓ {} on :{}", name, port);
+                    println!(" {} {} on {}",
+                        "✓".if_supports_color(Stdout, |t| t.green().bold()),
+                        name.if_supports_color(Stdout, |t| t.bold()),
+                        format!(":{}", port).if_supports_color(Stdout, |t| t.cyan()));
                 }
                 let missing: Vec<&String> = children.iter()
                     .map(|(n, _, _)| n)
                     .filter(|n| !ready.iter().any(|(rn, _)| rn == *n))
                     .collect();
                 for m in &missing {
-                    eprintln!(" ✗ {} did not bind", m);
+                    eprintln!(" {} {} did not bind",
+                        "✗".if_supports_color(Stdout, |t| t.red().bold()),
+                        m.if_supports_color(Stdout, |t| t.bold()));
                 }
-                println!("   ↳ multi-service run started in {:.1}s — Ctrl+C to stop all", total);
+                println!("   {} multi-service run started in {} — {}",
+                    "↳".if_supports_color(Stdout, |t| t.cyan()),
+                    format!("{:.1}s", total).if_supports_color(Stdout, |t| t.dimmed()),
+                    "Ctrl+C to stop all".if_supports_color(Stdout, |t| t.dimmed()));
 
                 // Block until any child exits, then kill the rest.
                 let mut child_handles = children.into_iter().map(|(_, _, c)| c).collect::<Vec<_>>();
@@ -1205,7 +1239,9 @@ async fn main() -> anyhow::Result<()> {
                 };
 
                 if let Some(ref icmd) = install_cmd {
-                    println!("   ↳ installing dependencies ({})...", icmd);
+                    println!("   {} installing dependencies {}",
+                        "↳".if_supports_color(Stdout, |t| t.cyan()),
+                        format!("({})", icmd).if_supports_color(Stdout, |t| t.dimmed()));
                     let bstatus = spawn_shell(icmd, &project_root, &dep_env)
                         .status()
                         .await
@@ -1235,16 +1271,20 @@ async fn main() -> anyhow::Result<()> {
                 if port_ready {
                     let startup_s = spawn_start.elapsed().as_secs_f64();
                     let total_s = overall_start.elapsed().as_secs_f64();
-                    println!(" ✓ running natively on :{} — started in {:.1}s (total: {:.1}s!)",
-                        port, startup_s, total_s);
+                    println!(" {} running natively on {} {}",
+                        "✓".if_supports_color(Stdout, |t| t.green().bold()),
+                        format!(":{}", port).if_supports_color(Stdout, |t| t.cyan().bold()),
+                        format!("— started in {:.1}s (total: {:.1}s!)", startup_s, total_s)
+                            .if_supports_color(Stdout, |t| t.dimmed()));
                 } else if let Ok(Some(status)) = child.try_wait() {
-                    // Process already exited — the app crashed or failed to build.
-                    eprintln!(" ✗ app exited before binding :{} (exit code {})",
-                        port, status.code().unwrap_or(-1));
+                    eprintln!(" {} app exited before binding {} (exit code {})",
+                        "✗".if_supports_color(Stdout, |t| t.red().bold()),
+                        format!(":{}", port).if_supports_color(Stdout, |t| t.cyan()),
+                        status.code().unwrap_or(-1));
                 } else {
-                    // Process is still running but never bound the port.
-                    eprintln!(" ✗ no response on :{} after 10s — app may still be starting or bound to a different port",
-                        port);
+                    eprintln!(" {} no response on {} after 10s — app may still be starting or bound to a different port",
+                        "⚠".if_supports_color(Stdout, |t| t.yellow().bold()),
+                        format!(":{}", port).if_supports_color(Stdout, |t| t.cyan()));
                 }
 
                 let status = child.wait().await
