@@ -35,8 +35,9 @@ use libc;
 #[derive(Parser, Debug)]
 #[command(name = "crush")]
 #[command(author = "Crush Contributors")]
-#[command(version = "0.4.0")]
+#[command(version = "0.5.0")]
 #[command(about = "A from-scratch, production-grade container runtime in Rust", long_about = None)]
+#[command(subcommand_required = false, arg_required_else_help = false)]
 struct Cli {
     #[arg(short, long, help = "Path to custom Crushfile", default_value = "Crushfile")]
     config: String,
@@ -45,7 +46,7 @@ struct Cli {
     no_interactive: bool,
 
     #[command(subcommand)]
-    command: Commands,
+    command: Option<Commands>,
 }
 
 #[derive(Subcommand, Debug)]
@@ -687,6 +688,79 @@ fn format_bytes(bytes: u64) -> String {
     else { format!("{} B", bytes) }
 }
 
+fn format_detection_line(stack: &crush_build::InferredStack) -> String {
+    let (runtime_raw, framework) = if let Some(idx) = stack.language.find(" (") {
+        let rt = &stack.language[..idx];
+        let fw = stack.language[idx + 2..].trim_end_matches(')');
+        (rt, if fw == rt || fw == "generic" || fw.is_empty() { "" } else { fw })
+    } else {
+        (stack.language.as_str(), "")
+    };
+
+    let runtime_display = match runtime_raw {
+        "node" | "typescript" => "Node.js",
+        "python" => "Python",
+        "rust" => "Rust",
+        "go" => "Go",
+        "java" => "Java",
+        "dotnet" => ".NET",
+        "ruby" => "Ruby",
+        "php" => "PHP",
+        "elixir" => "Elixir",
+        "swift" => "Swift",
+        "deno" => "Deno",
+        "bun" => "Bun",
+        other => other,
+    };
+
+    let v = stack.runtime_version.trim();
+    let version_major = if v.is_empty() || v == "latest" || v == "lts" {
+        String::new()
+    } else {
+        v.split('.').next().unwrap_or("").to_string()
+    };
+
+    let runtime_with_ver = if version_major.is_empty() {
+        runtime_display.to_string()
+    } else {
+        format!("{} {}", runtime_display, version_major)
+    };
+
+    let lang_part = if runtime_raw == "typescript" { " · TypeScript" } else { "" };
+
+    if framework.is_empty() {
+        format!("{}{}", runtime_with_ver, lang_part)
+    } else {
+        let fw_display = match framework {
+            "next" => "Next.js",
+            "nuxt" => "Nuxt",
+            "express" => "Express",
+            "fastapi" => "FastAPI",
+            "flask" => "Flask",
+            "django" => "Django",
+            "rails" => "Rails",
+            "sinatra" => "Sinatra",
+            "laravel" => "Laravel",
+            "symfony" => "Symfony",
+            "gin" => "Gin",
+            "echo" => "Echo",
+            "fiber" => "Fiber",
+            "actix" => "Actix-web",
+            "rocket" => "Rocket",
+            "axum" => "Axum",
+            "phoenix" => "Phoenix",
+            "remix" => "Remix",
+            "astro" => "Astro",
+            "svelte" | "sveltekit" => "SvelteKit",
+            "vue" => "Vue",
+            "angular" => "Angular",
+            "react" => "React",
+            other => other,
+        };
+        format!("{}{} · {}", runtime_with_ver, lang_part, fw_display)
+    }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -697,7 +771,8 @@ async fn main() -> anyhow::Result<()> {
     let data_dir = dirs_or_default();
     let store = ImageStore::new(data_dir.join("images")).await?;
 
-    match cli.command {
+    let command = cli.command.unwrap_or(Commands::Default);
+    match command {
         Commands::Default => {
             let project_root = std::env::current_dir()?;
             
@@ -842,34 +917,90 @@ async fn main() -> anyhow::Result<()> {
                     .status()
                     .map_err(|e| CrushError::Internal(anyhow::anyhow!("{}", e)))?;
                 std::process::exit(status.code().unwrap_or(0));
-            } else if project_root.join("Crushfile").exists() {
-                // existing behavior: run building Stack Detection but with message
-                println!("Found Crushfile, launching stack detector...");
-                let detector = StackDetector::new();
-                let stack = detector.detect(&project_root).await?;
-                println!("Detected stack: {} (confidence: {:.2})", stack.language, stack.confidence);
-                println!("  Build: {}", stack.build_command);
-                println!("  Entry: {}", stack.entry_point);
-                println!("  Port:  {}", stack.default_port);
-
-                let cache_dir = data_dir.join("cache");
-                let engine = BuildEngine::new(cache_dir);
-                let digest = engine.execute_layered_build(&project_root, &stack).await?;
-                println!("Build complete: digest={}", digest);
             } else {
-                // 4. nothing: stack auto-detect
-                info!("Scanning project for stack detection...");
+                let overall_start = std::time::Instant::now();
+
                 let detector = StackDetector::new();
                 let stack = detector.detect(&project_root).await?;
-                println!("Detected stack: {} (confidence: {:.2})", stack.language, stack.confidence);
-                println!("  Build: {}", stack.build_command);
-                println!("  Entry: {}", stack.entry_point);
-                println!("  Port:  {}", stack.default_port);
+                println!("   \u{21b3} detected: {}", format_detection_line(&stack));
 
                 let cache_dir = data_dir.join("cache");
                 let engine = BuildEngine::new(cache_dir);
-                let digest = engine.execute_layered_build(&project_root, &stack).await?;
-                println!("Build complete: digest={}", digest);
+                let build_start = std::time::Instant::now();
+                let outcome = engine.execute_layered_build(&project_root, &stack).await?;
+                let build_elapsed = build_start.elapsed();
+
+                if outcome.was_cached {
+                    println!("   \u{21b3} dependencies layer cached (unchanged)");
+                }
+
+                let project_name = project_root.file_name()
+                    .map(|n| n.to_string_lossy().to_lowercase())
+                    .unwrap_or_else(|| "app".into());
+                let image_name = format!("{}:latest", project_name);
+                let size_mb = outcome.size_bytes as f64 / (1024.0 * 1024.0);
+
+                if outcome.was_cached {
+                    println!(" \u{2713} crushed to image {} ({:.0} MB)", image_name, size_mb);
+                } else {
+                    println!(" \u{2713} crushed to image {} ({:.1}s \u{00b7} {:.0} MB)",
+                        image_name, build_elapsed.as_secs_f64(), size_mb);
+                }
+
+                let should_run = if cli.no_interactive {
+                    true
+                } else {
+                    use std::io::Write;
+                    print!("   run it now? [Y/n] ");
+                    std::io::stdout().flush().ok();
+                    let mut input = String::new();
+                    std::io::stdin().read_line(&mut input).ok();
+                    let t = input.trim().to_lowercase();
+                    t.is_empty() || t == "y" || t == "yes"
+                };
+
+                if should_run {
+                    let port = stack.default_port;
+                    let parts: Vec<&str> = stack.entry_point.split_whitespace().collect();
+                    if parts.is_empty() {
+                        eprintln!("No entry point detected — run your app manually.");
+                        return Ok(());
+                    }
+
+                    let spawn_start = std::time::Instant::now();
+                    let mut child = tokio::process::Command::new(parts[0])
+                        .args(&parts[1..])
+                        .current_dir(&project_root)
+                        .env("PORT", port.to_string())
+                        .spawn()
+                        .map_err(|e| anyhow::anyhow!("Failed to start `{}`: {}", stack.entry_point, e))?;
+
+                    // Poll for port readiness (up to 10 s)
+                    let mut port_ready = false;
+                    for _ in 0..100u32 {
+                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                        if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.is_ok() {
+                            port_ready = true;
+                            break;
+                        }
+                        if let Ok(Some(_)) = child.try_wait() { break; }
+                    }
+
+                    if port_ready {
+                        let startup_s = spawn_start.elapsed().as_secs_f64();
+                        let total_s = overall_start.elapsed().as_secs_f64();
+                        println!(" \u{2713} running natively on :{} \u{2014} started in {:.1}s (total: {:.1}s!)",
+                            port, startup_s, total_s);
+                    } else {
+                        println!(" \u{2713} running natively on :{}", port);
+                    }
+
+                    let status = child.wait().await
+                        .map_err(|e| anyhow::anyhow!("Process wait error: {}", e))?;
+                    if let Some(code) = status.code() {
+                        if code != 0 { std::process::exit(code); }
+                    }
+                }
             }
         }
         Commands::Detect(args) => {
@@ -970,7 +1101,8 @@ async fn main() -> anyhow::Result<()> {
             let stack = detector.detect(&project_root).await?;
 
             // 1. Initial build & register image
-            let digest = engine.execute_layered_build(&project_root, &stack).await?;
+            let outcome = engine.execute_layered_build(&project_root, &stack).await?;
+            let digest = outcome.digest.clone();
             println!("[Watch] Initial build complete: {}", digest);
 
             // Copy layer to image store blobs
@@ -1083,7 +1215,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("[Watch] Change detected: {:?}", change);
                 // Perform build
                 let digest = match engine.execute_layered_build(&project_root, &stack).await {
-                    Ok(d) => d,
+                    Ok(o) => o.digest,
                     Err(e) => {
                         eprintln!("[Watch] Build failed: {}", e);
                         continue;

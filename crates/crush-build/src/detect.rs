@@ -128,7 +128,7 @@ impl CrushSpecDetector {
 
     fn resolve_base_image(d: &Detection) -> String {
         let ver = d.runtime_version.trim();
-        // Extract major version only (e.g. "20.11.0" → "20", "3.11.2" → "3.11")
+        let unknown = ver.is_empty() || ver == "latest" || ver == "lts";
         let major = ver.split('.').next().unwrap_or(ver);
         let major_minor = {
             let parts: Vec<&str> = ver.splitn(3, '.').collect();
@@ -137,40 +137,51 @@ impl CrushSpecDetector {
 
         match d.runtime_type {
             RuntimeType::Node | RuntimeType::TypeScript => {
-                format!("node:{}-alpine", major)
+                if unknown { "node:lts-alpine".to_string() }
+                else { format!("node:{}-alpine", major) }
             }
             RuntimeType::Bun => {
-                format!("oven/bun:{}", major)
+                if unknown { "oven/bun:latest".to_string() }
+                else { format!("oven/bun:{}", major) }
             }
             RuntimeType::Deno => {
-                format!("denoland/deno:{}", ver)
+                if unknown { "denoland/deno:latest".to_string() }
+                else { format!("denoland/deno:{}", ver) }
             }
             RuntimeType::Python => {
-                format!("python:{}-slim", major_minor)
+                if unknown { "python:3-slim".to_string() }
+                else { format!("python:{}-slim", major_minor) }
             }
             RuntimeType::Rust => {
-                "rust:alpine".to_string()  // Rust builds produce a static binary; use scratch or alpine
+                "rust:alpine".to_string()
             }
             RuntimeType::Go => {
-                format!("golang:{}-alpine", major_minor)
+                if unknown { "golang:1-alpine".to_string() }
+                else { format!("golang:{}-alpine", major_minor) }
             }
             RuntimeType::Java => {
-                format!("eclipse-temurin:{}-jre-alpine", major)
+                if unknown { "eclipse-temurin:21-jre-alpine".to_string() }
+                else { format!("eclipse-temurin:{}-jre-alpine", major) }
             }
             RuntimeType::DotNet => {
-                format!("mcr.microsoft.com/dotnet/aspnet:{}", major_minor)
+                if unknown { "mcr.microsoft.com/dotnet/aspnet:8".to_string() }
+                else { format!("mcr.microsoft.com/dotnet/aspnet:{}", major_minor) }
             }
             RuntimeType::Ruby => {
-                format!("ruby:{}-alpine", major_minor)
+                if unknown { "ruby:3-alpine".to_string() }
+                else { format!("ruby:{}-alpine", major_minor) }
             }
             RuntimeType::Php => {
-                format!("php:{}-fpm-alpine", major_minor)
+                if unknown { "php:8-fpm-alpine".to_string() }
+                else { format!("php:{}-fpm-alpine", major_minor) }
             }
             RuntimeType::Elixir => {
-                format!("elixir:{}-alpine", major_minor)
+                if unknown { "elixir:alpine".to_string() }
+                else { format!("elixir:{}-alpine", major_minor) }
             }
             RuntimeType::Swift => {
-                format!("swift:{}-slim", major_minor)
+                if unknown { "swift:slim".to_string() }
+                else { format!("swift:{}-slim", major_minor) }
             }
             RuntimeType::Generic => {
                 "ubuntu:22.04".to_string()

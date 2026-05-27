@@ -150,13 +150,19 @@ impl AnalysisEngine {
             .filter(|e| e.file_type().is_file())
             .filter(|e| {
                 let path = e.path();
-                // Skip by extension
                 if let Some(ext) = path.extension().and_then(|x| x.to_str()) {
                     if SKIP_EXTENSIONS.contains(&ext) { return false; }
                 }
-                // Skip user-configured paths
                 let rel = path.strip_prefix(root).unwrap_or(path)
                     .to_string_lossy().replace('\\', "/");
+                // Belt-and-suspenders: exclude any file inside a skipped dir
+                // even if filter_entry didn't prune it (e.g. symlinks on Windows).
+                if SKIP_DIRS.iter().any(|skip| {
+                    rel.starts_with(&format!("{}/", skip))
+                        || rel.contains(&format!("/{}/", skip))
+                }) {
+                    return false;
+                }
                 !self.config.skip_paths.iter().any(|p| rel.contains(p.as_str()))
             })
             .map(|e| e.path().to_path_buf())

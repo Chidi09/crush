@@ -39,6 +39,13 @@ pub struct InferredStack {
     pub base_image: String,
 }
 
+pub struct BuildOutcome {
+    pub digest: String,
+    pub was_cached: bool,
+    pub size_bytes: u64,
+    pub duration_ms: u64,
+}
+
 impl From<Detection> for InferredStack {
     fn from(d: Detection) -> Self {
         Self {
@@ -77,8 +84,9 @@ impl BuildEngine {
         }
     }
 
-    pub async fn execute_layered_build(&self, project_root: &PathBuf, stack: &InferredStack) -> Result<String> {
+    pub async fn execute_layered_build(&self, project_root: &PathBuf, stack: &InferredStack) -> Result<BuildOutcome> {
         use sha2::{Sha256, Digest};
+        let t0 = std::time::Instant::now();
 
         let mut hasher = Sha256::new();
         let mut all_content = Vec::new();
@@ -90,7 +98,15 @@ impl BuildEngine {
         let digest = format!("sha256:{}", hex::encode(hasher.finalize()));
         let layer_file = self.layer_path(&digest);
 
-        if layer_file.exists() { return Ok(digest); }
+        if layer_file.exists() {
+            let size_bytes = fs::metadata(&layer_file).map(|m| m.len()).unwrap_or(0);
+            return Ok(BuildOutcome {
+                digest,
+                was_cached: true,
+                size_bytes,
+                duration_ms: t0.elapsed().as_millis() as u64,
+            });
+        }
 
         fs::create_dir_all(layer_file.parent().unwrap())
             .map_err(|e| CrushError::StorageError(e.to_string()))?;
@@ -109,10 +125,16 @@ impl BuildEngine {
                 .map_err(|e| CrushError::StorageError(e.to_string()))?
         };
 
+        let size_bytes = compressed.len() as u64;
         fs::write(&layer_file, &compressed)
             .map_err(|e| CrushError::StorageError(e.to_string()))?;
 
-        Ok(digest)
+        Ok(BuildOutcome {
+            digest,
+            was_cached: false,
+            size_bytes,
+            duration_ms: t0.elapsed().as_millis() as u64,
+        })
     }
 
     fn layer_path(&self, digest: &str) -> PathBuf {
