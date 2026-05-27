@@ -117,26 +117,30 @@ impl ServiceDriver for PostgresDriver {
             fs::write(&pwfile, &password)
                 .context("Failed to write initdb password file")?;
 
-            let status = tokio::process::Command::new(&pg_ctl)
+            // Call initdb directly (same bin/ dir as pg_ctl) so each arg is
+            // passed cleanly — no quoting issues with paths that contain spaces.
+            let initdb = pg_ctl.parent()
+                .map(|p| p.join(if cfg!(target_os = "windows") { "initdb.exe" } else { "initdb" }))
+                .unwrap_or_else(|| PathBuf::from("initdb"));
+
+            let output = tokio::process::Command::new(&initdb)
                 .args([
-                    "initdb",
                     "-D", &data_dir.to_string_lossy(),
-                    "-o", &format!(
-                        "--pwfile={} --username=postgres --auth=md5",
-                        pwfile.display()
-                    ),
+                    "--pwfile", &pwfile.to_string_lossy(),
+                    "--username", "postgres",
+                    "--auth", "md5",
                     "--no-instructions",
                 ])
                 .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
+                .output()
                 .await
-                .context("Failed to run pg_ctl initdb")?;
+                .context("Failed to run initdb")?;
 
             let _ = fs::remove_file(&pwfile);
 
-            if !status.success() {
-                anyhow::bail!("PostgreSQL cluster initialisation failed (pg_ctl initdb returned non-zero)");
+            if !output.status.success() {
+                let stderr = String::from_utf8_lossy(&output.stderr);
+                anyhow::bail!("PostgreSQL cluster initialisation failed:\n{}", stderr.trim());
             }
         }
 
