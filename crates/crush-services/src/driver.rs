@@ -6,6 +6,7 @@ use serde::{Serialize, Deserialize};
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ServiceConfig {
     pub port: u16,
+    pub user: Option<String>,       // for postgres: superuser name
     pub password: Option<String>,   // for postgres: superuser password
     pub database: Option<String>,   // for postgres: initial db name
     pub extra_env: Vec<(String, String)>,

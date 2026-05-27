@@ -539,11 +539,13 @@ pub async fn start_dep_service_smart(
         let host_port = dep.ports.iter().next().map(|(hp, _)| *hp).unwrap_or(0);
         let password = dep.env.iter().find(|(k, _)| k == "POSTGRES_PASSWORD" || k == "REDIS_PASSWORD").map(|(_, v)| v.clone());
         let database = dep.env.iter().find(|(k, _)| k == "POSTGRES_DB").map(|(_, v)| v.clone());
+        let user = dep.env.iter().find(|(k, _)| k == "POSTGRES_USER").map(|(_, v)| v.clone());
 
         let config = crush_services::ServiceConfig {
-            port: if host_port > 0 { host_port } else { 
+            port: if host_port > 0 { host_port } else {
                 if driver_name == "postgres" { 5432 } else { 6379 }
             },
+            user,
             password,
             database,
             extra_env: dep.env.clone(),

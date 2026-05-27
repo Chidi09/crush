@@ -120,6 +120,7 @@ impl ServiceDriver for PostgresDriver {
             fs::create_dir_all(data_dir).context("Failed to create Postgres data directory")?;
 
             let password = config.password.clone().unwrap_or_else(|| "postgres".to_string());
+            let username = config.user.clone().unwrap_or_else(|| "postgres".to_string());
             // Write the pwfile to the PARENT of data_dir — initdb requires the
             // data directory to be completely empty.
             let pwfile = data_dir.parent()
@@ -138,7 +139,7 @@ impl ServiceDriver for PostgresDriver {
                 .args([
                     "-D", &data_dir.to_string_lossy(),
                     "--pwfile", &pwfile.to_string_lossy(),
-                    "--username", "postgres",
+                    "--username", &username,
                     "--auth", "md5",
                     "--no-instructions",
                 ])
@@ -191,6 +192,30 @@ impl ServiceDriver for PostgresDriver {
             .ok()
             .and_then(|s| s.lines().next()?.trim().parse::<u32>().ok())
             .unwrap_or(0);
+
+        // If a database name was requested that differs from the superuser
+        // (which initdb creates automatically), create it via createdb.
+        let username = config.user.clone().unwrap_or_else(|| "postgres".to_string());
+        if let Some(ref db) = config.database {
+            if db != &username {
+                let createdb = pg_ctl.parent()
+                    .map(|p| p.join(if cfg!(target_os = "windows") { "createdb.exe" } else { "createdb" }))
+                    .unwrap_or_else(|| PathBuf::from("createdb"));
+                // Ignore errors: most likely the db already exists from a previous run.
+                let _ = tokio::process::Command::new(&createdb)
+                    .args([
+                        "-h", "localhost",
+                        "-p", &config.port.to_string(),
+                        "-U", &username,
+                        db,
+                    ])
+                    .env("PGPASSWORD", config.password.clone().unwrap_or_default())
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .await;
+            }
+        }
 
         Ok(RunningService {
             name: "postgres".to_string(),
