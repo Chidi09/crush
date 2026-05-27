@@ -11,6 +11,7 @@ description = "Crush build system — layered image construction, content-addres
 tokio = { workspace = true }
 serde = { workspace = true }
 serde_json = { workspace = true }
+serde_yaml = { workspace = true }
 toml = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }

@@ -14,6 +14,7 @@ pub mod sbom;
 pub mod attest;
 pub mod progress;
 pub mod analysis;
+pub mod service_orchestrator;
 
 use std::path::PathBuf;
 use std::fs;
@@ -27,6 +28,14 @@ pub use pipeline::{BuildPipeline, PipelineResult};
 pub use stages::MultiStageGraph;
 pub use secrets::BuildSecrets;
 pub use progress::BuildProgress;
+pub use service_orchestrator::{
+    ParsedCompose, DepService, AppServiceHints,
+    BackendKind, ServiceState, RunningContainer,
+    detect_backend, parse_compose,
+    start_dep_service, stop_dep_service,
+    rewrite_env_hostnames,
+    save_service_state, load_service_state, clear_service_state,
+};
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct InferredStack {

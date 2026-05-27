@@ -5,6 +5,13 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 use crush_types::*;
 use crush_build::{StackDetector, BuildEngine};
+use crush_build::{
+    detect_backend, parse_compose, BackendKind,
+    start_dep_service, stop_dep_service,
+    rewrite_env_hostnames,
+    save_service_state, load_service_state, clear_service_state,
+    ServiceState, RunningContainer,
+};
 use crush_image::ImageStore;
 use crush_compat::{DockerfileParser, ComposeLoader, DockerInstruction};
 use crush_ai::AiEngine;
@@ -35,7 +42,7 @@ use libc;
 #[derive(Parser, Debug)]
 #[command(name = "crush")]
 #[command(author = "Crush Contributors")]
-#[command(version = "0.5.1")]
+#[command(version = "0.6.0")]
 #[command(about = "A from-scratch, production-grade container runtime in Rust", long_about = None)]
 #[command(subcommand_required = false, arg_required_else_help = false)]
 struct Cli {
@@ -111,6 +118,8 @@ enum Commands {
     Daemon(DaemonArgs),
     #[command(about = "Install crush to a system directory and add it to PATH")]
     Install,
+    #[command(about = "Manage crush-started dependency services (postgres, redis, etc.)")]
+    Services(ServicesArgs),
     #[command(about = "Run health checks on a container")]
     Health(HealthArgs),
     #[command(about = "Deploy a project to cloud infrastructure defined in the Crushfile")]
@@ -258,6 +267,20 @@ struct InspectArgs {
     inspect_type: String,
     #[arg(long, help = "Format output (pretty, json)", default_value = "pretty")]
     format: String,
+}
+
+#[derive(Args, Debug)]
+struct ServicesArgs {
+    #[command(subcommand)]
+    cmd: Option<ServicesSubcommand>,
+}
+
+#[derive(Subcommand, Debug)]
+enum ServicesSubcommand {
+    #[command(about = "Show running crush-managed services for this project")]
+    Status,
+    #[command(about = "Stop all crush-managed services for this project")]
+    Stop,
 }
 
 #[derive(Args, Debug)]
@@ -688,6 +711,27 @@ fn format_bytes(bytes: u64) -> String {
     else { format!("{} B", bytes) }
 }
 
+/// Scans a Dockerfile for EXPOSE and ENV PORT= to extract the port hint.
+/// Returns (port, None) — entry_point is always from stack detection for native runs.
+fn extract_dockerfile_hints(path: &std::path::Path) -> (Option<u16>, Option<String>) {
+    let content = match std::fs::read_to_string(path) {
+        Ok(c) => c,
+        Err(_) => return (None, None),
+    };
+    let mut port: Option<u16> = None;
+    for line in content.lines() {
+        let trimmed = line.trim();
+        if port.is_none() {
+            if let Some(rest) = trimmed.strip_prefix("EXPOSE ") {
+                port = rest.split('/').next().and_then(|p| p.trim().parse().ok());
+            } else if let Some(rest) = trimmed.strip_prefix("ENV PORT=").or_else(|| trimmed.strip_prefix("ENV PORT ")) {
+                port = rest.split_whitespace().next().and_then(|p| p.parse().ok());
+            }
+        }
+    }
+    (port, None)
+}
+
 fn format_detection_line(stack: &crush_build::InferredStack) -> String {
     let (runtime_raw, framework) = if let Some(idx) = stack.language.find(" (") {
         let rt = &stack.language[..idx];
@@ -775,231 +819,159 @@ async fn main() -> anyhow::Result<()> {
     match command {
         Commands::Default => {
             let project_root = std::env::current_dir()?;
-            
-            // Priority Ladder:
-            // 1. Compose files
+            let overall_start = std::time::Instant::now();
+            let project_name = project_root.file_name()
+                .map(|n| n.to_string_lossy().to_lowercase().replace([' ', '-'], "_"))
+                .unwrap_or_else(|| "app".into());
+
+            // ── 1. Compose: start dep services, extract app hints ────────────────
             let compose_files = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
-            let mut found_compose = None;
-            for cf in &compose_files {
-                let p = project_root.join(cf);
-                if p.exists() {
-                    found_compose = Some(p);
-                    break;
+            let compose_path = compose_files.iter().map(|f| project_root.join(f)).find(|p| p.exists());
+
+            let mut dep_env: Vec<(String, String)> = Vec::new();
+            let mut dep_service_names: Vec<String> = Vec::new();
+            let mut app_command_override: Option<String> = None;
+            let mut port_override: Option<u16> = None;
+
+            if let Some(ref cp) = compose_path {
+                match parse_compose(cp) {
+                    Ok(parsed) => {
+                        if !parsed.dep_services.is_empty() {
+                            let backend = detect_backend();
+                            if matches!(backend, BackendKind::None) {
+                                println!("   ↳ compose services found — install Docker or WSL2+Docker to start them automatically");
+                            } else {
+                                let state_dir = data_dir.join("services");
+                                let mut running = Vec::new();
+                                for dep in &parsed.dep_services {
+                                    print!("   ↳ starting {} ({})... ", dep.name, dep.image);
+                                    use std::io::Write;
+                                    let _ = std::io::stdout().flush();
+                                    match start_dep_service(&backend, dep, &project_name).await {
+                                        Ok(cname) => {
+                                            println!("ok");
+                                            dep_service_names.push(dep.name.clone());
+                                            running.push(RunningContainer {
+                                                service_name: dep.name.clone(),
+                                                container_name: cname,
+                                                ports: dep.ports.clone(),
+                                            });
+                                        }
+                                        Err(e) => println!("failed: {}", e),
+                                    }
+                                }
+                                if !running.is_empty() {
+                                    let state = ServiceState {
+                                        project: project_name.clone(),
+                                        backend: backend.as_str().to_string(),
+                                        containers: running,
+                                        started_at: std::time::SystemTime::now()
+                                            .duration_since(std::time::UNIX_EPOCH)
+                                            .unwrap_or_default().as_secs(),
+                                    };
+                                    let _ = save_service_state(&state_dir, &state);
+                                }
+                            }
+                        }
+                        if let Some(hints) = parsed.app_hints {
+                            let rewritten = rewrite_env_hostnames(&hints.env, &dep_service_names);
+                            dep_env = rewritten;
+                            app_command_override = hints.command;
+                            port_override = hints.port;
+                        }
+                    }
+                    Err(e) => {
+                        println!("   ↳ compose parse warning: {} — proceeding with stack detection", e);
+                    }
                 }
             }
 
-            if let Some(compose_path) = found_compose {
-                println!("Found {}, running compose up...", compose_path.file_name().unwrap().to_string_lossy());
-                run_compose_up(&compose_path, &data_dir, &store).await?;
-            } else if project_root.join("Dockerfile").exists() || project_root.join("dockerfile").exists() {
-                let dockerfile_path = if project_root.join("Dockerfile").exists() {
-                    project_root.join("Dockerfile")
-                } else {
-                    project_root.join("dockerfile")
-                };
+            // ── 3. Stack Detection ────────────────
+            let detector = StackDetector::new();
+            let stack = detector.detect(&project_root).await?;
 
-                let tag = project_root.file_name()
-                    .map(|n| format!("{}:latest", n.to_string_lossy().to_lowercase()))
-                    .unwrap_or_else(|| "app:latest".to_string());
+            let extra_note = if !dep_service_names.is_empty() {
+                format!(" (+ {} service{})", dep_service_names.len(),
+                    if dep_service_names.len() == 1 { "" } else { "s" })
+            } else { String::new() };
+            println!("   ↳ detected: {}{}", format_detection_line(&stack), extra_note);
 
-                println!("Found Dockerfile — building {}...", tag);
+            // ── 4. Build ──────────────────────────────────────────────────────────
+            let cache_dir = data_dir.join("cache");
+            let engine = BuildEngine::new(cache_dir);
+            let build_start = std::time::Instant::now();
+            let outcome = engine.execute_layered_build(&project_root, &stack).await?;
+            let build_elapsed = build_start.elapsed();
 
-                // 1. Parse Dockerfile
-                let parser = crush_compat::DockerfileParserV2::new();
-                let df = parser.parse_path(&dockerfile_path)?;
+            if outcome.was_cached {
+                println!("   ↳ dependencies layer cached (unchanged)");
+            }
 
-                // 2. Pull the base image (first FROM instruction)
-                let base_image = df.stages.first()
-                    .and_then(|s| s.base_image.clone())
-                    .unwrap_or_else(|| "debian:bookworm-slim".to_string());
+            let image_name = format!("{}:latest", project_name);
+            let size_mb = outcome.size_bytes as f64 / (1024.0 * 1024.0);
 
-                if base_image != "scratch" {
-                    println!("  Pulling base image {}...", base_image);
-                    let _ = store.pull_image(&base_image).await; // best-effort; skip scratch
-                }
-
-                // 3. Extract ENV, EXPOSE, CMD, ENTRYPOINT from the last stage
-                let mut env_vars: Vec<String> = Vec::new();
-                let mut exposed_ports: Vec<String> = Vec::new();
-                let mut cmd: Vec<String> = Vec::new();
-                let mut entrypoint: Vec<String> = Vec::new();
-
-                for stage in &df.stages {
-                    for instr in &stage.instructions {
-                        match instr {
-                            DockerInstruction::Env { pairs } => {
-                                for (k, v) in pairs { env_vars.push(format!("{}={}", k, v)); }
-                            }
-                            DockerInstruction::Expose { ports } => exposed_ports.extend(ports.clone()),
-                            DockerInstruction::Cmd { args, .. } => cmd = args.clone(),
-                            DockerInstruction::Entrypoint { args, .. } => entrypoint = args.clone(),
-                            _ => {}
-                        }
-                    }
-                }
-
-                // 4. Build from base (overlay project files)
-                let image = match store.database().get_image_by_tag(&base_image).await? {
-                    Some(img) => img,
-                    None => {
-                        return Err(anyhow::anyhow!("Base image {} not available. Run `crush pull {}` first.", base_image, base_image));
-                    }
-                };
-
-                // 5. Create + run container (reuse run logic)
-                // Resolve port mappings from EXPOSE
-                let ports: Vec<PortMapping> = exposed_ports.iter().filter_map(|p| {
-                    let num: u16 = p.split('/').next()?.parse().ok()?;
-                    Some(PortMapping { host_ip: "0.0.0.0".to_string(), host_port: num, container_port: num, protocol: Protocol::Tcp })
-                }).collect();
-
-                let effective_cmd = if !entrypoint.is_empty() {
-                    let mut v = entrypoint.clone();
-                    v.extend(cmd.iter().cloned());
-                    v
-                } else if !cmd.is_empty() {
-                    cmd.clone()
-                } else {
-                    vec!["/bin/sh".to_string()]
-                };
-
-                let container_id = format!("crush_{}", hex_encode_random());
-                let container_name = tag.replace(':', "_").replace('/', "_");
-
-                let container = Container {
-                    id: container_id.clone(),
-                    name: container_name.clone(),
-                    image: base_image.clone(),
-                    status: ContainerStatus::Creating,
-                    pid: None,
-                    created_at: SystemTime::now(),
-                    started_at: None,
-                    ports,
-                    mounts: vec![],
-                    memory_limit_bytes: None,
-                    cpu_shares: None,
-                    health: None,
-                    restart_count: Some(0),
-                    restart_policy: Some("no".to_string()),
-                    health_cmd: None,
-                    health_interval: Some(30),
-                    health_timeout: Some(30),
-                    health_retries: Some(3),
-                    pids_limit: None,
-                    read_only: Some(false),
-                    security_opt: Some(vec![]),
-                };
-
-                let container_dir = data_dir.join("containers").join(&container_id);
-                let rootfs = container_dir.join("rootfs");
-                tokio::fs::create_dir_all(&rootfs).await?;
-                store.extract_layers(&image.id, &rootfs).await?;
-
-                // Copy project files into rootfs at /app
-                let app_dir = rootfs.join("app");
-                tokio::fs::create_dir_all(&app_dir).await?;
-                // copy everything except .git, target, node_modules
-                copy_project_into_rootfs(&project_root, &app_dir).await?;
-
-                #[cfg(target_os = "windows")]
-                let backend = WindowsRuntime::new();
-                #[cfg(not(target_os = "windows"))]
-                let backend = StatelessEngine::new(data_dir.clone());
-                backend.create(&container, &container_dir).await?;
-
-                let config_json = serde_json::json!({"cmd": effective_cmd, "env": env_vars});
-                tokio::fs::write(container_dir.join("config.json"), serde_json::to_string_pretty(&config_json)?).await?;
-
-                println!("  Starting {}...", container_name);
-                let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("crush"));
-                let status = std::process::Command::new(current_exe)
-                    .arg("internal-run").arg(&container_id)
-                    .status()
-                    .map_err(|e| CrushError::Internal(anyhow::anyhow!("{}", e)))?;
-                std::process::exit(status.code().unwrap_or(0));
+            if outcome.was_cached {
+                println!(" ✓ crushed to image {} ({:.0} MB)", image_name, size_mb);
             } else {
-                let overall_start = std::time::Instant::now();
+                println!(" ✓ crushed to image {} ({:.1}s · {:.0} MB)",
+                    image_name, build_elapsed.as_secs_f64(), size_mb);
+            }
 
-                let detector = StackDetector::new();
-                let stack = detector.detect(&project_root).await?;
-                println!("   \u{21b3} detected: {}", format_detection_line(&stack));
+            // ── 5. Prompt + native run ────────────────────────────────────────────
+            let should_run = if cli.no_interactive {
+                true
+            } else {
+                use std::io::Write;
+                print!("   run it now? [Y/n] ");
+                std::io::stdout().flush().ok();
+                let mut input = String::new();
+                std::io::stdin().read_line(&mut input).ok();
+                let t = input.trim().to_lowercase();
+                t.is_empty() || t == "y" || t == "yes"
+            };
 
-                let cache_dir = data_dir.join("cache");
-                let engine = BuildEngine::new(cache_dir);
-                let build_start = std::time::Instant::now();
-                let outcome = engine.execute_layered_build(&project_root, &stack).await?;
-                let build_elapsed = build_start.elapsed();
-
-                if outcome.was_cached {
-                    println!("   \u{21b3} dependencies layer cached (unchanged)");
+            if should_run {
+                let port = port_override.unwrap_or(stack.default_port);
+                let entry_str = app_command_override.as_deref().unwrap_or(&stack.entry_point);
+                let parts: Vec<&str> = entry_str.split_whitespace().collect();
+                if parts.is_empty() {
+                    eprintln!("No entry point detected — run your app manually.");
+                    return Ok(());
                 }
 
-                let project_name = project_root.file_name()
-                    .map(|n| n.to_string_lossy().to_lowercase())
-                    .unwrap_or_else(|| "app".into());
-                let image_name = format!("{}:latest", project_name);
-                let size_mb = outcome.size_bytes as f64 / (1024.0 * 1024.0);
+                let spawn_start = std::time::Instant::now();
+                let mut cmd = tokio::process::Command::new(parts[0]);
+                cmd.args(&parts[1..])
+                   .current_dir(&project_root)
+                   .env("PORT", port.to_string());
+                for (k, v) in &dep_env { cmd.env(k, v); }
 
-                if outcome.was_cached {
-                    println!(" \u{2713} crushed to image {} ({:.0} MB)", image_name, size_mb);
-                } else {
-                    println!(" \u{2713} crushed to image {} ({:.1}s \u{00b7} {:.0} MB)",
-                        image_name, build_elapsed.as_secs_f64(), size_mb);
+                let mut child = cmd.spawn()
+                    .map_err(|e| anyhow::anyhow!("Failed to start `{}`: {}", entry_str, e))?;
+
+                let mut port_ready = false;
+                for _ in 0..100u32 {
+                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+                    if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.is_ok() {
+                        port_ready = true;
+                        break;
+                    }
+                    if let Ok(Some(_)) = child.try_wait() { break; }
                 }
 
-                let should_run = if cli.no_interactive {
-                    true
+                if port_ready {
+                    let startup_s = spawn_start.elapsed().as_secs_f64();
+                    let total_s = overall_start.elapsed().as_secs_f64();
+                    println!(" ✓ running natively on :{} — started in {:.1}s (total: {:.1}s!)",
+                        port, startup_s, total_s);
                 } else {
-                    use std::io::Write;
-                    print!("   run it now? [Y/n] ");
-                    std::io::stdout().flush().ok();
-                    let mut input = String::new();
-                    std::io::stdin().read_line(&mut input).ok();
-                    let t = input.trim().to_lowercase();
-                    t.is_empty() || t == "y" || t == "yes"
-                };
+                    println!(" ✓ running natively on :{}", port);
+                }
 
-                if should_run {
-                    let port = stack.default_port;
-                    let parts: Vec<&str> = stack.entry_point.split_whitespace().collect();
-                    if parts.is_empty() {
-                        eprintln!("No entry point detected — run your app manually.");
-                        return Ok(());
-                    }
-
-                    let spawn_start = std::time::Instant::now();
-                    let mut child = tokio::process::Command::new(parts[0])
-                        .args(&parts[1..])
-                        .current_dir(&project_root)
-                        .env("PORT", port.to_string())
-                        .spawn()
-                        .map_err(|e| anyhow::anyhow!("Failed to start `{}`: {}", stack.entry_point, e))?;
-
-                    // Poll for port readiness (up to 10 s)
-                    let mut port_ready = false;
-                    for _ in 0..100u32 {
-                        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                        if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.is_ok() {
-                            port_ready = true;
-                            break;
-                        }
-                        if let Ok(Some(_)) = child.try_wait() { break; }
-                    }
-
-                    if port_ready {
-                        let startup_s = spawn_start.elapsed().as_secs_f64();
-                        let total_s = overall_start.elapsed().as_secs_f64();
-                        println!(" \u{2713} running natively on :{} \u{2014} started in {:.1}s (total: {:.1}s!)",
-                            port, startup_s, total_s);
-                    } else {
-                        println!(" \u{2713} running natively on :{}", port);
-                    }
-
-                    let status = child.wait().await
-                        .map_err(|e| anyhow::anyhow!("Process wait error: {}", e))?;
-                    if let Some(code) = status.code() {
-                        if code != 0 { std::process::exit(code); }
-                    }
+                let status = child.wait().await
+                    .map_err(|e| anyhow::anyhow!("Process wait error: {}", e))?;
+                if let Some(code) = status.code() {
+                    if code != 0 { std::process::exit(code); }
                 }
             }
         }
@@ -3382,6 +3354,49 @@ async fn main() -> anyhow::Result<()> {
                 println!("\nContainer logs:");
                 let logs = provider.logs(&info, 50).await?;
                 print!("{}", logs);
+            }
+        }
+        Commands::Services(args) => {
+            let project_root = std::env::current_dir()?;
+            let project_name = project_root.file_name()
+                .map(|n| n.to_string_lossy().to_lowercase().replace([' ', '-'], "_"))
+                .unwrap_or_else(|| "app".into());
+            let state_dir = data_dir.join("services");
+
+            match args.cmd.unwrap_or(ServicesSubcommand::Status) {
+                ServicesSubcommand::Status => {
+                    match load_service_state(&state_dir, &project_name) {
+                        Some(state) => {
+                            println!("Services for {} (backend: {}):", project_name, state.backend);
+                            for c in &state.containers {
+                                let ports: Vec<String> = c.ports.iter()
+                                    .map(|(h, _)| format!("localhost:{}", h)).collect();
+                                println!("  {} -> {} ({})", c.service_name, c.container_name,
+                                    if ports.is_empty() { "no ports".into() } else { ports.join(", ") });
+                            }
+                        }
+                        None => println!("No running crush-managed services for {}.", project_name),
+                    }
+                }
+                ServicesSubcommand::Stop => {
+                    let backend = detect_backend();
+                    match load_service_state(&state_dir, &project_name) {
+                        Some(state) => {
+                            for c in &state.containers {
+                                print!("   ↳ stopping {}... ", c.service_name);
+                                use std::io::Write;
+                                let _ = std::io::stdout().flush();
+                                match stop_dep_service(&backend, &c.container_name).await {
+                                    Ok(_) => println!("done"),
+                                    Err(e) => println!("error: {}", e),
+                                }
+                            }
+                            clear_service_state(&state_dir, &project_name);
+                            println!(" ✓ all services stopped");
+                        }
+                        None => println!("No running crush-managed services for {}.", project_name),
+                    }
+                }
             }
         }
         Commands::__Complete(args) => {
