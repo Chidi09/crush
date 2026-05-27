@@ -3340,8 +3340,9 @@ async fn main() -> anyhow::Result<()> {
             println!("  Detected: {} (confidence {:.0}%)", stack.language, stack.confidence * 100.0);
             let cache_dir = data_dir.join("cache");
             let engine = crush_build::BuildEngine::new(cache_dir);
-            let digest = engine.execute_layered_build(&root, &stack).await
+            let outcome = engine.execute_layered_build(&root, &stack).await
                 .map_err(|e| anyhow::anyhow!("Build failed: {}", e))?;
+            let digest = outcome.digest.clone();
             println!("  Build complete: {}", &digest[..12]);
 
             // Export to a tarball
