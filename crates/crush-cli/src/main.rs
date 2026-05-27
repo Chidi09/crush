@@ -980,13 +980,21 @@ async fn main() -> anyhow::Result<()> {
                     return Ok(());
                 }
 
-                // If the entry binary is a relative venv/node_modules path that
-                // doesn't exist yet, run the build_command to install deps first.
-                // (The "cached layer" only tarballs source — it never installed anything.)
+                // If dependencies aren't installed yet, run build_command first.
+                // The "cached layer" only tarballs source — it never installed anything.
+                // Triggers:
+                //   - entry is a relative path into .venv / node_modules and missing
+                //   - Node project with no node_modules dir at root
+                //   - Python project with no .venv dir at root
                 let entry_bin = parts[0];
-                let needs_install = std::path::Path::new(entry_bin).is_relative()
+                let entry_missing = std::path::Path::new(entry_bin).is_relative()
                     && (entry_bin.contains(".venv") || entry_bin.contains("node_modules"))
                     && !project_root.join(entry_bin).exists();
+                let node_uninstalled = project_root.join("package.json").exists()
+                    && !project_root.join("node_modules").exists();
+                let py_uninstalled = project_root.join("pyproject.toml").exists()
+                    && !project_root.join(".venv").exists();
+                let needs_install = entry_missing || node_uninstalled || py_uninstalled;
                 if needs_install && !stack.build_command.is_empty() {
                     println!("   ↳ installing dependencies...");
                     let bparts: Vec<&str> = stack.build_command.split_whitespace().collect();

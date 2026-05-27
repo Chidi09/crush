@@ -224,12 +224,27 @@ impl CrushSpecDetector {
         let entry = self.infer_node_entry(&json, scripts, root, has_ts);
         let port = Self::detect_port_framework(&framework, 3000);
 
+        let is_monorepo = json["workspaces"].is_array()
+            || json["workspaces"]["packages"].is_array()
+            || root.join("pnpm-workspace.yaml").exists()
+            || root.join("turbo.json").exists()
+            || root.join("nx.json").exists()
+            || root.join("lerna.json").exists();
+
+        // Surface the orchestrator so the detection line reads e.g. "Node.js · Turborepo"
+        let surfaced_framework = if framework.is_empty() && is_monorepo {
+            if root.join("turbo.json").exists() { "Turborepo".to_string() }
+            else if root.join("nx.json").exists() { "Nx".to_string() }
+            else if root.join("lerna.json").exists() { "Lerna".to_string() }
+            else { "Monorepo".to_string() }
+        } else { framework };
+
         Some(Detection {
             project_name: pkg_name.to_string(),
             runtime_type: rt,
             runtime_version: version,
-            framework_name: framework,
-            framework_detected,
+            framework_name: surfaced_framework.clone(),
+            framework_detected: !surfaced_framework.is_empty(),
             build_command: build_cmd,
             entry_point: entry,
             port,
@@ -237,7 +252,7 @@ impl CrushSpecDetector {
             env_required: vec![],
             env_optional: vec![],
             env_secrets: vec![],
-            is_monorepo: false,
+            is_monorepo,
             services: vec![],
             dockerfile_found: None,
             base_image: String::new(),
@@ -330,28 +345,50 @@ impl CrushSpecDetector {
     }
 
     fn infer_node_entry(&self, json: &serde_json::Value, scripts: Option<&serde_json::Map<String, serde_json::Value>>, root: &Path, has_ts: bool) -> String {
-        if let Some(main) = json["main"].as_str() {
-            return main.to_string();
+        let pm = Self::pick_node_pm(root);
+
+        // Monorepo: trust the user's `dev` (or `start`) script — usually
+        // `turbo run dev` / `nx run-many --target=dev` / etc. — and let the
+        // orchestrator handle spawning each app. Without this we'd guess
+        // `src/index.js` at the root, which doesn't exist.
+        let is_monorepo = json["workspaces"].is_array()
+            || json["workspaces"]["packages"].is_array()
+            || root.join("pnpm-workspace.yaml").exists()
+            || root.join("turbo.json").exists()
+            || root.join("nx.json").exists()
+            || root.join("lerna.json").exists();
+        if is_monorepo {
+            if let Some(scripts) = scripts {
+                for key in ["dev", "start"] {
+                    if scripts.get(key).and_then(|v| v.as_str()).is_some() {
+                        return format!("{} run {}", pm, key);
+                    }
+                }
+            }
+            // Last resort for unscripted monorepos
+            return format!("{} dev", pm);
         }
-        if let Some(bin) = json["bin"].as_str() {
-            return bin.to_string();
-        }
+
         if let Some(scripts) = scripts {
             if let Some(start) = scripts.get("start") {
                 let start_str = start.as_str().unwrap_or("");
-                if let Some(cmd) = start_str.strip_prefix("node ") {
-                    return cmd.trim().to_string();
+                for prefix in ["node ", "ts-node ", "bun ", "deno ", "tsx "] {
+                    if let Some(cmd) = start_str.strip_prefix(prefix) {
+                        return cmd.trim().to_string();
+                    }
                 }
-                if let Some(cmd) = start_str.strip_prefix("ts-node ") {
-                    return cmd.trim().to_string();
-                }
-                if let Some(cmd) = start_str.strip_prefix("bun ") {
-                    return cmd.trim().to_string();
-                }
-                if let Some(cmd) = start_str.strip_prefix("deno ") {
-                    return cmd.trim().to_string();
+                // Anything else (e.g. `next start`, `vite`, custom) — delegate
+                // to the package manager so we don't lose user intent.
+                if !start_str.is_empty() {
+                    return format!("{} start", pm);
                 }
             }
+        }
+        if let Some(main) = json["main"].as_str() {
+            if root.join(main).exists() { return main.to_string(); }
+        }
+        if let Some(bin) = json["bin"].as_str() {
+            if root.join(bin).exists() { return bin.to_string(); }
         }
         if has_ts {
             if root.join("src/index.ts").exists() { "src/index.ts".to_string() }
@@ -360,6 +397,13 @@ impl CrushSpecDetector {
             if root.join("index.js").exists() { "index.js".to_string() }
             else { "src/index.js".to_string() }
         }
+    }
+
+    fn pick_node_pm(root: &Path) -> &'static str {
+        if root.join("bun.lockb").exists() { "bun" }
+        else if root.join("pnpm-lock.yaml").exists() { "pnpm" }
+        else if root.join("yarn.lock").exists() { "yarn" }
+        else { "npm" }
     }
 
     fn try_python(&self, root: &Path) -> Option<Detection> {
