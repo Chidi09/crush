@@ -71,8 +71,19 @@ impl MultiServiceDetector {
             ("python", 8000)
         } else if path.join("pom.xml").exists() || path.join("build.gradle").exists() {
             ("java", 8080)
+        } else if path.join("Gemfile").exists() {
+            ("ruby", 3000)
+        } else if path.join("composer.json").exists() {
+            ("php", 8000)
+        } else if path.join("mix.exs").exists() {
+            ("elixir", 4000)
         } else {
-            return None;
+            // .csproj — directory entries
+            let has_csproj = std::fs::read_dir(path).ok()
+                .map(|d| d.flatten().any(|e| e.path().extension()
+                    .and_then(|x| x.to_str()) == Some("csproj")))
+                .unwrap_or(false);
+            if has_csproj { ("dotnet", 5000) } else { return None; }
         };
         Some(SubService {
             name: name.to_string(),

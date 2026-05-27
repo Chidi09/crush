@@ -1106,6 +1106,38 @@ async fn main() -> anyhow::Result<()> {
                             (install, "uv run python main.py".to_string())
                         }
                         "java" => (None, "mvn spring-boot:run -Dmaven.test.skip=true".to_string()),
+                        "ruby" => {
+                            // Rails has bin/rails; bare Sinatra has app.rb
+                            let run = if sub_path.join("bin/rails").exists()
+                                || sub_path.join("config/application.rb").exists() {
+                                "bundle exec rails server -b 0.0.0.0 -p 3000".to_string()
+                            } else {
+                                "bundle exec ruby app.rb".to_string()
+                            };
+                            (Some("bundle install".to_string()), run)
+                        }
+                        "php" => {
+                            let install = if sub_path.join("vendor").exists() { None }
+                                else { Some("composer install".to_string()) };
+                            let run = if sub_path.join("artisan").exists() {
+                                "php artisan serve --host=0.0.0.0 --port=8000".to_string()
+                            } else {
+                                "php -S 0.0.0.0:8080 -t public".to_string()
+                            };
+                            (install, run)
+                        }
+                        "dotnet" => (None, "dotnet run".to_string()),
+                        "elixir" => {
+                            let install = if sub_path.join("deps").exists() { None }
+                                else { Some("mix deps.get".to_string()) };
+                            let has_phoenix = sub_path.join("lib").is_dir()
+                                && std::fs::read_dir(sub_path.join("lib")).ok()
+                                    .map(|mut d| d.any(|e| e.ok()
+                                        .and_then(|e| e.file_name().to_str().map(|s| s.ends_with("_web"))).unwrap_or(false)))
+                                    .unwrap_or(false);
+                            let run = if has_phoenix { "mix phx.server" } else { "mix run --no-halt" };
+                            (install, run.to_string())
+                        }
                         other => {
                             eprintln!("   ↳ {}: don't know how to run runtime '{}', skipping", sub.name, other);
                             continue;
@@ -1233,8 +1265,17 @@ async fn main() -> anyhow::Result<()> {
                         } else if stack.build_command.is_empty() { None }
                         else { Some(stack.build_command.clone()) }
                     }
-                    // Java/Go/Rust/etc.: the framework's own run command (`mvn spring-boot:run`,
-                    // `go run`, `cargo run`) handles deps internally — no separate install step.
+                    "ruby" => Some("bundle install".to_string()),
+                    "php" => {
+                        if project_root.join("vendor").exists() { None }
+                        else { Some("composer install".to_string()) }
+                    }
+                    "elixir" => {
+                        if project_root.join("deps").exists() { None }
+                        else { Some("mix deps.get".to_string()) }
+                    }
+                    // Java/Go/Rust/.NET: their run commands fetch deps automatically
+                    // (`mvn spring-boot:run`, `go run`, `cargo run`, `dotnet run`).
                     _ => None,
                 };
 

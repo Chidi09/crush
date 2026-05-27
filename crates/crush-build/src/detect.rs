@@ -519,6 +519,14 @@ impl CrushSpecDetector {
                 }
             }
             "Django" => format!("{} manage.py runserver 0.0.0.0:{}", py, port),
+            "Flask" => {
+                let module = entry_file.trim_end_matches(".py");
+                if has_uv {
+                    format!("{}flask{} --app {} run --host=0.0.0.0 --port={}", venv_bin, exe_suffix, module, port)
+                } else {
+                    format!("flask --app {} run --host=0.0.0.0 --port={}", module, port)
+                }
+            }
             _ => format!("{} {}", py, entry_file),
         };
 
@@ -745,12 +753,13 @@ impl CrushSpecDetector {
             project_name,
             runtime_type: RuntimeType::DotNet,
             runtime_version: version,
-            framework_name: if has_global { "ASP.NET Core" } else { "" }.to_string(),
-            framework_detected: has_global,
-            build_command: "dotnet publish -c Release -o out".to_string(),
-            entry_point: "out/app".to_string(),
+            framework_name: if has_global { "ASP.NET Core" } else { ".NET" }.to_string(),
+            framework_detected: true,
+            build_command: "dotnet restore".to_string(),
+            // `dotnet run` handles deps + compile + run in one shot, like Spring's mvn run.
+            entry_point: "dotnet run".to_string(),
             port: 5000,
-            confidence: 0.88,
+            confidence: 0.95,
             ..Default::default()
         })
     }
@@ -765,17 +774,17 @@ impl CrushSpecDetector {
         let has_gem = |name: &str| gems.iter().any(|g| g == name);
 
         let (framework, entry, port) = if has_gem("rails") {
-            ("Rails", "config.ru", 3000)
+            ("Rails", "bundle exec rails server -b 0.0.0.0 -p 3000".to_string(), 3000)
         } else if has_gem("sinatra") {
-            ("Sinatra", "app.rb", 4567)
+            ("Sinatra", "bundle exec ruby app.rb".to_string(), 4567)
         } else if has_gem("hanami") {
-            ("Hanami", "config.ru", 2300)
+            ("Hanami", "bundle exec hanami server".to_string(), 2300)
         } else if has_gem("grape") {
-            ("Grape", "app.rb", 9292)
+            ("Grape", "bundle exec rackup".to_string(), 9292)
         } else if root.join("config/application.rb").exists() || root.join("bin/rails").exists() {
-            ("Rails", "config.ru", 3000)
+            ("Rails", "bundle exec rails server -b 0.0.0.0 -p 3000".to_string(), 3000)
         } else {
-            ("", "app.rb", 8080)
+            ("", "bundle exec ruby app.rb".to_string(), 8080)
         };
 
         let direct_gem = has_gem("rails") || has_gem("sinatra") || has_gem("hanami") || has_gem("grape");
@@ -788,7 +797,7 @@ impl CrushSpecDetector {
             framework_name: framework.to_string(),
             framework_detected: !framework.is_empty(),
             build_command: "bundle install".to_string(),
-            entry_point: entry.to_string(),
+            entry_point: entry,
             port,
             confidence,
             ..Default::default()
@@ -813,12 +822,17 @@ impl CrushSpecDetector {
         let direct_dep = sig.winner().map(|(_, score)| score >= 8.0).unwrap_or(false);
 
         let (framework, entry, port) = match sig.winner() {
-            Some(("Laravel", _)) => ("Laravel", "public/index.php", 8000),
-            Some(("Symfony", _)) => ("Symfony", "public/index.php", 8000),
-            Some(("Slim", _)) => ("Slim", "public/index.php", 8080),
-            Some(("CodeIgniter", _)) => ("CodeIgniter", "public/index.php", 8080),
-            Some(("CakePHP", _)) => ("CakePHP", "webroot/index.php", 8080),
-            _ => ("", "public/index.php", 8080),
+            Some(("Laravel", _)) =>
+                ("Laravel", "php artisan serve --host=0.0.0.0 --port=8000".to_string(), 8000),
+            Some(("Symfony", _)) =>
+                ("Symfony", "php -S 0.0.0.0:8000 -t public".to_string(), 8000),
+            Some(("Slim", _)) =>
+                ("Slim", "php -S 0.0.0.0:8080 -t public".to_string(), 8080),
+            Some(("CodeIgniter", _)) =>
+                ("CodeIgniter", "php spark serve --host=0.0.0.0 --port=8080".to_string(), 8080),
+            Some(("CakePHP", _)) =>
+                ("CakePHP", "bin/cake server -H 0.0.0.0 -p 8080".to_string(), 8080),
+            _ => ("", "php -S 0.0.0.0:8080 -t public".to_string(), 8080),
         };
 
         let confidence = if direct_dep { 0.99 } else if !framework.is_empty() { 0.90 } else { 0.85 };
@@ -829,8 +843,8 @@ impl CrushSpecDetector {
             runtime_version: VersionResolver::resolve(root, None),
             framework_name: framework.to_string(),
             framework_detected: !framework.is_empty(),
-            build_command: "composer install --no-dev --optimize-autoloader".to_string(),
-            entry_point: entry.to_string(),
+            build_command: "composer install".to_string(),
+            entry_point: entry,
             port,
             confidence,
             ..Default::default()
@@ -841,16 +855,17 @@ impl CrushSpecDetector {
         if !root.join("mix.exs").exists() { return None; }
         let has_phoenix = root.join("lib").is_dir()
             && Self::find_file(root, "_web.ex").is_some();
+        let entry = if has_phoenix { "mix phx.server" } else { "mix run --no-halt" };
         Some(Detection {
             project_name: root.file_name().unwrap_or_default().to_string_lossy().to_string(),
             runtime_type: RuntimeType::Elixir,
             runtime_version: VersionResolver::resolve(root, None),
             framework_name: if has_phoenix { "Phoenix" } else { "" }.to_string(),
             framework_detected: has_phoenix,
-            build_command: "mix release".to_string(),
-            entry_point: "_build/prod/rel/app/bin/app".to_string(),
+            build_command: "mix deps.get".to_string(),
+            entry_point: entry.to_string(),
             port: if has_phoenix { 4000 } else { 8080 },
-            confidence: 0.85,
+            confidence: if has_phoenix { 0.97 } else { 0.85 },
             ..Default::default()
         })
     }
