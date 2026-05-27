@@ -451,13 +451,17 @@ impl CrushSpecDetector {
         } else {
             "python".to_string()
         };
+        // Prefer the asgi target from entrypoint.sh / Dockerfile CMD if present —
+        // user-defined module paths beat heuristics (e.g. src.core.main:app).
+        let asgi_target = Self::detect_asgi_target(root)
+            .unwrap_or_else(|| format!("{}:app", entry_file.trim_end_matches(".py")));
+
         let entry = match framework {
             "FastAPI" | "Starlette" => {
-                let module = entry_file.trim_end_matches(".py");
                 if has_uv {
-                    format!("{}uvicorn{} {}:app --host 0.0.0.0", venv_bin, exe_suffix, module)
+                    format!("{}uvicorn{} {} --host 0.0.0.0", venv_bin, exe_suffix, asgi_target)
                 } else {
-                    format!("uvicorn {}:app --host 0.0.0.0", module)
+                    format!("uvicorn {} --host 0.0.0.0", asgi_target)
                 }
             }
             "Litestar" => {
@@ -494,6 +498,21 @@ impl CrushSpecDetector {
         let content = fs::read_to_string(root.join("pyproject.toml")).ok()?;
         let val: serde_json::Value = toml::from_str(&content).ok()?;
         val["project"]["name"].as_str().map(|s| s.to_string())
+    }
+
+    /// Greps entrypoint.sh / start.sh / Dockerfile for `uvicorn <module>:<app>`
+    /// and returns the `module:app` string. Lets users define module paths
+    /// (e.g. `src.core.main:app`) instead of trusting filename heuristics.
+    fn detect_asgi_target(root: &Path) -> Option<String> {
+        let re = Regex::new(r"uvicorn\s+([A-Za-z0-9_.]+:[A-Za-z0-9_]+)").ok()?;
+        for candidate in &["entrypoint.sh", "start.sh", "run.sh", "Dockerfile"] {
+            if let Ok(content) = fs::read_to_string(root.join(candidate)) {
+                if let Some(caps) = re.captures(&content) {
+                    return Some(caps[1].to_string());
+                }
+            }
+        }
+        None
     }
 
     fn extract_uv_sync_from_dockerfile(root: &Path) -> Option<String> {
