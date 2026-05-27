@@ -53,7 +53,7 @@ enum Commands {
     #[command(about = "Auto-detect project stack, build an optimized image, and run it")]
     Default,
     #[command(about = "Detect and print the project stack without building")]
-    Detect,
+    Detect(DetectArgs),
     #[command(about = "Explicitly build an image from a project root or Crushfile")]
     Build(BuildArgs),
     #[command(about = "Watch the project directory and hot-swap code on file changes")]
@@ -108,6 +108,8 @@ enum Commands {
     Update(UpdateArgs),
     #[command(about = "Start the Docker compatibility daemon serving over /var/run/crush.sock")]
     Daemon(DaemonArgs),
+    #[command(about = "Install crush to a system directory and add it to PATH")]
+    Install,
     #[command(about = "Run health checks on a container")]
     Health(HealthArgs),
     #[command(about = "Configure Docker CLI and tools to use Crush as the container backend")]
@@ -150,6 +152,13 @@ pub struct DaemonArgs {
 struct CompletionsArgs {
     #[arg(help = "Shell to generate completions for", value_enum)]
     shell: clap_complete::Shell,
+}
+
+#[derive(Args, Debug)]
+struct DetectArgs {
+    /// Output raw JSON instead of formatted table
+    #[arg(long)]
+    json: bool,
 }
 
 #[derive(Args, Debug)]
@@ -244,7 +253,7 @@ struct InspectArgs {
     id: String,
     #[arg(long, name = "type", help = "Type of resource to inspect (container, image, network)", default_value = "container")]
     inspect_type: String,
-    #[arg(long, help = "Format output (text, json)", default_value = "json")]
+    #[arg(long, help = "Format output (pretty, json)", default_value = "pretty")]
     format: String,
 }
 
@@ -528,6 +537,142 @@ fn get_cpu_and_mem(_pid: u32) -> Option<(u64, u64)> {
     None
 }
 
+async fn cmd_install() -> anyhow::Result<()> {
+    let current_exe = std::env::current_exe()
+        .map_err(|e| anyhow::anyhow!("Cannot determine current exe path: {}", e))?;
+
+    #[cfg(target_os = "windows")]
+    {
+        install_windows(&current_exe)?;
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        install_unix(&current_exe)?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn install_windows(current_exe: &std::path::Path) -> anyhow::Result<()> {
+    // Target: %LOCALAPPDATA%\crush\bin\crush.exe
+    let local_app_data = std::env::var("LOCALAPPDATA")
+        .unwrap_or_else(|_| format!("{}\\AppData\\Local", std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".to_string())));
+    let install_dir = std::path::PathBuf::from(&local_app_data).join("crush").join("bin");
+    let install_path = install_dir.join("crush.exe");
+
+    std::fs::create_dir_all(&install_dir)
+        .map_err(|e| anyhow::anyhow!("Failed to create install dir {:?}: {}", install_dir, e))?;
+
+    // Copy the executable (skip copy if already running from the install path)
+    if current_exe != install_path {
+        std::fs::copy(current_exe, &install_path)
+            .map_err(|e| anyhow::anyhow!("Failed to copy crush.exe to {:?}: {}", install_path, e))?;
+    }
+
+    // Read current HKCU\Environment\Path
+    let hkcu = winreg::RegKey::predef(winreg::enums::HKEY_CURRENT_USER);
+    let env_key = hkcu.open_subkey_with_flags("Environment", winreg::enums::KEY_READ | winreg::enums::KEY_WRITE)
+        .map_err(|e| anyhow::anyhow!("Failed to open HKCU\\Environment: {}", e))?;
+
+    let current_path: String = env_key.get_value("Path").unwrap_or_default();
+    let install_dir_str = install_dir.to_string_lossy().to_string();
+
+    // Only add if not already present
+    let already_in_path = current_path
+        .split(';')
+        .any(|p| p.trim().eq_ignore_ascii_case(&install_dir_str));
+
+    if !already_in_path {
+        let new_path = if current_path.is_empty() {
+            install_dir_str.clone()
+        } else if current_path.ends_with(';') {
+            format!("{}{}", current_path, install_dir_str)
+        } else {
+            format!("{};{}", current_path, install_dir_str)
+        };
+        env_key.set_value("Path", &new_path)
+            .map_err(|e| anyhow::anyhow!("Failed to write PATH to registry: {}", e))?;
+
+        // Broadcast WM_SETTINGCHANGE so Explorer and new terminals pick up the change
+        // without requiring a logoff/reboot.
+        broadcast_setting_change();
+    }
+
+    println!("crush installed to: {}", install_path.display());
+    if already_in_path {
+        println!("PATH already contains {}  (no change needed)", install_dir_str);
+    } else {
+        println!("Added {} to user PATH.", install_dir_str);
+        println!("Open a new terminal and run: crush --version");
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "windows")]
+fn broadcast_setting_change() {
+    use windows_sys::Win32::UI::WindowsAndMessaging::{SendMessageTimeoutW, HWND_BROADCAST, WM_SETTINGCHANGE, SMTO_ABORTIFHUNG};
+    use windows_sys::Win32::Foundation::LPARAM;
+    let env_wide: Vec<u16> = "Environment\0".encode_utf16().collect();
+    unsafe {
+        SendMessageTimeoutW(
+            HWND_BROADCAST,
+            WM_SETTINGCHANGE,
+            0,
+            env_wide.as_ptr() as LPARAM,
+            SMTO_ABORTIFHUNG,
+            1000,
+            std::ptr::null_mut(),
+        );
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn install_unix(current_exe: &std::path::Path) -> anyhow::Result<()> {
+    // Prefer ~/.local/bin (no sudo needed, on PATH in modern distros)
+    let home = std::env::var("HOME")
+        .map_err(|_| anyhow::anyhow!("$HOME not set"))?;
+    let install_dir = std::path::PathBuf::from(&home).join(".local").join("bin");
+    let install_path = install_dir.join("crush");
+
+    std::fs::create_dir_all(&install_dir)
+        .map_err(|e| anyhow::anyhow!("Failed to create {:?}: {}", install_dir, e))?;
+
+    std::fs::copy(current_exe, &install_path)
+        .map_err(|e| anyhow::anyhow!("Failed to copy to {:?}: {}", install_path, e))?;
+
+    // Make executable
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut perms = std::fs::metadata(&install_path)?.permissions();
+        perms.set_mode(0o755);
+        std::fs::set_permissions(&install_path, perms)?;
+    }
+
+    println!("crush installed to: {}", install_path.display());
+    // Check if install_dir is in PATH
+    let path_env = std::env::var("PATH").unwrap_or_default();
+    let in_path = path_env.split(':').any(|p| p == install_dir.to_string_lossy().as_ref());
+    if !in_path {
+        println!("NOTE: {} is not in your PATH.", install_dir.display());
+        println!("Add this line to ~/.bashrc or ~/.zshrc:");
+        println!("  export PATH=\"$HOME/.local/bin:$PATH\"");
+    } else {
+        println!("Open a new terminal and run: crush --version");
+    }
+    Ok(())
+}
+
+fn format_bytes(bytes: u64) -> String {
+    const KB: u64 = 1024;
+    const MB: u64 = KB * 1024;
+    const GB: u64 = MB * 1024;
+    if bytes >= GB { format!("{:.1} GB", bytes as f64 / GB as f64) }
+    else if bytes >= MB { format!("{:.1} MB", bytes as f64 / MB as f64) }
+    else if bytes >= KB { format!("{:.1} KB", bytes as f64 / KB as f64) }
+    else { format!("{} B", bytes) }
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -713,14 +858,21 @@ async fn main() -> anyhow::Result<()> {
                 println!("Build complete: digest={}", digest);
             }
         }
-        Commands::Detect => {
+        Commands::Detect(args) => {
             info!("Detecting project stack...");
             let detector = StackDetector::new();
             let project_root = std::env::current_dir()?;
             let stack = detector.detect(&project_root).await?;
+
+            if args.json {
+                println!("{}", serde_json::to_string_pretty(&stack)?);
+                return Ok(());
+            }
+
             println!("Detected stack");
             println!("  Language:   {}", stack.language);
             println!("  Confidence: {:.0}%", stack.confidence * 100.0);
+            println!("  Base image: {}", stack.base_image);
             println!("  Build cmd:  {}", stack.build_command);
             println!("  Entrypoint: {}", stack.entry_point);
             println!("  Port:       {}", stack.default_port);
@@ -746,12 +898,7 @@ async fn main() -> anyhow::Result<()> {
                 parsed.stages.unwrap_or_default()
             } else {
                 println!("No Crushfile found, synthesising stages from stack detection...");
-                let base_img = match stack.language.to_lowercase() {
-                    l if l.contains("node") => format!("node:{}-alpine", stack.runtime_version),
-                    l if l.contains("rust") => format!("rust:{}-slim", stack.runtime_version),
-                    l if l.contains("python") => format!("python:{}-slim", stack.runtime_version),
-                    _ => "ubuntu:22.04".to_string(),
-                };
+                let base_img = stack.base_image.clone();
                 vec![
                     crush_build::CrushfileStage {
                         name: Some("base".to_string()),
@@ -1584,7 +1731,82 @@ async fn main() -> anyhow::Result<()> {
                                         if args.format == "json" {
                                             println!("{}", serde_json::to_string_pretty(&c)?);
                                         } else {
-                                            println!("{:#?}", c);
+                                            let status_str = match c.status {
+                                                crush_types::ContainerStatus::Running => "running",
+                                                crush_types::ContainerStatus::Stopped => "exited",
+                                                crush_types::ContainerStatus::Paused  => "paused",
+                                                crush_types::ContainerStatus::Created => "created",
+                                                crush_types::ContainerStatus::Creating => "creating",
+                                            };
+
+                                            let created_ts = c.created_at
+                                                .duration_since(std::time::UNIX_EPOCH)
+                                                .map(|d| {
+                                                    let secs = d.as_secs();
+                                                    format!("{}", chrono::DateTime::<chrono::Utc>::from_timestamp(secs as i64, 0)
+                                                        .unwrap_or_default()
+                                                        .format("%Y-%m-%d %H:%M:%S UTC"))
+                                                })
+                                                .unwrap_or_else(|_| "unknown".to_string());
+
+                                            println!("Container: {}", c.id);
+                                            println!("  Name:     {}", c.name);
+                                            println!("  Status:   {}", status_str);
+                                            println!("  Image:    {}", c.image);
+                                            println!("  Created:  {}", created_ts);
+                                            if let Some(pid) = c.pid {
+                                                println!("  PID:      {}", pid);
+                                            }
+
+                                            if !c.ports.is_empty() {
+                                                println!("  Ports:");
+                                                for p in &c.ports {
+                                                    println!("    {}:{} -> :{}/{}",
+                                                        if p.host_ip.is_empty() || p.host_ip == "0.0.0.0" { "*".to_string() } else { p.host_ip.clone() },
+                                                        p.host_port,
+                                                        p.container_port,
+                                                        match p.protocol { crush_types::Protocol::Tcp => "tcp", crush_types::Protocol::Udp => "udp" }
+                                                    );
+                                                }
+                                            }
+
+                                            if !c.mounts.is_empty() {
+                                                println!("  Mounts:");
+                                                for m in &c.mounts {
+                                                    let mode = if m.read_only { "ro" } else { "rw" };
+                                                    let kind = if m.is_tmpfs { "tmpfs" } else { "bind" };
+                                                    println!("    {} -> {} ({}, {})", m.host_path.display(), m.container_path.display(), kind, mode);
+                                                }
+                                            }
+
+                                            if c.memory_limit_bytes.is_some() || c.cpu_shares.is_some() {
+                                                println!("  Resources:");
+                                                if let Some(mem) = c.memory_limit_bytes {
+                                                    println!("    Memory limit: {}", format_bytes(mem));
+                                                }
+                                                if let Some(cpu) = c.cpu_shares {
+                                                    println!("    CPU shares:   {}", cpu);
+                                                }
+                                                if let Some(pids) = c.pids_limit {
+                                                    println!("    PIDs limit:   {}", pids);
+                                                }
+                                            }
+
+                                            if let Some(health) = &c.health {
+                                                let h_str = match health {
+                                                    crush_types::HealthStatus::Healthy   => "healthy",
+                                                    crush_types::HealthStatus::Unhealthy => "unhealthy",
+                                                    crush_types::HealthStatus::Starting  => "starting",
+                                                };
+                                                println!("  Health:   {}", h_str);
+                                                if let Some(cmd) = &c.health_cmd {
+                                                    println!("    Check: {}", cmd);
+                                                }
+                                            }
+
+                                            if let Some(policy) = &c.restart_policy {
+                                                println!("  Restart:  {} (count: {})", policy, c.restart_count.unwrap_or(0));
+                                            }
                                         }
                                         found = true;
                                         break;
@@ -1598,18 +1820,36 @@ async fn main() -> anyhow::Result<()> {
                     eprintln!("Error: container '{}' not found", args.id);
                 }
             } else if args.inspect_type == "image" {
-                if let Ok(Some(img)) = store.database().get_image_by_tag(&args.id).await {
-                    if args.format == "json" {
-                        println!("{}", serde_json::to_string_pretty(&img)?);
-                    } else {
-                        println!("{:#?}", img);
-                    }
-                    found = true;
+                let image_opt = if let Ok(Some(img)) = store.database().get_image_by_tag(&args.id).await {
+                    Some(img)
                 } else if let Ok(Some(img)) = store.database().get_image_by_digest(&args.id).await {
+                    Some(img)
+                } else {
+                    None
+                };
+
+                if let Some(image) = image_opt {
                     if args.format == "json" {
-                        println!("{}", serde_json::to_string_pretty(&img)?);
+                        println!("{}", serde_json::to_string_pretty(&image)?);
                     } else {
-                        println!("{:#?}", img);
+                        println!("Image: {}", image.tag);
+                        println!("  ID:           {}", &image.id[..16.min(image.id.len())]);
+                        println!("  Digest:       {}", image.digest);
+                        println!("  Architecture: {}/{}", image.os, image.architecture);
+                        println!("  Size:         {}", format_bytes(image.size_bytes));
+                        println!("  Layers:       {}", image.layers.len());
+                        if !image.entrypoint.is_empty() {
+                            println!("  Entrypoint:   {}", image.entrypoint.join(" "));
+                        }
+                        if !image.cmd.is_empty() {
+                            println!("  Cmd:          {}", image.cmd.join(" "));
+                        }
+                        if !image.env.is_empty() {
+                            println!("  Env:");
+                            for e in &image.env {
+                                println!("    {}", e);
+                            }
+                        }
                     }
                     found = true;
                 }
@@ -2466,6 +2706,13 @@ async fn main() -> anyhow::Result<()> {
                 }
                 std::fs::rename(&tmp_path, &current_exe)?;
             }
+
+            // After successful download and replace, re-run install to update PATH entry
+            // (idempotent — install_windows/install_unix handles existing PATH correctly)
+            if let Err(e) = cmd_install().await {
+                eprintln!("Warning: self-update succeeded but PATH install failed: {}", e);
+            }
+
             println!("Updated to v{}. Restart crush to use the new version.", latest);
         }
         Commands::Daemon(args) => {
@@ -2501,6 +2748,9 @@ async fn main() -> anyhow::Result<()> {
             compat_server.stop().await?;
             api_server.stop().await?;
             println!("Daemon stopped.");
+        }
+        Commands::Install => {
+            cmd_install().await?;
         }
         Commands::Health(args) => {
             info!("Running health check on container: {}", args.id);
@@ -2955,6 +3205,7 @@ fn hex_encode_random() -> String {
     format!("{:032x}", combined)
 }
 
+#[allow(dead_code)]
 fn which_docker() -> Option<std::path::PathBuf> {
     let candidates = if cfg!(target_os = "windows") {
         vec!["docker.exe", "docker"]
@@ -3028,7 +3279,7 @@ async fn run_compose_up(compose_path: &Path, data_dir: &Path, store: &ImageStore
             let ctx_path = compose_path.parent().unwrap_or(Path::new(".")).join(&ctx);
             let df_path = ctx_path.join(&df_name);
 
-            let tag = format!("{}:latest", svc_name);
+            let _tag = format!("{}:latest", svc_name);
 
             // Parse Dockerfile for base image, then fall through to generic container build
             if df_path.exists() {

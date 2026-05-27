@@ -56,6 +56,7 @@ pub struct Detection {
     pub is_monorepo: bool,
     pub services: Vec<SubService>,
     pub dockerfile_found: Option<String>,
+    pub base_image: String,
 }
 
 pub struct CrushSpecDetector;
@@ -105,7 +106,60 @@ impl CrushSpecDetector {
             .to_string_lossy()
             .to_string();
 
+        best.base_image = Self::resolve_base_image(&best);
         best
+    }
+
+    fn resolve_base_image(d: &Detection) -> String {
+        let ver = d.runtime_version.trim();
+        // Extract major version only (e.g. "20.11.0" → "20", "3.11.2" → "3.11")
+        let major = ver.split('.').next().unwrap_or(ver);
+        let major_minor = {
+            let parts: Vec<&str> = ver.splitn(3, '.').collect();
+            if parts.len() >= 2 { format!("{}.{}", parts[0], parts[1]) } else { major.to_string() }
+        };
+
+        match d.runtime_type {
+            RuntimeType::Node | RuntimeType::TypeScript => {
+                format!("node:{}-alpine", major)
+            }
+            RuntimeType::Bun => {
+                format!("oven/bun:{}", major)
+            }
+            RuntimeType::Deno => {
+                format!("denoland/deno:{}", ver)
+            }
+            RuntimeType::Python => {
+                format!("python:{}-slim", major_minor)
+            }
+            RuntimeType::Rust => {
+                "rust:alpine".to_string()  // Rust builds produce a static binary; use scratch or alpine
+            }
+            RuntimeType::Go => {
+                format!("golang:{}-alpine", major_minor)
+            }
+            RuntimeType::Java => {
+                format!("eclipse-temurin:{}-jre-alpine", major)
+            }
+            RuntimeType::DotNet => {
+                format!("mcr.microsoft.com/dotnet/aspnet:{}", major_minor)
+            }
+            RuntimeType::Ruby => {
+                format!("ruby:{}-alpine", major_minor)
+            }
+            RuntimeType::Php => {
+                format!("php:{}-fpm-alpine", major_minor)
+            }
+            RuntimeType::Elixir => {
+                format!("elixir:{}-alpine", major_minor)
+            }
+            RuntimeType::Swift => {
+                format!("swift:{}-slim", major_minor)
+            }
+            RuntimeType::Generic => {
+                "ubuntu:22.04".to_string()
+            }
+        }
     }
 
     fn try_node(&self, root: &Path) -> Option<Detection> {
@@ -160,7 +214,17 @@ impl CrushSpecDetector {
         let deps = Self::merge_deps(json);
         let has_file = |name: &str| root.join(name).exists();
 
-        if deps.iter().any(|d| d == "next") || has_file("next.config.js") || has_file("next.config.ts") {
+        if has_file("svelte.config.js") || has_file("svelte.config.ts")
+            || deps.iter().any(|d| d == "@sveltejs/kit") {
+            ("SvelteKit".to_string(), 0.05)
+        } else if has_file("astro.config.mjs") || has_file("astro.config.ts") || has_file("astro.config.js")
+            || deps.iter().any(|d| d == "astro") {
+            ("Astro".to_string(), 0.05)
+        } else if deps.iter().any(|d| d == "solid-js") && deps.iter().any(|d| d == "@solidjs/start") {
+            ("SolidStart".to_string(), 0.05)
+        } else if has_file("qwik.config.ts") || deps.iter().any(|d| d == "@builder.io/qwik") {
+            ("Qwik".to_string(), 0.04)
+        } else if deps.iter().any(|d| d == "next") || has_file("next.config.js") || has_file("next.config.ts") {
             ("Next.js".to_string(), 0.05)
         } else if deps.iter().any(|d| d == "nuxt") || has_file("nuxt.config.ts") || has_file("nuxt.config.js") {
             ("Nuxt".to_string(), 0.05)
@@ -186,21 +250,32 @@ impl CrushSpecDetector {
         if root.join("bun.lockb").exists() {
             return "bun run build".to_string();
         }
-        if has_ts && root.join("tsconfig.json").exists() {
-            return "npm run build".to_string();
+
+        // Detect package manager from lockfile
+        let pm = if root.join("pnpm-lock.yaml").exists() {
+            "pnpm"
+        } else if root.join("yarn.lock").exists() {
+            "yarn"
+        } else {
+            "npm"
+        };
+
+        let scripts = json["scripts"].as_object();
+        if scripts.map(|s| s.contains_key("build")).unwrap_or(false) {
+            return format!("{} run build", pm);
         }
-        if let Some(scripts) = json["scripts"].as_object() {
-            if scripts.contains_key("build") {
-                return "npm run build".to_string();
-            }
-            if scripts.contains_key("start") {
-                return "npm start".to_string();
-            }
+        if scripts.map(|s| s.contains_key("start")).unwrap_or(false)
+            && !scripts.map(|s| s.contains_key("build")).unwrap_or(false)
+        {
+            return format!("{} start", pm);
         }
         if root.join("vite.config.ts").exists() || root.join("vite.config.js").exists() {
-            return "npm run build".to_string();
+            return format!("{} run build", pm);
         }
-        "npm install".to_string()
+        if has_ts && root.join("tsconfig.json").exists() {
+            return format!("{} run build", pm);
+        }
+        format!("{} install", pm)
     }
 
     fn infer_node_entry(&self, json: &serde_json::Value, scripts: Option<&serde_json::Map<String, serde_json::Value>>, root: &Path, has_ts: bool) -> String {
@@ -241,8 +316,11 @@ impl CrushSpecDetector {
         let has_requirements = root.join("requirements.txt").exists();
         let has_setup = root.join("setup.py").exists();
         let has_poetry = root.join("poetry.lock").exists();
+        let has_uv = root.join("uv.lock").exists();
+        let has_pdm = root.join("pdm.lock").exists();
+        let has_conda = root.join("environment.yml").exists() || root.join("environment.yaml").exists();
 
-        if !has_pyproject && !has_requirements && !has_setup { return None; }
+        if !has_pyproject && !has_requirements && !has_setup && !has_conda { return None; }
 
         let version = if let Some(v) = VersionResolver::from_python_version(root) {
             v
@@ -271,12 +349,18 @@ impl CrushSpecDetector {
             ("Python", "main.py", 8080)
         };
 
-        let build_cmd = if has_poetry {
-            "poetry install".to_string()
+        let build_cmd = if has_uv {
+            "uv sync --no-dev".to_string()
+        } else if has_pdm {
+            "pdm install --prod".to_string()
+        } else if has_poetry {
+            "poetry install --no-dev".to_string()
         } else if has_requirements {
             "pip install -r requirements.txt".to_string()
         } else if has_pyproject {
             "pip install -e .".to_string()
+        } else if has_conda {
+            "conda env create -f environment.yml".to_string()
         } else {
             "pip install -r requirements.txt".to_string()
         };
@@ -351,14 +435,17 @@ impl CrushSpecDetector {
 
         let bin_name = module.split('/').last().unwrap_or("app");
 
-        let framework = if root.join("gin").exists() || Self::file_contains(root.join("go.mod"), "gin").unwrap_or(false) {
+        let go_mod_content = fs::read_to_string(root.join("go.mod")).unwrap_or_default();
+        let framework = if go_mod_content.contains("github.com/gin-gonic/gin") {
             "Gin"
-        } else if Self::file_contains(root.join("go.mod"), "echo").unwrap_or(false) {
+        } else if go_mod_content.contains("github.com/labstack/echo") {
             "Echo"
-        } else if Self::file_contains(root.join("go.mod"), "fiber").unwrap_or(false) {
+        } else if go_mod_content.contains("github.com/gofiber/fiber") {
             "Fiber"
-        } else if Self::file_contains(root.join("go.mod"), "chi").unwrap_or(false) {
+        } else if go_mod_content.contains("github.com/go-chi/chi") {
             "Chi"
+        } else if go_mod_content.contains("google.golang.org/grpc") {
+            "gRPC"
         } else { "" };
 
         let main_path = if root.join("cmd").is_dir() {
@@ -475,16 +562,29 @@ impl CrushSpecDetector {
 
     fn try_php(&self, root: &Path) -> Option<Detection> {
         if !root.join("composer.json").exists() { return None; }
+
+        let is_laravel = root.join("artisan").exists()
+            || Self::file_contains(root.join("composer.json"), "laravel/framework").unwrap_or(false);
+        let is_symfony = Self::file_contains(root.join("composer.json"), "symfony/framework-bundle").unwrap_or(false);
+
+        let (framework, entry, port, confidence) = if is_laravel {
+            ("Laravel", "public/index.php", 8000, 0.92f32)
+        } else if is_symfony {
+            ("Symfony", "public/index.php", 8000, 0.90)
+        } else {
+            ("", "public/index.php", 8080, 0.85)
+        };
+
         Some(Detection {
             project_name: root.file_name().unwrap_or_default().to_string_lossy().to_string(),
             runtime_type: RuntimeType::Php,
             runtime_version: VersionResolver::resolve(root, None),
-            framework_name: "".to_string(),
-            framework_detected: false,
-            build_command: "composer install --no-dev".to_string(),
-            entry_point: "public/index.php".to_string(),
-            port: 8080,
-            confidence: 0.85,
+            framework_name: framework.to_string(),
+            framework_detected: !framework.is_empty(),
+            build_command: "composer install --no-dev --optimize-autoloader".to_string(),
+            entry_point: entry.to_string(),
+            port,
+            confidence,
             ..Default::default()
         })
     }
@@ -564,6 +664,10 @@ impl CrushSpecDetector {
             "NestJS" => 3000,
             "Hono" => 3000,
             "Remix" => 3000,
+            "SvelteKit" => 5173,
+            "Astro"     => 4321,
+            "SolidStart"=> 3000,
+            "Qwik"      => 5173,
             _ => default,
         }
     }
@@ -616,6 +720,7 @@ impl Default for Detection {
             is_monorepo: false,
             services: vec![],
             dockerfile_found: None,
+            base_image: "ubuntu:22.04".to_string(),
         }
     }
 }

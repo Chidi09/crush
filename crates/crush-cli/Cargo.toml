@@ -43,9 +43,11 @@ crush-network = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 crush-runtime-windows = { workspace = true }
+winreg = { workspace = true }
 windows-sys = { version = "0.52", features = [
     "Win32_System_Threading",
     "Win32_Foundation",
-    "Win32_System_ProcessStatus"
+    "Win32_System_ProcessStatus",
+    "Win32_UI_WindowsAndMessaging"
 ] }
 

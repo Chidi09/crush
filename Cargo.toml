@@ -21,7 +21,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.2.0"
+version = "0.3.0"
 edition = "2021"
 authors = ["Crush Contributors"]
 license = "MIT OR Apache-2.0"
@@ -71,6 +71,7 @@ criterion = { version = "0.5", features = ["html_reports"] }
 
 # OCI Specifications & Standard Specs
 oci-spec = { version = "0.6", features = ["runtime", "image"] }
+winreg = "0.52"
 
 # Local workspace internal dependencies
 crush-types = { path = "crates/crush-types" }

@@ -1,3 +1,4 @@
+#![allow(dead_code)]
 use std::path::PathBuf;
 use async_trait::async_trait;
 use crush_types::{RuntimeBackend, Container, Result, CrushError, ContainerStatus};

@@ -36,6 +36,7 @@ pub struct InferredStack {
     pub entry_point: String,
     pub default_port: u16,
     pub confidence: f32,
+    pub base_image: String,
 }
 
 impl From<Detection> for InferredStack {
@@ -47,6 +48,7 @@ impl From<Detection> for InferredStack {
             entry_point: d.entry_point,
             default_port: d.port,
             confidence: d.confidence,
+            base_image: d.base_image,
         }
     }
 }
