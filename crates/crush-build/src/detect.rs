@@ -416,7 +416,10 @@ impl CrushSpecDetector {
         };
 
         let build_cmd = if has_uv {
-            "uv sync --no-dev".to_string()
+            // Prefer the exact uv sync command from the Dockerfile so flags like
+            // --no-install-project and --frozen are respected automatically.
+            Self::extract_uv_sync_from_dockerfile(root)
+                .unwrap_or_else(|| "uv sync --no-dev --no-install-project".to_string())
         } else if has_pdm {
             "pdm install --prod".to_string()
         } else if has_poetry {
@@ -470,6 +473,21 @@ impl CrushSpecDetector {
             confidence,
             ..Default::default()
         })
+    }
+
+    fn extract_uv_sync_from_dockerfile(root: &Path) -> Option<String> {
+        let dockerfile = fs::read_to_string(root.join("Dockerfile")).ok()?;
+        dockerfile.lines()
+            .find_map(|line| {
+                let trimmed = line.trim();
+                if trimmed.starts_with("RUN") && trimmed.contains("uv sync") {
+                    // Strip "RUN " prefix and any trailing backslash continuation
+                    let cmd = trimmed.trim_start_matches("RUN").trim().trim_end_matches('\\').trim();
+                    Some(cmd.to_string())
+                } else {
+                    None
+                }
+            })
     }
 
     fn try_rust(&self, root: &Path) -> Option<Detection> {

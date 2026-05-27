@@ -112,6 +112,13 @@ impl ServiceDriver for PostgresDriver {
         fs::create_dir_all(data_dir).context("Failed to create Postgres data directory")?;
 
         if !Self::is_initialized(data_dir) {
+            // A previous failed init may have left a non-empty dir without PG_VERSION.
+            // initdb refuses to work on non-empty dirs, so clean it first.
+            if data_dir.exists() {
+                fs::remove_dir_all(data_dir).context("Failed to clean partial Postgres data dir")?;
+            }
+            fs::create_dir_all(data_dir).context("Failed to create Postgres data directory")?;
+
             let password = config.password.clone().unwrap_or_else(|| "postgres".to_string());
             let pwfile = data_dir.join(".crush_initpw");
             fs::write(&pwfile, &password)
