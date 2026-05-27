@@ -1126,8 +1126,14 @@ async fn main() -> anyhow::Result<()> {
                     let total_s = overall_start.elapsed().as_secs_f64();
                     println!(" ✓ running natively on :{} — started in {:.1}s (total: {:.1}s!)",
                         port, startup_s, total_s);
+                } else if let Ok(Some(status)) = child.try_wait() {
+                    // Process already exited — the app crashed or failed to build.
+                    eprintln!(" ✗ app exited before binding :{} (exit code {})",
+                        port, status.code().unwrap_or(-1));
                 } else {
-                    println!(" ✓ running natively on :{}", port);
+                    // Process is still running but never bound the port.
+                    eprintln!(" ✗ no response on :{} after 10s — app may still be starting or bound to a different port",
+                        port);
                 }
 
                 let status = child.wait().await

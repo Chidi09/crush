@@ -694,18 +694,20 @@ impl CrushSpecDetector {
 
         // Native run command: prefer framework plugins that handle deps+compile+run
         // in one shot, so we don't need a separate install step.
+        // `-Dmaven.test.skip=true` skips BOTH test compilation and execution —
+        // `-DskipTests` only skips execution and still fails on broken test sources.
         let entry = match framework {
             "Spring Boot" => {
-                if has_maven { "mvn spring-boot:run -DskipTests".to_string() }
-                else { "gradle bootRun".to_string() }
+                if has_maven { "mvn spring-boot:run -Dmaven.test.skip=true".to_string() }
+                else { "gradle bootRun -x test -x compileTestJava".to_string() }
             }
             "Quarkus" => {
-                if has_maven { "mvn quarkus:dev".to_string() }
-                else { "gradle quarkusDev".to_string() }
+                if has_maven { "mvn quarkus:dev -Dmaven.test.skip=true".to_string() }
+                else { "gradle quarkusDev -x test -x compileTestJava".to_string() }
             }
             "Micronaut" => {
-                if has_maven { "mvn mn:run".to_string() }
-                else { "gradle run".to_string() }
+                if has_maven { "mvn mn:run -Dmaven.test.skip=true".to_string() }
+                else { "gradle run -x test -x compileTestJava".to_string() }
             }
             _ => "target/*.jar".to_string(),
         };
