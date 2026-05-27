@@ -48,6 +48,10 @@ pub struct InferredStack {
     pub default_port: u16,
     pub confidence: f32,
     pub base_image: String,
+    #[serde(default)]
+    pub is_monorepo: bool,
+    #[serde(default)]
+    pub services: Vec<crate::detect::SubService>,
 }
 
 pub struct BuildOutcome {
@@ -67,6 +71,8 @@ impl From<Detection> for InferredStack {
             default_port: d.port,
             confidence: d.confidence,
             base_image: d.base_image,
+            is_monorepo: d.is_monorepo,
+            services: d.services,
         }
     }
 }
