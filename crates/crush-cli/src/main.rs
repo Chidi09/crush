@@ -1061,33 +1061,36 @@ async fn main() -> anyhow::Result<()> {
                 //   - entry is a relative path into .venv / node_modules and missing
                 //   - Node project with no node_modules dir at root
                 //   - Python project with no .venv dir at root
+                // Decide install step based on the *detected stack*, not raw file
+                // existence — a Java project can have a stray package.json for JS
+                // tooling (MJML, eslint) that must not trigger `npm install`.
+                let lang = stack.language.split(' ').next().unwrap_or("").to_lowercase();
                 let entry_bin = parts[0];
-                let entry_missing = std::path::Path::new(entry_bin).is_relative()
-                    && (entry_bin.contains(".venv") || entry_bin.contains("node_modules"))
-                    && !project_root.join(entry_bin).exists();
-                let node_uninstalled = project_root.join("package.json").exists()
-                    && !project_root.join("node_modules").exists();
-                let py_uninstalled = project_root.join("pyproject.toml").exists()
-                    && !project_root.join(".venv").exists();
-                let needs_install = entry_missing || node_uninstalled || py_uninstalled;
-
-                // Resolve the *install* command — separate concern from build_command
-                // (which may be `<pm> run build`, the wrong thing for native runs).
-                let install_cmd: Option<String> = if !needs_install {
-                    None
-                } else if project_root.join("package.json").exists() {
-                    let pm = if project_root.join("bun.lockb").exists() { "bun" }
-                        else if project_root.join("pnpm-lock.yaml").exists() { "pnpm" }
-                        else if project_root.join("yarn.lock").exists() { "yarn" }
-                        else { "npm" };
-                    Some(format!("{} install", pm))
-                } else if project_root.join("pyproject.toml").exists()
-                    || project_root.join("requirements.txt").exists()
-                {
-                    // For Python, build_command is the install command (extracted from Dockerfile or default)
-                    if stack.build_command.is_empty() { None } else { Some(stack.build_command.clone()) }
-                } else {
-                    None
+                let install_cmd: Option<String> = match lang.as_str() {
+                    "node" | "typescript" | "bun" | "deno" => {
+                        if project_root.join("node_modules").exists() { None }
+                        else {
+                            let pm = if project_root.join("bun.lockb").exists() { "bun" }
+                                else if project_root.join("pnpm-lock.yaml").exists() { "pnpm" }
+                                else if project_root.join("yarn.lock").exists() { "yarn" }
+                                else { "npm" };
+                            Some(format!("{} install", pm))
+                        }
+                    }
+                    "python" => {
+                        if project_root.join(".venv").exists() && !stack.entry_point.contains(".venv") {
+                            None
+                        } else if std::path::Path::new(entry_bin).is_relative()
+                            && entry_bin.contains(".venv")
+                            && project_root.join(entry_bin).exists()
+                        {
+                            None
+                        } else if stack.build_command.is_empty() { None }
+                        else { Some(stack.build_command.clone()) }
+                    }
+                    // Java/Go/Rust/etc.: the framework's own run command (`mvn spring-boot:run`,
+                    // `go run`, `cargo run`) handles deps internally — no separate install step.
+                    _ => None,
                 };
 
                 if let Some(ref icmd) = install_cmd {

@@ -692,6 +692,24 @@ impl CrushSpecDetector {
 
         let build = if has_maven { "mvn package -DskipTests".to_string() } else { "gradle bootJar".to_string() };
 
+        // Native run command: prefer framework plugins that handle deps+compile+run
+        // in one shot, so we don't need a separate install step.
+        let entry = match framework {
+            "Spring Boot" => {
+                if has_maven { "mvn spring-boot:run -DskipTests".to_string() }
+                else { "gradle bootRun".to_string() }
+            }
+            "Quarkus" => {
+                if has_maven { "mvn quarkus:dev".to_string() }
+                else { "gradle quarkusDev".to_string() }
+            }
+            "Micronaut" => {
+                if has_maven { "mvn mn:run".to_string() }
+                else { "gradle run".to_string() }
+            }
+            _ => "target/*.jar".to_string(),
+        };
+
         Some(Detection {
             project_name: root.file_name().unwrap_or_default().to_string_lossy().to_string(),
             runtime_type: RuntimeType::Java,
@@ -699,7 +717,7 @@ impl CrushSpecDetector {
             framework_name: framework.to_string(),
             framework_detected: true,
             build_command: build,
-            entry_point: "target/*.jar".to_string(),
+            entry_point: entry,
             port,
             // Java build files (pom.xml/build.gradle) are unambiguous markers.
             // Beat Node's baseline (0.93) so a package.json sitting alongside
