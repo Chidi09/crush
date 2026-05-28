@@ -317,9 +317,12 @@ struct InspectArgs {
 struct ServicesArgs {
     #[command(subcommand)]
     cmd: Option<ServicesSubcommand>,
-    #[arg(long, help = "Format output (text, json). Only applies to ps/status.", default_value = "text")]
+    /// Format output (text, json). Kept here too so `crush services --format json`
+    /// works without an explicit `ps` subcommand. Subcommand-level flag takes
+    /// precedence when given.
+    #[arg(long, default_value = "text", global = true)]
     format: String,
-    #[arg(long, help = "List services for all projects, not just the cwd. Only applies to ps/status.")]
+    #[arg(long, help = "List services for all projects, not just the cwd. Applies to ps/status.", global = true)]
     all_projects: bool,
 }
 
