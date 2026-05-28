@@ -162,6 +162,8 @@ enum Commands {
     DockerContext(DockerContextArgs),
     #[command(about = "Generate shell completion scripts")]
     Completions(CompletionsArgs),
+    #[command(about = "Show recent build history (data_dir/build-history.json)")]
+    History(HistoryArgs),
     #[command(hide = true)]
     InternalRun(InternalRunArgs),
     #[command(hide = true)]
@@ -198,6 +200,14 @@ pub struct DaemonArgs {
 struct CompletionsArgs {
     #[arg(help = "Shell to generate completions for", value_enum)]
     shell: clap_complete::Shell,
+}
+
+#[derive(Args, Debug)]
+struct HistoryArgs {
+    #[arg(long, help = "Limit entries shown (newest first)", default_value = "20")]
+    limit: usize,
+    #[arg(long, help = "Format output (text, json)", default_value = "text")]
+    format: String,
 }
 
 #[derive(Args, Debug)]
@@ -307,6 +317,10 @@ struct InspectArgs {
 struct ServicesArgs {
     #[command(subcommand)]
     cmd: Option<ServicesSubcommand>,
+    #[arg(long, help = "Format output (text, json). Only applies to ps/status.", default_value = "text")]
+    format: String,
+    #[arg(long, help = "List services for all projects, not just the cwd. Only applies to ps/status.")]
+    all_projects: bool,
 }
 
 #[derive(Subcommand, Debug)]
@@ -355,6 +369,8 @@ struct PullArgs {
 struct ImagesArgs {
     #[arg(long, help = "Show intermediate image layers")]
     all: bool,
+    #[arg(long, help = "Format output (text, json)", default_value = "text")]
+    format: String,
 }
 
 #[derive(Args, Debug)]
@@ -1989,6 +2005,29 @@ async fn main() -> anyhow::Result<()> {
                         .dimmed());
             }
 
+            // Append a record to data_dir/build-history.json so the GUI's
+            // Build screen has something to render. Schema lives in
+            // crush_build::run::BuildRecord and is read by `crush ps-history`.
+            let _ = crush_build::run::append_build_record(&data_dir, crush_build::run::BuildRecord {
+                timestamp_ms: std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0),
+                project_path: project_root.to_string_lossy().to_string(),
+                project_name: project_name.clone(),
+                language: stack.language.clone(),
+                framework: stack.language
+                    .split('(')
+                    .nth(1)
+                    .map(|s| s.trim_end_matches(')').to_string())
+                    .unwrap_or_default(),
+                duration_ms: build_elapsed.as_millis() as u64,
+                was_cached: outcome.was_cached,
+                size_bytes: outcome.size_bytes,
+                digest: outcome.digest.clone(),
+                success: true,
+            });
+
             // ── 5. Prompt + native run ────────────────────────────────────────────
             // Skip the prompt when everything's cached: image fresh AND (for
             // node-ish projects) node_modules newer than lockfile. The user
@@ -3382,6 +3421,13 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
 
+            // --format json: emit machine-readable output and exit. Consumed
+            // by the GUI's containers screen and by any scripting use.
+            if args.format == "json" {
+                println!("{}", serde_json::to_string_pretty(&container_list)?);
+                return Ok(());
+            }
+
             let tui = TuiApp::new(1, data_dir.clone());
             // If there are no containers, opening the alt-screen TUI is jarring —
             // user sees a momentary screen flash and lands back at the prompt with
@@ -3963,6 +4009,10 @@ async fn main() -> anyhow::Result<()> {
         Commands::Images(args) => {
             info!("Listing images (show intermediate: {})", args.all);
             let images = store.list_images().await?;
+            if args.format == "json" {
+                println!("{}", serde_json::to_string_pretty(&images)?);
+                return Ok(());
+            }
             if images.is_empty() {
                 println!("No images found.");
             } else {
@@ -4833,6 +4883,39 @@ async fn main() -> anyhow::Result<()> {
             let completions = crush_tui::generate_completions(args.shell, &mut cmd);
             print!("{}", completions);
         }
+        Commands::History(args) => {
+            let mut history = crush_build::run::read_build_history(&data_dir);
+            history.reverse(); // newest first
+            history.truncate(args.limit);
+
+            if args.format == "json" {
+                println!("{}", serde_json::to_string_pretty(&history)?);
+                return Ok(());
+            }
+            if history.is_empty() {
+                println!("No build history yet — run `crush` in a project to record one.");
+            } else {
+                println!("{:<24} {:<22} {:<10} {:<10}", "PROJECT", "STACK", "TIME", "AGE");
+                let now_ms = std::time::SystemTime::now()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .map(|d| d.as_millis() as u64)
+                    .unwrap_or(0);
+                for r in &history {
+                    let age_s = now_ms.saturating_sub(r.timestamp_ms) / 1000;
+                    let age = if age_s < 60 { format!("{}s ago", age_s) }
+                        else if age_s < 3600 { format!("{}m ago", age_s / 60) }
+                        else if age_s < 86400 { format!("{}h ago", age_s / 3600) }
+                        else { format!("{}d ago", age_s / 86400) };
+                    let mark = if r.was_cached { "● cached" } else { "○ fresh " };
+                    println!("{:<24} {:<22} {:<10} {} {}",
+                        r.project_name.chars().take(24).collect::<String>(),
+                        r.language.chars().take(22).collect::<String>(),
+                        format!("{:.1}s", r.duration_ms as f64 / 1000.0),
+                        age,
+                        mark);
+                }
+            }
+        }
         Commands::InternalRun(args) => {
             let container_dir = data_dir.join("containers").join(&args.id);
             let container_json_path = container_dir.join("container.json");
@@ -5183,6 +5266,45 @@ async fn main() -> anyhow::Result<()> {
 
             match args.cmd.unwrap_or(ServicesSubcommand::Ps) {
                 ServicesSubcommand::Ps | ServicesSubcommand::Status => {
+                    // --format json: collect all matching states and emit
+                    // one JSON document. Consumed by the GUI's services screen.
+                    if args.format == "json" {
+                        #[derive(serde::Serialize)]
+                        struct ServiceListing {
+                            project: String,
+                            native: Option<crush_services::NativeServiceState>,
+                            containers: Option<ServiceState>,
+                        }
+                        let mut listings: Vec<ServiceListing> = Vec::new();
+                        if args.all_projects {
+                            let native_dir = state_dir.join("native");
+                            if let Ok(entries) = std::fs::read_dir(&native_dir) {
+                                for e in entries.flatten() {
+                                    let p = e.path();
+                                    if p.extension().and_then(|s| s.to_str()) != Some("json") { continue; }
+                                    let pname = p.file_stem().and_then(|s| s.to_str()).unwrap_or("").to_string();
+                                    let native = load_native_state(&state_dir, &pname);
+                                    let containers = load_service_state(&state_dir, &pname);
+                                    if native.is_some() || containers.is_some() {
+                                        listings.push(ServiceListing { project: pname, native, containers });
+                                    }
+                                }
+                            }
+                        } else {
+                            let native = load_native_state(&state_dir, &project_name);
+                            let containers = load_service_state(&state_dir, &project_name);
+                            if native.is_some() || containers.is_some() {
+                                listings.push(ServiceListing {
+                                    project: project_name.clone(),
+                                    native,
+                                    containers,
+                                });
+                            }
+                        }
+                        println!("{}", serde_json::to_string_pretty(&listings)?);
+                        return Ok(());
+                    }
+
                     let mut found = false;
                     if let Some(state) = load_service_state(&state_dir, &project_name) {
                         println!("Container services for {} (backend: {}):", project_name, state.backend);
