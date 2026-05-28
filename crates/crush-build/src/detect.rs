@@ -888,7 +888,7 @@ impl CrushSpecDetector {
 
         let (build_cmd, entry_prod, dev_entry) = if has_maven {
             (
-                "mvn -B package -DskipTests".to_string(),
+                "mvn -B package -Dmaven.test.skip=true".to_string(),
                 "java -jar target/*.jar".to_string(),
                 match framework {
                     "Spring Boot" => "mvn spring-boot:run -Dmaven.test.skip=true".to_string(),

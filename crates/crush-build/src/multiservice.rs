@@ -298,7 +298,7 @@ impl MultiServiceDetector {
                 let has_maven = path.join("pom.xml").exists();
                 let (build_cmd, entry_prod, dev_entry) = if has_maven {
                     (
-                        "mvn -B package -DskipTests".to_string(),
+                        "mvn -B package -Dmaven.test.skip=true".to_string(),
                         "java -jar target/*.jar".to_string(),
                         "mvn spring-boot:run -Dmaven.test.skip=true".to_string()
                     )
