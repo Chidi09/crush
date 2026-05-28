@@ -180,8 +180,23 @@ impl ServiceDriver for RedisCompatDriver {
         }
 
         cmd.current_dir(data_dir);
-        cmd.stdout(std::process::Stdio::null());
-        cmd.stderr(std::process::Stdio::null());
+        if let Some(ref log_path) = config.log_file {
+            if let Ok(file) = std::fs::OpenOptions::new().create(true).append(true).open(log_path) {
+                if let Ok(dup) = file.try_clone() {
+                    cmd.stdout(std::process::Stdio::from(file));
+                    cmd.stderr(std::process::Stdio::from(dup));
+                } else {
+                    cmd.stdout(std::process::Stdio::null());
+                    cmd.stderr(std::process::Stdio::null());
+                }
+            } else {
+                cmd.stdout(std::process::Stdio::null());
+                cmd.stderr(std::process::Stdio::null());
+            }
+        } else {
+            cmd.stdout(std::process::Stdio::null());
+            cmd.stderr(std::process::Stdio::null());
+        }
 
         let child = cmd.spawn().context("Failed to start Redis-compat process")?;
         let pid = child.id().unwrap_or(0);

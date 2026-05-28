@@ -10,6 +10,8 @@ pub struct ServiceConfig {
     pub password: Option<String>,   // for postgres: superuser password
     pub database: Option<String>,   // for postgres: initial db name
     pub extra_env: Vec<(String, String)>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub log_file: Option<PathBuf>,  // stdout/stderr redirect target
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

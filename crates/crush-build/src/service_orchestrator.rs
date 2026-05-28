@@ -722,6 +722,10 @@ pub async fn start_dep_service_smart(
         let database = dep.env.iter().find(|(k, _)| k == "POSTGRES_DB").map(|(_, v)| v.clone());
         let user = dep.env.iter().find(|(k, _)| k == "POSTGRES_USER").map(|(_, v)| v.clone());
 
+        let log_dir = data_dir.join("services").join("logs").join(project_name);
+        let _ = fs::create_dir_all(&log_dir);
+        let log_file = Some(log_dir.join(format!("{}.log", dep.name)));
+
         let config = crush_services::ServiceConfig {
             port: if host_port > 0 { host_port } else {
                 if driver_name == "postgres" { 5432 } else { 6379 }
@@ -730,6 +734,7 @@ pub async fn start_dep_service_smart(
             password,
             database,
             extra_env: dep.env.clone(),
+            log_file,
         };
 
         if driver_name == "postgres" {
