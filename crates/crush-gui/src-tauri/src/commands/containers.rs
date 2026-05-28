@@ -93,7 +93,7 @@ pub async fn stop_container(id: String, app: tauri::AppHandle, state: State<'_, 
         use windows_sys::Win32::Foundation::CloseHandle;
         unsafe {
             let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
-            if !handle.is_null() {
+            if handle != 0 {
                 TerminateProcess(handle, 1);
                 CloseHandle(handle);
             }

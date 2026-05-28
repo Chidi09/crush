@@ -57,7 +57,8 @@ pub async fn run_project(
             }
         }
         // Cleanup
-        let mut runs = app_handle.state::<AppState>().runs.write().await;
+        let cleanup_state = app_handle.state::<AppState>();
+        let mut runs = cleanup_state.runs.write().await;
         runs.remove(&run_id);
     });
 
