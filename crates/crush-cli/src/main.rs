@@ -781,6 +781,14 @@ fn looks_like_error(line: &str) -> bool {
 /// Probes well-known doc / health paths on a service's port. Returns the
 /// list of `(label, url)` that responded with 2xx. Cheap and parallel.
 async fn probe_service_links(port: u16) -> Vec<(&'static str, String)> {
+    probe_service_links_for(port, "").await
+}
+
+/// Framework-aware probe. When `framework` matches a known backend
+/// (Spring Boot, FastAPI, NestJS, Express, Fastify), we use a narrower
+/// path list to avoid logging 404 noise in the app's stdout for paths
+/// the framework would never expose.
+async fn probe_service_links_for(port: u16, framework: &str) -> Vec<(&'static str, String)> {
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(700))
         .redirect(reqwest::redirect::Policy::limited(3))
@@ -789,8 +797,9 @@ async fn probe_service_links(port: u16) -> Vec<(&'static str, String)> {
         Ok(c) => c,
         Err(_) => return Vec::new(),
     };
-    // (path, label) — first hit per label wins.
-    let probes = [
+    let fw = framework.to_lowercase();
+    // Full path list (used for unknown stacks). First hit per label wins.
+    let all: &[(&str, &str)] = &[
         ("/swagger-ui/index.html", "docs"),
         ("/swagger-ui.html", "docs"),
         ("/swagger/index.html", "docs"),
@@ -804,13 +813,48 @@ async fn probe_service_links(port: u16) -> Vec<(&'static str, String)> {
         ("/healthz", "health"),
         ("/graphql", "graphql"),
     ];
-    // Fingerprint `/` first. SPAs (Vite, Next dev, CRA) return the same
-    // index.html for every unmatched route — we use this to discard false
-    // positives where the response is just the SPA shell.
-    let root_url = format!("http://localhost:{}/", port);
-    let root_body: Option<String> = match client.get(&root_url).send().await {
-        Ok(r) if r.status().is_success() => r.text().await.ok(),
-        _ => None,
+    // Framework-narrowed lists — probe only what these frameworks actually
+    // expose. Avoids 5-10 stack traces in the app log per crush run.
+    let spring: &[(&str, &str)] = &[
+        ("/swagger-ui/index.html", "docs"),
+        ("/v3/api-docs", "openapi"),
+        ("/actuator/health", "health"),
+    ];
+    let fastapi: &[(&str, &str)] = &[
+        ("/docs", "docs"),
+        ("/openapi.json", "openapi"),
+        ("/health", "health"),
+    ];
+    let nest_express: &[(&str, &str)] = &[
+        ("/api-docs", "docs"),
+        ("/docs", "docs"),
+        ("/openapi.json", "openapi"),
+        ("/health", "health"),
+        ("/healthz", "health"),
+        ("/graphql", "graphql"),
+    ];
+    let probes: &[(&str, &str)] = if fw.contains("spring") {
+        spring
+    } else if fw.contains("fastapi") {
+        fastapi
+    } else if fw.contains("nestjs") || fw.contains("express") || fw.contains("fastify") {
+        nest_express
+    } else {
+        all
+    };
+    // Fingerprint `/` first — SPAs (Vite, Next dev, CRA) return the same
+    // index.html for every unmatched route, and we use this to discard false
+    // positives where the response is just the SPA shell. Skipped for known
+    // backend frameworks where `/` is just another 404 (noise in app logs).
+    let is_known_backend = !probes.eq(all);
+    let root_body: Option<String> = if is_known_backend {
+        None
+    } else {
+        let root_url = format!("http://localhost:{}/", port);
+        match client.get(&root_url).send().await {
+            Ok(r) if r.status().is_success() => r.text().await.ok(),
+            _ => None,
+        }
     };
     let is_spa_shell = |body: &str| -> bool {
         if let Some(root) = root_body.as_ref() {
@@ -2578,7 +2622,7 @@ async fn main() -> anyhow::Result<()> {
                     tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
                     // Probe well-known doc/health paths (swagger, openapi, /docs, /healthz)
                     // so backend APIs surface their endpoints without us reading stdout.
-                    let probed = probe_service_links(port).await;
+                    let probed = probe_service_links_for(port, &stack.language).await;
                     let urls = url_sink.lock().await;
                     let has_anything = !urls.is_empty() || !probed.is_empty();
                     if has_anything {
