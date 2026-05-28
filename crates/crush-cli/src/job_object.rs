@@ -17,7 +17,8 @@ mod imp {
     };
 
     pub struct Job(HANDLE);
-    // The HANDLE is process-wide and only ever read; safe to share.
+    // HANDLE is isize in windows-sys; trivially Send + Sync but the impls
+    // make the intent explicit.
     unsafe impl Send for Job {}
     unsafe impl Sync for Job {}
 
@@ -32,7 +33,7 @@ mod imp {
     fn create() -> Option<Job> {
         unsafe {
             let h = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if h.is_null() { return None; }
+            if h == 0 { return None; }
             let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
             info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
             let ok = SetInformationJobObject(
@@ -53,7 +54,7 @@ mod imp {
         JOB.get_or_init(create);
     }
 
-    fn assign_raw(raw: *mut std::ffi::c_void) {
+    fn assign_raw(raw: HANDLE) {
         let job = match JOB.get().and_then(|j| j.as_ref()) {
             Some(j) => j,
             None => return,
@@ -61,19 +62,19 @@ mod imp {
         unsafe {
             // If assignment fails (e.g. parent already in an unbreakable job),
             // silently fall back to no-op rather than killing the flow.
-            let _ = AssignProcessToJobObject(job.0, raw as HANDLE);
+            let _ = AssignProcessToJobObject(job.0, raw);
         }
     }
 
     pub fn assign(child: &tokio::process::Child) {
         if let Some(raw) = child.raw_handle() {
-            assign_raw(raw as *mut _);
+            assign_raw(raw as HANDLE);
         }
     }
 
     pub fn assign_std(child: &std::process::Child) {
         use std::os::windows::io::AsRawHandle;
-        assign_raw(child.as_raw_handle() as *mut _);
+        assign_raw(child.as_raw_handle() as HANDLE);
     }
 }
 
