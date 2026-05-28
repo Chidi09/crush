@@ -67,6 +67,9 @@ struct Cli {
     #[arg(long, help = "Force a rebuild even if existing artifacts look fresh")]
     rebuild: bool,
 
+    #[arg(long, help = "Force re-packing the image even if sources unchanged")]
+    repack: bool,
+
     #[arg(long, help = "Disable the built-in reverse proxy")]
     no_proxy: bool,
 
@@ -1585,9 +1588,31 @@ async fn main() -> anyhow::Result<()> {
 
             // ── 4. Build ──────────────────────────────────────────────────────────
             let cache_dir = data_dir.join("cache");
-            let engine = BuildEngine::new(cache_dir);
+            let engine = BuildEngine::new(cache_dir.clone());
+
+            // Content fingerprint: skip image pack on warm runs
+            let project_hash = crush_build::project_fingerprint(&project_root)?;
+            let hash_path = cache_dir.join("last-image").join(format!("{project_name}.hash"));
+            let prev_hash = std::fs::read_to_string(&hash_path).ok();
+
             let build_start = std::time::Instant::now();
-            let outcome = engine.execute_layered_build(&project_root, &stack).await?;
+            let outcome = if prev_hash.as_deref() == Some(&project_hash) && !cli.repack {
+                println!("   {} image fresh — {} {}",
+                    "✓".green().bold(),
+                    "skipping pack".dimmed(),
+                    "(--repack to force)".dimmed());
+                crush_build::BuildOutcome {
+                    was_cached: true,
+                    digest: project_hash.clone(),
+                    size_bytes: 0,
+                    duration_ms: 0,
+                }
+            } else {
+                let o = engine.execute_layered_build(&project_root, &stack).await?;
+                let _ = std::fs::create_dir_all(hash_path.parent().unwrap());
+                let _ = std::fs::write(&hash_path, &project_hash);
+                o
+            };
             let build_elapsed = build_start.elapsed();
 
             if outcome.was_cached {

@@ -16,8 +16,9 @@ pub mod progress;
 pub mod analysis;
 pub mod service_orchestrator;
 
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::fs;
+use std::time::SystemTime;
 use serde::{Serialize, Deserialize};
 use crush_types::{Result, CrushError};
 
@@ -63,6 +64,65 @@ pub struct BuildOutcome {
     pub was_cached: bool,
     pub size_bytes: u64,
     pub duration_ms: u64,
+}
+
+/// Returns a SHA-256 content fingerprint for the project based on sorted
+/// `(relative_path, mtime_ns)` tuples. Skips the same patterns as `latest_mtime`.
+pub fn project_fingerprint(root: &Path) -> Result<String> {
+    fn is_skip(name: &str) -> bool {
+        matches!(name,
+            "node_modules" | ".next" | "target" | "dist" | "build" | ".turbo" |
+            ".venv" | "venv" | "__pycache__" | ".git" | ".cache" | ".pnpm" |
+            "vendor" | "deps" | "_build" | "out" | "bin" | "obj" | ".gradle" | ".mvn")
+    }
+
+    let mut entries: Vec<(String, u128)> = Vec::new();
+    let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
+
+    while let Some(dir) = stack.pop() {
+        let read_dir = match fs::read_dir(&dir) {
+            Ok(d) => d,
+            Err(_) => continue,
+        };
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            let name = match path.file_name().and_then(|n| n.to_str()) {
+                Some(n) => n.to_string(),
+                None => continue,
+            };
+            if name.starts_with('.') && name != ".env" {
+                continue;
+            }
+            let ft = match entry.file_type() {
+                Ok(t) => t,
+                Err(_) => continue,
+            };
+            if ft.is_dir() {
+                if is_skip(&name) {
+                    continue;
+                }
+                stack.push(path);
+            } else if ft.is_file() {
+                let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().to_string();
+                let mtime_ns = match entry.metadata().ok().and_then(|m| m.modified().ok()) {
+                    Some(t) => t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos(),
+                    None => 0,
+                };
+                entries.push((rel, mtime_ns));
+            }
+        }
+    }
+
+    entries.sort_by(|a, b| a.0.cmp(&b.0));
+
+    use sha2::{Sha256, Digest};
+    let mut hasher = Sha256::new();
+    for (rel, mtime_ns) in &entries {
+        hasher.update(rel.as_bytes());
+        hasher.update(&mtime_ns.to_le_bytes());
+    }
+
+    Ok(hex::encode(hasher.finalize()))
 }
 
 impl From<Detection> for InferredStack {
