@@ -102,15 +102,6 @@ pub enum RunEvent {
     /// The app exited. `code` is the OS exit code (Windows: u32 truncated).
     Exited { code: i32 },
 
-    /// A pre-formatted output line. The CLI prints this verbatim for
-    /// byte-identical output. The GUI ignores this and uses the structured
-    /// variants instead.
-    Line {
-        text: String,
-        #[serde(default)]
-        stream: Stream,
-    },
-
     /// A non-fatal warning the UI can surface (e.g. "no response on :3000
     /// after 10s — app may still be starting").
     Warning { message: String },
