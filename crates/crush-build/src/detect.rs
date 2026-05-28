@@ -382,10 +382,13 @@ impl CrushSpecDetector {
     fn infer_node_entry(&self, json: &serde_json::Value, scripts: Option<&serde_json::Map<String, serde_json::Value>>, root: &Path, has_ts: bool) -> String {
         let pm = Self::pick_node_pm(root);
 
-        // Monorepo: trust the user's `dev` (or `start`) script — usually
-        // `turbo run dev` / `nx run-many --target=dev` / etc. — and let the
-        // orchestrator handle spawning each app. Without this we'd guess
-        // `src/index.js` at the root, which doesn't exist.
+        // Decide dev vs prod entry by whether the repo ships prod-shape Docker
+        // artifacts. If yes (Dockerfile or compose), match what docker would
+        // run: `start`. If not (standalone repo where the alternative is
+        // native `pnpm dev`), prefer `dev` so HMR works.
+        let prod_shape = Self::has_prod_docker_shape(root);
+        let key_order: &[&str] = if prod_shape { &["start", "dev"] } else { &["dev", "start"] };
+
         let is_monorepo = json["workspaces"].is_array()
             || json["workspaces"]["packages"].is_array()
             || root.join("pnpm-workspace.yaml").exists()
@@ -394,30 +397,28 @@ impl CrushSpecDetector {
             || root.join("lerna.json").exists();
         if is_monorepo {
             if let Some(scripts) = scripts {
-                // Prefer `start` over `dev` for the prod entry. `dev_entry_point`
-                // is computed separately and explicitly uses `<pm> run dev`.
-                for key in ["start", "dev"] {
-                    if scripts.get(key).and_then(|v| v.as_str()).is_some() {
+                for key in key_order {
+                    if scripts.get(*key).and_then(|v| v.as_str()).is_some() {
                         return format!("{} run {}", pm, key);
                     }
                 }
             }
-            // Last resort for unscripted monorepos
             return format!("{} start", pm);
         }
 
         if let Some(scripts) = scripts {
-            if let Some(start) = scripts.get("start") {
-                let start_str = start.as_str().unwrap_or("");
-                for prefix in ["node ", "ts-node ", "bun ", "deno ", "tsx "] {
-                    if let Some(cmd) = start_str.strip_prefix(prefix) {
-                        return cmd.trim().to_string();
+            for key in key_order {
+                if let Some(v) = scripts.get(*key) {
+                    let s = v.as_str().unwrap_or("");
+                    if s.is_empty() { continue; }
+                    if *key == "start" {
+                        for prefix in ["node ", "ts-node ", "bun ", "deno ", "tsx "] {
+                            if let Some(cmd) = s.strip_prefix(prefix) {
+                                return cmd.trim().to_string();
+                            }
+                        }
                     }
-                }
-                // Anything else (e.g. `next start`, `vite`, custom) — delegate
-                // to the package manager so we don't lose user intent.
-                if !start_str.is_empty() {
-                    return format!("{} start", pm);
+                    return format!("{} run {}", pm, key);
                 }
             }
         }
@@ -441,6 +442,24 @@ impl CrushSpecDetector {
         else if root.join("pnpm-lock.yaml").exists() { "pnpm" }
         else if root.join("yarn.lock").exists() { "yarn" }
         else { "npm" }
+    }
+
+    /// Returns true when the repo ships prod-shape Docker artifacts:
+    /// a non-dev Dockerfile at the root, or a compose file in one of the
+    /// usual locations. Dev-shape compose (`docker-compose.dev.yml`,
+    /// `compose.dev.yaml`) and `Dockerfile.dev` are ignored.
+    fn has_prod_docker_shape(root: &Path) -> bool {
+        let prod_dockerfile = root.join("Dockerfile");
+        if prod_dockerfile.exists() { return true; }
+
+        let dirs = [".", "infra", "docker", ".docker", "deploy", "ops", "devops"];
+        let names = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
+        for d in &dirs {
+            for n in &names {
+                if root.join(d).join(n).exists() { return true; }
+            }
+        }
+        false
     }
 
     fn try_python(&self, root: &Path) -> Option<Detection> {
