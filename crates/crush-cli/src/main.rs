@@ -70,6 +70,11 @@ struct Cli {
     #[arg(long, help = "Force re-packing the image even if sources unchanged")]
     repack: bool,
 
+    #[arg(long, value_parser = parse_size, help = "Memory cap (e.g. 4G, 512M). Process tree dies on exceed.")]
+    memory: Option<u64>,
+    #[arg(long, value_parser = parse_cpu_fraction, help = "CPU cap (e.g. 0.5, 2). 1.0 = one core.")]
+    cpus: Option<f32>,
+
     #[arg(long, help = "Disable the built-in reverse proxy")]
     no_proxy: bool,
 
@@ -1321,6 +1326,31 @@ async fn run_build(
     Ok(())
 }
 
+/// Parse a human-readable size string like "4G", "512M", "1024" into bytes.
+fn parse_size(s: &str) -> std::result::Result<u64, String> {
+    let s = s.trim();
+    let (num_str, mult) = if let Some(rest) = s.strip_suffix(|c| c == 'k' || c == 'K') {
+        (rest, 1024u64)
+    } else if let Some(rest) = s.strip_suffix(|c| c == 'm' || c == 'M') {
+        (rest, 1024u64 * 1024)
+    } else if let Some(rest) = s.strip_suffix(|c| c == 'g' || c == 'G') {
+        (rest, 1024u64 * 1024 * 1024)
+    } else {
+        (s, 1u64)
+    };
+    let num: u64 = num_str.parse().map_err(|_| format!("Invalid size '{}'", s))?;
+    Ok(num * mult)
+}
+
+/// Parse a CPU fraction like "0.5", "2" into a float representing cores.
+fn parse_cpu_fraction(s: &str) -> std::result::Result<f32, String> {
+    let v: f32 = s.parse().map_err(|_| format!("Invalid CPU value '{}'", s))?;
+    if v < 0.0 {
+        return Err(format!("CPU value must be non-negative: {}", v));
+    }
+    Ok(v)
+}
+
 fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
@@ -1431,13 +1461,17 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
+    let cli = Cli::parse();
+
     // Set up the Windows Job Object on startup. Every child we spawn after
     // this gets assigned to the job, and Windows kills the entire job tree
     // when crush exits — Ctrl+C, panic, terminal closed, all of it. Closest
     // we can get to docker-on-Linux's clean teardown story.
-    job_object::init();
-
-    let cli = Cli::parse();
+    let limits = job_object::Limits {
+        memory_bytes: cli.memory,
+        cpu_percent: cli.cpus.map(|c| (c * 100.0) as u8),
+    };
+    job_object::init_with_limits(limits);
     let data_dir = dirs_or_default();
     let store = ImageStore::new(data_dir.join("images")).await?;
 
