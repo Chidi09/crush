@@ -1245,6 +1245,68 @@ fn spawn_shell(cmdline: &str, cwd: &std::path::Path, env: &[(String, String)]) -
     cmd
 }
 
+/// Run a single sub-service build command and stream its output with a
+/// colour‑prefixed label. Returns Ok(()) on success.
+async fn run_build(
+    sub: &crush_build::SubService,
+    cmdline: &str,
+    cwd: &Path,
+    dep_env: &[(String, String)],
+) -> anyhow::Result<()> {
+    let t0 = std::time::Instant::now();
+    if cmdline.starts_with("install") || cmdline.contains("install") {
+        println!("   {} {}: installing dependencies {}",
+            "↳".cyan(), sub.name.bold(), format!("({})", cmdline).dimmed());
+    } else {
+        println!("   {} {}: building... {}",
+            "⚙".yellow().bold(), sub.name.bold(), format!("({})", cmdline).dimmed());
+    }
+
+    let mut cmd = spawn_shell(cmdline, cwd, dep_env);
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+
+    let mut child = cmd.spawn()
+        .map_err(|e| anyhow::anyhow!("spawn build for {} failed: {}", sub.name, e))?;
+
+    job_object::assign(&child);
+
+    if let Some(stdout) = child.stdout.take() {
+        let n = sub.name.clone();
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let reader = tokio::io::BufReader::new(stdout);
+            let mut lines = reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                println!("{} {}", colour_prefix(&n, 0), line);
+            }
+        });
+    }
+    if let Some(stderr) = child.stderr.take() {
+        let n = sub.name.clone();
+        tokio::spawn(async move {
+            use tokio::io::AsyncBufReadExt;
+            let reader = tokio::io::BufReader::new(stderr);
+            let mut lines = reader.lines();
+            while let Ok(Some(line)) = lines.next_line().await {
+                eprintln!("{} {}", colour_prefix(&n, 0), line);
+            }
+        });
+    }
+
+    let status = child.wait().await
+        .map_err(|e| anyhow::anyhow!("build for {} wait failed: {}", sub.name, e))?;
+    if !status.success() {
+        eprintln!("   {} {}: build failed",
+            "✗".red().bold(), sub.name.bold());
+        anyhow::bail!("Build failed for {}", sub.name);
+    }
+
+    println!("   {} {}: built in {:.1}s",
+        "✓".green().bold(), sub.name.bold(), t0.elapsed().as_secs_f64());
+    Ok(())
+}
+
 fn format_bytes(bytes: u64) -> String {
     const KB: u64 = 1024;
     const MB: u64 = KB * 1024;
@@ -1653,15 +1715,20 @@ async fn main() -> anyhow::Result<()> {
             if should_run && is_multi_service {
                 use std::sync::Arc;
                 use tokio::sync::RwLock;
+                use tokio::sync::Semaphore;
 
                 let filter: Arc<RwLock<FilterMode>> = Arc::new(RwLock::new(FilterMode::All));
 
-                let mut children: Vec<(String, u16, tokio::process::Child)> = Vec::new();
                 let url_sink: UrlSink = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
-                let overall_spawn = std::time::Instant::now();
+
+                // ── Phase A: parallel builds ──────────────────────────────────
+                let sem = Arc::new(Semaphore::new(
+                    std::thread::available_parallelism().map(|p| p.get().min(4)).unwrap_or(2)
+                ));
+                let mut build_handles = Vec::new();
                 for sub in &stack.services {
                     let sub_path = PathBuf::from(&sub.path);
-                    let install = if cli.dev {
+                    let build_cmd = if cli.dev {
                         if sub.dev_install_command.is_empty() {
                             None
                         } else {
@@ -1693,84 +1760,31 @@ async fn main() -> anyhow::Result<()> {
                         }
                     };
 
-                    let run = if cli.dev { sub.dev_entry_point.clone() } else { sub.entry_point.clone() };
-
-                    if let Some(icmd) = install {
-                        let build_start = std::time::Instant::now();
-                        let color_idx = children.len();
-                        let n = sub.name.clone();
-                        if cli.dev {
-                            println!("   {} {}: installing dependencies {}",
-                                "↳".cyan(),
-                                sub.name.bold(),
-                                format!("({})", icmd).dimmed());
-                        } else {
-                            println!("   {} {}: building... {}",
-                                "⚙".yellow().bold(),
-                                sub.name.bold(),
-                                format!("({})", icmd).dimmed());
-                        }
-
-                        let mut cmd = spawn_shell(&icmd, &sub_path, &dep_env);
-                        cmd.stdout(std::process::Stdio::piped());
-                        cmd.stderr(std::process::Stdio::piped());
-
-                        match cmd.spawn() {
-                            Ok(mut child) => {
-                                job_object::assign(&child);
-                                if let Some(stdout) = child.stdout.take() {
-                                    let n_clone = n.clone();
-                                    tokio::spawn(async move {
-                                        use tokio::io::AsyncBufReadExt;
-                                        let reader = tokio::io::BufReader::new(stdout);
-                                        let mut lines = reader.lines();
-                                        while let Ok(Some(line)) = lines.next_line().await {
-                                            println!("{} {}", colour_prefix(&n_clone, color_idx), line);
-                                        }
-                                    });
-                                }
-                                if let Some(stderr) = child.stderr.take() {
-                                    let n_clone = n.clone();
-                                    tokio::spawn(async move {
-                                        use tokio::io::AsyncBufReadExt;
-                                        let reader = tokio::io::BufReader::new(stderr);
-                                        let mut lines = reader.lines();
-                                        while let Ok(Some(line)) = lines.next_line().await {
-                                            eprintln!("{} {}", colour_prefix(&n_clone, color_idx), line);
-                                        }
-                                    });
-                                }
-
-                                let status = child.wait().await
-                                    .map_err(|e| anyhow::anyhow!("build/install for {} failed: {}", sub.name, e))?;
-                                if !status.success() {
-                                    eprintln!("   {} {}: build/install failed",
-                                        "✗".red().bold(),
-                                        sub.name.bold());
-                                    for (_, _, mut c) in children {
-                                        let _ = c.kill().await;
-                                    }
-                                    anyhow::bail!("Build/install failed for {}", sub.name);
-                                }
-                            }
-                            Err(e) => {
-                                eprintln!("   {} {}: spawn failed: {}",
-                                    "✗".red().bold(), sub.name.bold(), e);
-                                for (_, _, mut c) in children {
-                                    let _ = c.kill().await;
-                                }
-                                anyhow::bail!("Spawn failed for {}", sub.name);
-                            }
-                        }
-
-                        if !cli.dev {
-                            println!("   {} {}: built in {:.1}s",
-                                "✓".green().bold(),
-                                sub.name.bold(),
-                                build_start.elapsed().as_secs_f64());
-                        }
+                    if let Some(ref icmd) = build_cmd {
+                        let sem = sem.clone();
+                        let sub = sub.clone();
+                        let sub_path = sub_path.clone();
+                        let dep_env = dep_env.clone();
+                        build_handles.push(tokio::spawn(async move {
+                            let _permit = sem.acquire().await.ok();
+                            run_build(&sub, icmd, &sub_path, &dep_env).await
+                        }));
                     }
+                }
 
+                if !build_handles.is_empty() {
+                    let results = futures::future::join_all(build_handles).await;
+                    if results.iter().any(|r| matches!(r, Ok(Err(_)) | Err(_))) {
+                        anyhow::bail!("one or more sub-service builds failed");
+                    }
+                }
+
+                // ── Phase B: start services ───────────────────────────────────
+                let mut children: Vec<(String, u16, tokio::process::Child)> = Vec::new();
+                let overall_spawn = std::time::Instant::now();
+                for sub in &stack.services {
+                    let sub_path = PathBuf::from(&sub.path);
+                    let run = if cli.dev { sub.dev_entry_point.clone() } else { sub.entry_point.clone() };
                     let run = run.replace("$PORT", &sub.port.to_string());
                     println!("   {} {}: starting {} on {}",
                         "↳".cyan(),
