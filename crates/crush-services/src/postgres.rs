@@ -193,28 +193,74 @@ impl ServiceDriver for PostgresDriver {
             .and_then(|s| s.lines().next()?.trim().parse::<u32>().ok())
             .unwrap_or(0);
 
-        // If a database name was requested that differs from the superuser
-        // (which initdb creates automatically), create it via createdb.
         let username = config.user.clone().unwrap_or_else(|| "postgres".to_string());
+        let password = config.password.clone().unwrap_or_default();
+        let psql = pg_ctl.parent()
+            .map(|p| p.join(if cfg!(target_os = "windows") { "psql.exe" } else { "psql" }))
+            .unwrap_or_else(|| PathBuf::from("psql"));
+
+        // Bring the cluster into agreement with the requested credentials.
+        // The data dir may have been initdb'd long ago with different creds —
+        // earlier crush versions ran initdb as `postgres/postgres` regardless
+        // of application.yml. Run an idempotent CREATE/ALTER USER as whichever
+        // superuser actually exists.
+        let target_role = format!(
+            "DO $$ BEGIN \
+                IF NOT EXISTS (SELECT FROM pg_roles WHERE rolname = '{u}') THEN \
+                    CREATE ROLE \"{u}\" LOGIN SUPERUSER PASSWORD '{p}'; \
+                ELSE \
+                    ALTER ROLE \"{u}\" WITH LOGIN SUPERUSER PASSWORD '{p}'; \
+                END IF; END $$;",
+            u = username.replace('\'', "''"),
+            p = password.replace('\'', "''"),
+        );
+
+        // Try the configured user first; if its password no longer matches,
+        // fall back to `postgres/postgres` (the previous default), then to
+        // peer auth on Unix sockets via the OS user `postgres`.
+        let candidates = [
+            (username.clone(), password.clone()),
+            ("postgres".to_string(), "postgres".to_string()),
+            ("postgres".to_string(), String::new()),
+        ];
+        for (try_user, try_pass) in &candidates {
+            let status = tokio::process::Command::new(&psql)
+                .args([
+                    "-h", "localhost",
+                    "-p", &config.port.to_string(),
+                    "-U", try_user,
+                    "-d", "postgres",
+                    "-c", &target_role,
+                ])
+                .env("PGPASSWORD", try_pass)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .await;
+            if let Ok(s) = status { if s.success() { break; } }
+        }
+
+        // Ensure the database exists (idempotent CREATE DATABASE).
         if let Some(ref db) = config.database {
-            if db != &username {
-                let createdb = pg_ctl.parent()
-                    .map(|p| p.join(if cfg!(target_os = "windows") { "createdb.exe" } else { "createdb" }))
-                    .unwrap_or_else(|| PathBuf::from("createdb"));
-                // Ignore errors: most likely the db already exists from a previous run.
-                let _ = tokio::process::Command::new(&createdb)
-                    .args([
-                        "-h", "localhost",
-                        "-p", &config.port.to_string(),
-                        "-U", &username,
-                        db,
-                    ])
-                    .env("PGPASSWORD", config.password.clone().unwrap_or_default())
-                    .stdout(std::process::Stdio::null())
-                    .stderr(std::process::Stdio::null())
-                    .status()
-                    .await;
-            }
+            let target_db = format!(
+                "SELECT 'CREATE DATABASE \"{d}\" OWNER \"{u}\"' \
+                 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{d}')\\gexec",
+                d = db.replace('"', ""),
+                u = username.replace('"', ""),
+            );
+            let _ = tokio::process::Command::new(&psql)
+                .args([
+                    "-h", "localhost",
+                    "-p", &config.port.to_string(),
+                    "-U", &username,
+                    "-d", "postgres",
+                    "-c", &target_db,
+                ])
+                .env("PGPASSWORD", &password)
+                .stdout(std::process::Stdio::null())
+                .stderr(std::process::Stdio::null())
+                .status()
+                .await;
         }
 
         Ok(RunningService {
