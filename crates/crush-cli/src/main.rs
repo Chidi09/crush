@@ -1955,8 +1955,6 @@ async fn main() -> anyhow::Result<()> {
                     _ => {}
                 }
             }
-
-            Ok(())
         }
         Commands::Detect(args) => {
             info!("Detecting project stack...");
