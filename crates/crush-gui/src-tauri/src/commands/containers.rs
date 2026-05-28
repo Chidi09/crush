@@ -78,7 +78,7 @@ pub async fn list_containers(state: State<'_, AppState>) -> Result<Vec<Container
 }
 
 #[tauri::command]
-pub async fn stop_container(id: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn stop_container(id: String, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     let containers_dir = state.data_dir.join("containers");
     let container_path = containers_dir.join(&id).join("container.json");
     if !container_path.exists() {
@@ -89,12 +89,17 @@ pub async fn stop_container(id: String, state: State<'_, AppState>) -> Result<()
 
     #[cfg(target_os = "windows")]
     if let Some(pid) = c.pid {
+        use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+        use windows_sys::Win32::Foundation::CloseHandle;
         unsafe {
-            let handle = windows_sys::Win32::Foundation::HANDLE(pid as isize);
-            windows_sys::Win32::System::Threading::TerminateProcess(handle, 1);
+            let handle = OpenProcess(PROCESS_TERMINATE, 0, pid);
+            if !handle.is_null() {
+                TerminateProcess(handle, 1);
+                CloseHandle(handle);
+            }
         }
     }
 
-    crate::events::emit_container_state_changed(&state);
+    crate::events::emit_container_state_changed(&app);
     Ok(())
 }

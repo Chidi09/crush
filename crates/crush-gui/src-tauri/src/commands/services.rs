@@ -69,14 +69,13 @@ fn connection_string_for(kind: &str, port: u16, project: &str, _name: &str) -> O
 }
 
 #[tauri::command]
-pub async fn stop_native_service(name: String, project: String, state: State<'_, AppState>) -> Result<(), String> {
-    let services_dir = state.data_dir.join("services").join("native");
+pub async fn stop_native_service(name: String, project: String, app: tauri::AppHandle, state: State<'_, AppState>) -> Result<(), String> {
     use crush_services::load_native_state;
     if let Some(mut state_data) = load_native_state(&state.data_dir.join("services"), &project) {
         state_data.services.retain(|s| s.name != name);
         crush_services::save_native_state(&state.data_dir.join("services"), &state_data)
             .map_err(|e| e.to_string())?;
-        crate::events::emit_service_state_changed(&state);
+        crate::events::emit_service_state_changed(&app);
     }
     Ok(())
 }

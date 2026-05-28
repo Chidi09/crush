@@ -32,7 +32,7 @@ pub async fn subscribe_logs(
 
     tokio::spawn(async move {
         let mut offsets: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
-        for (path, stream_name) in [(paths.0, "stdout"), (paths.1, "stderr")] {
+        for (path, stream_name) in [(&paths.0, "stdout"), (&paths.1, "stderr")] {
             if path.exists() {
                 if let Ok(content) = tokio::fs::read_to_string(&path).await {
                     offsets.insert(stream_name.to_string(), content.len() as u64);

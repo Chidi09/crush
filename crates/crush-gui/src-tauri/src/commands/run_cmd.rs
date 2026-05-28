@@ -1,4 +1,4 @@
-use tauri::{State, Window};
+use tauri::{State, Window, Manager, Emitter};
 use crate::state::{AppState, RunProcess, RunId};
 use uuid::Uuid;
 

@@ -6,7 +6,7 @@ pub async fn pick_project_directory() -> Result<Option<String>, String> {
         .set_title("Select project directory")
         .pick_folder()
         .await;
-    Ok(folder.map(|p| p.to_string_lossy().to_string()))
+    Ok(folder.map(|p| p.path().to_string_lossy().to_string()))
 }
 
 #[tauri::command]

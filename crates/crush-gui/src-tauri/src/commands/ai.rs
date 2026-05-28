@@ -13,12 +13,14 @@ pub struct DiagnosisResult {
 pub async fn diagnose_logs(lines: Vec<String>, state: State<'_, AppState>) -> Result<DiagnosisResult, String> {
     let stderr = lines.join("\n");
     let diagnosis = state.ai.diagnose_stderr(&stderr, None, None).await.map_err(|e| e.to_string())?;
-    let summary = diagnosis.diagnosis.as_ref()
-        .map(|d| format!("{}", d.description.trim()))
+    let detail = diagnosis.diagnosis.as_ref();
+    let summary = detail
+        .map(|d| d.root_cause.trim().to_string())
         .unwrap_or_else(|| "No diagnosis returned".to_string());
+    let fix = detail.map(|d| d.fix_description.trim().to_string());
     Ok(DiagnosisResult {
         summary,
         details: None,
-        fix: None,
+        fix,
     })
 }
