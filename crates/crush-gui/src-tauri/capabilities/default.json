@@ -1,0 +1,12 @@
+﻿{
+  "identifier": "default",
+  "description": "Default capabilities for Crush GUI",
+  "windows": ["main"],
+  "permissions": [
+    "core:default",
+    "shell:allow-open",
+    "core:window:default",
+    "core:window:allow-set-size",
+    "core:window:allow-set-title"
+  ]
+}

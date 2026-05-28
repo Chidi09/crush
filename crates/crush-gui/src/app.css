@@ -1,0 +1,107 @@
+@import "tailwindcss";
+
+@theme {
+  --color-crush-orange: #e05540;
+  --color-crush-orange-light: #f06a55;
+  --color-crush-orange-dark: #c04530;
+  --color-crush-black: #09090b;
+  --color-crush-dark: #0f0f13;
+  --color-crush-surface: #1a1a22;
+  --color-crush-border: #2a2a35;
+  --color-crush-muted: #6b6b80;
+  --color-crush-text: #e8e8ed;
+  --color-crush-text-muted: #9a9ab0;
+  --color-crush-green: #4ade80;
+  --color-crush-red: #ef4444;
+  --font-sans: 'Geist', 'Inter', 'system-ui', '-apple-system', 'BlinkMacSystemFont', 'Segoe UI', sans-serif;
+  --font-mono: 'Geist Mono', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
+}
+
+* {
+  scrollbar-width: thin;
+  scrollbar-color: var(--color-crush-border) var(--color-crush-black);
+}
+
+body {
+  margin: 0;
+  background: var(--color-crush-black);
+  color: var(--color-crush-text);
+  font-family: var(--font-sans);
+  min-height: 100vh;
+}
+
+::selection {
+  background: rgba(224, 85, 64, 0.3);
+  color: white;
+}
+
+.crush-card {
+  background: var(--color-crush-surface);
+  border: 1px solid rgba(42, 42, 53, 0.7);
+  border-radius: 1rem;
+  transition: box-shadow 0.2s;
+}
+
+.crush-card:hover {
+  box-shadow: 0 0 20px rgba(224, 85, 64, 0.06);
+}
+
+.crush-badge {
+  display: inline-flex;
+  align-items: center;
+  border-radius: 9999px;
+  border: 1px solid rgba(224, 85, 64, 0.2);
+  background: rgba(224, 85, 64, 0.05);
+  color: var(--color-crush-orange);
+  text-transform: uppercase;
+  letter-spacing: 0.05em;
+  font-size: 0.75rem;
+  padding: 0.125rem 0.625rem;
+}
+
+.crush-mono-panel {
+  background: rgba(9, 9, 11, 0.9);
+  font-family: var(--font-mono);
+  font-size: 11px;
+  border-radius: 0.75rem;
+  overflow: hidden;
+}
+
+.crush-glow {
+  position: fixed;
+  pointer-events: none;
+  width: 600px;
+  height: 600px;
+  border-radius: 50%;
+  background: rgba(224, 85, 64, 0.03);
+  filter: blur(140px);
+  z-index: 0;
+}
+
+.crush-input {
+  background: var(--color-crush-surface);
+  border: 1px solid var(--color-crush-border);
+  border-radius: 0.75rem;
+  color: var(--color-crush-text);
+  padding: 0.5rem 0.75rem;
+  font-size: 0.875rem;
+  outline: none;
+}
+
+.crush-input:focus {
+  border-color: var(--color-crush-orange);
+  box-shadow: 0 0 0 2px rgba(224, 85, 64, 0.2);
+}
+
+@keyframes fadeIn {
+  from { opacity: 0; }
+  to { opacity: 1; }
+}
+
+@keyframes slideUp {
+  from { opacity: 0; transform: translateY(20px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+
+.animate-fade-in { animation: fadeIn 0.5s ease-out; }
+.animate-slide-up { animation: slideUp 0.5s ease-out; }

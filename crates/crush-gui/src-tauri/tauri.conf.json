@@ -1,0 +1,37 @@
+﻿{
+  "$schema": "https://schema.tauri.app/config/2",
+  "productName": "Crush",
+  "version": "0.8.0",
+  "identifier": "run.crush.app",
+  "build": {
+    "frontendDist": "../build",
+    "devUrl": "http://localhost:1420",
+    "beforeDevCommand": "pnpm dev",
+    "beforeBuildCommand": "pnpm build"
+  },
+  "app": {
+    "windows": [{
+      "title": "Crush",
+      "width": 1200,
+      "minWidth": 900,
+      "height": 760,
+      "minHeight": 600,
+      "decorations": true,
+      "transparent": false,
+      "theme": "Dark",
+      "center": true
+    }],
+    "security": {
+      "csp": "default-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data:; font-src 'self'"
+    }
+  },
+  "bundle": {
+    "active": true,
+    "targets": ["nsis", "msi"],
+    "icon": ["icons/32x32.png", "icons/128x128.png", "icons/icon.icns", "icons/icon.ico"],
+    "windows": {
+      "webviewInstallMode": { "type": "downloadBootstrapper" },
+      "nsis": { "displayLanguageSelector": false }
+    }
+  }
+}

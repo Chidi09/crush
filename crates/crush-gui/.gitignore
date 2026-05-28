@@ -1,0 +1,10 @@
+# JS deps & build artifacts
+node_modules/
+/build/
+.svelte-kit/
+
+# Tauri / Rust build output (workspace target is at repo root)
+src-tauri/target/
+
+# Logs
+*.log

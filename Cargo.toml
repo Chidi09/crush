@@ -20,6 +20,7 @@ members = [
     "crates/crush-proto",
     "crates/crush-deploy",
     "crates/crush-services",
+    "crates/crush-gui/src-tauri",
 ]
 
 [workspace.package]
