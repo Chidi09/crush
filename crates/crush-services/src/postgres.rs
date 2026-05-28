@@ -193,6 +193,30 @@ impl ServiceDriver for PostgresDriver {
             .and_then(|s| s.lines().next()?.trim().parse::<u32>().ok())
             .unwrap_or(0);
 
+        // pgvector / timescale: build & install the extension into the host
+        // PG before we hand control back. ensure_installed is idempotent.
+        let image_lc = config.image.to_lowercase();
+        let needs_pgvector = image_lc.contains("pgvector")
+            || std::env::var("CRUSH_FORCE_PGVECTOR").is_ok();
+        if needs_pgvector {
+            #[cfg(target_os = "windows")]
+            {
+                // pg_root is two levels above pg_ctl: <root>\bin\pg_ctl.exe
+                let pg_root = pg_ctl.parent()
+                    .and_then(|p| p.parent())
+                    .map(|p| p.to_path_buf())
+                    .context("could not derive PG root from pg_ctl path")?;
+                let cache = self.cache.root.join("pgvector");
+                crate::extensions::pgvector::ensure_installed(&pg_root, &cache)
+                    .await
+                    .context("pgvector extension setup")?;
+            }
+            #[cfg(not(target_os = "windows"))]
+            {
+                anyhow::bail!("pgvector native install is currently Windows-only — use a container backend or set CRUSH_PGVECTOR_DOCKER=1");
+            }
+        }
+
         let username = config.user.clone().unwrap_or_else(|| "postgres".to_string());
         let password = config.password.clone().unwrap_or_default();
         let psql = pg_ctl.parent()
@@ -259,6 +283,23 @@ impl ServiceDriver for PostgresDriver {
                 .stderr(std::process::Stdio::null())
                 .status()
                 .await;
+
+            // pgvector hint → enable the extension inside the target db.
+            if needs_pgvector {
+                let _ = tokio::process::Command::new(&psql)
+                    .args([
+                        "-h", "localhost",
+                        "-p", &config.port.to_string(),
+                        "-U", &username,
+                        "-d", &safe_db,
+                        "-c", "CREATE EXTENSION IF NOT EXISTS vector;",
+                    ])
+                    .env("PGPASSWORD", &password)
+                    .stdout(std::process::Stdio::null())
+                    .stderr(std::process::Stdio::null())
+                    .status()
+                    .await;
+            }
         }
 
         Ok(RunningService {

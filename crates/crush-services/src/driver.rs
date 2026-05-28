@@ -12,6 +12,11 @@ pub struct ServiceConfig {
     pub extra_env: Vec<(String, String)>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub log_file: Option<PathBuf>,  // stdout/stderr redirect target
+    /// Original image hint (e.g. "pgvector/pgvector:pg17") so the driver
+    /// can fork behaviour — install the `vector` extension into the host
+    /// PG before returning, etc. Empty for vanilla postgres.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub image: String,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

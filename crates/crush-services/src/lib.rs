@@ -3,6 +3,7 @@ pub mod postgres;
 pub mod redis_compat;
 pub mod binary_cache;
 pub mod state;
+pub mod extensions;
 
 pub use driver::{ServiceDriver, RunningService, ServiceConfig, ServiceKind};
 pub use postgres::PostgresDriver;

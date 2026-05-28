@@ -698,10 +698,11 @@ pub enum StartedService {
 pub fn native_driver_for(image: &str) -> Option<&'static str> {
     let name = image.split('/').last().unwrap_or(image).split(':').next().unwrap_or(image);
     match name {
-        // Only vanilla postgres goes native — images that bundle extensions
-        // (pgvector, timescale, postgis, etc.) MUST run in a container so the
-        // extension binaries are present.
-        "postgres" => Some("postgres"),
+        // pgvector and timescale go native too. The PostgresDriver detects
+        // these via the image hint and builds/installs the extension into
+        // the host PG before returning (see extensions::pgvector). User
+        // can fall back to container backend with CRUSH_PGVECTOR_DOCKER=1.
+        "postgres" | "pgvector" | "timescale" => Some("postgres"),
         n if n.starts_with("redis") || n.starts_with("valkey") || n.starts_with("keydb") || n.starts_with("garnet") => Some("redis"),
         _ => None,
     }
@@ -735,6 +736,7 @@ pub async fn start_dep_service_smart(
             database,
             extra_env: dep.env.clone(),
             log_file,
+            image: dep.image.clone(),
         };
 
         if driver_name == "postgres" {
