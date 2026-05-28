@@ -610,15 +610,24 @@ impl CrushSpecDetector {
             "pip install -e .".to_string()
         } else if has_conda {
             "conda env create -f environment.yml".to_string()
+        } else if root.join(".venv").exists() {
+            // Bare Django/Flask projects: no manifest, deps already in .venv.
+            // Nothing to install — the venv is the source of truth.
+            "echo 'No install required (.venv present, no requirements.txt)'".to_string()
         } else {
-            "pip install -r requirements.txt".to_string()
+            // Last-resort: tell the user clearly instead of trying to install
+            // from a missing requirements.txt.
+            "echo 'No install: no requirements.txt, pyproject.toml, or .venv found — add one or run pip install yourself'".to_string()
         };
 
         // Invoke venv binaries directly — avoids uv trying to reinstall the editable
         // project package (which fails when the project has no __init__.py or missing src/).
         let venv_bin = if cfg!(target_os = "windows") { r".venv\Scripts\" } else { ".venv/bin/" };
         let exe_suffix = if cfg!(target_os = "windows") { ".exe" } else { "" };
-        let py = if has_uv {
+        let has_venv = root.join(".venv").exists();
+        // Use the venv's python whenever a .venv exists — PATH python is
+        // unrelated unless the user activated the venv themselves.
+        let py = if has_uv || has_venv {
             format!("{}{}{}", venv_bin, "python", exe_suffix)
         } else {
             "python".to_string()
@@ -657,11 +666,10 @@ impl CrushSpecDetector {
         };
 
         let dev_install = build_cmd.clone();
-        let final_build_cmd = if framework == "Django" {
-            format!("{} && {} manage.py collectstatic --noinput", build_cmd, py)
-        } else {
-            build_cmd.clone()
-        };
+        // Drop collectstatic for Django dev: runserver serves statics with
+        // DEBUG=True, and projects without STATIC_ROOT/STATICFILES_DIRS
+        // configured fail the step. User can add it back via Crushfile.
+        let final_build_cmd = build_cmd.clone();
 
         let workers = if cfg!(target_os = "windows") { "" } else { " --workers 2" };
         let entry_prod = match framework {
