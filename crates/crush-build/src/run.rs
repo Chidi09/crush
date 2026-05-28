@@ -258,10 +258,12 @@ mod job_imp {
 
 #[cfg(target_os = "windows")]
 pub fn assign_to_job(child: &tokio::process::Child) {
-    use std::os::windows::io::AsRawHandle;
-    if let Some(job) = job_imp::get() {
-        unsafe {
-            let _ = AssignProcessToJobObject(job, child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE);
+    use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
+    if let Some(raw) = child.raw_handle() {
+        if let Some(job) = job_imp::get() {
+            unsafe {
+                let _ = AssignProcessToJobObject(job, raw as windows_sys::Win32::Foundation::HANDLE);
+            }
         }
     }
 }
@@ -1419,10 +1421,14 @@ async fn run_project_inner(
                             }
                         }
                     }
-                    _ = abort_rx => { break; }
+                    _ = &mut *abort_rx => { break; }
                     else => { break; }
                 }
             }
+            // Cleanup (watch branch)
+            if let Some(tx_p) = proxy_shutdown_tx { let _ = tx_p.send(()); }
+            for (_, mut c) in named_children { let _ = c.kill().await; }
+            return Ok(());
         } else {
             // Block until any child exits OR abort
             let exited: Option<(String, Option<i32>)>;
@@ -1444,12 +1450,11 @@ async fn run_project_inner(
             if let Some((name, code)) = exited {
                 let _ = tx.send(RunEvent::Exited { code: code.unwrap_or(-1) }).await;
             }
+            // Cleanup (non-watch branch)
+            if let Some(tx_p) = proxy_shutdown_tx { let _ = tx_p.send(()); }
+            for (_, _, mut c) in children { let _ = c.kill().await; }
+            return Ok(());
         }
-
-        // Cleanup
-        if let Some(tx_p) = proxy_shutdown_tx { let _ = tx_p.send(()); }
-        for (_, _, mut c) in children { let _ = c.kill().await; }
-        return Ok(());
     }
 
     // ── 7. Single-service branch ──────────────────────────────────────
