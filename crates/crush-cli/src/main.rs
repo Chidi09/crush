@@ -2572,6 +2572,16 @@ async fn main() -> anyhow::Result<()> {
             println!("Built image {} -> digest: {}", args.tag, digest);
         }
         Commands::Watch(args) => {
+            #[cfg(windows)]
+            {
+                let _ = args;
+                eprintln!(" {} `crush watch` uses Linux overlayfs and isn't supported on Windows.",
+                    "✗".red().bold());
+                eprintln!("   ↳ use `crush --watch` instead (native watch mode, no containers)");
+                std::process::exit(2);
+            }
+            #[cfg(not(windows))]
+            {
             info!("Developer watch active (debounce: {}ms)", args.debounce);
             let project_root = std::env::current_dir()?;
             let cache_dir = data_dir.join("cache");
@@ -2837,6 +2847,7 @@ async fn main() -> anyhow::Result<()> {
                     current_net = green_net;
                 }
                 println!("[Watch] Blue-Green Swap complete!");
+            }
             }
         }
         Commands::Run(args) => {

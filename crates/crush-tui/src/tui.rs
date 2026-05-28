@@ -311,19 +311,12 @@ impl App {
             mem_history.insert(c.id.clone(), mem);
         }
 
-        let compose_services = vec![
-            ComposeService { name: "web".to_string(), status: "Running".to_string(), image: "my-node-app:latest".to_string() },
-            ComposeService { name: "db".to_string(), status: "Running".to_string(), image: "postgres:15".to_string() },
-            ComposeService { name: "cache".to_string(), status: "Stopped".to_string(), image: "redis:7".to_string() },
-        ];
-
-        let compose_logs = vec![
-            "[db] 2026-05-26 15:00:00 UTC - Database ready".to_string(),
-            "[web] 2026-05-26 15:00:01 UTC - Connecting to database...".to_string(),
-            "[db] 2026-05-26 15:00:02 UTC - Accepted connection from web".to_string(),
-            "[web] 2026-05-26 15:00:03 UTC - Server starting on :3000".to_string(),
-            "[cache] 2026-05-26 15:00:04 UTC - Stopped gracefully".to_string(),
-        ];
+        let compose_services = Self::load_native_services(&data_dir);
+        let compose_logs: Vec<String> = if compose_services.is_empty() {
+            vec!["  (no services running — start something with `crush` in a project directory)".to_string()]
+        } else {
+            Vec::new()
+        };
 
         let debug_source = r#"40: let database_url = std::env::var("DATABASE_URL")
 41:     .expect("DATABASE_URL is not set!");
@@ -367,6 +360,70 @@ Suggested Patch:
             debug_fix,
         }
     }
+
+    /// Load running native dep services from `<data_dir>/native/*.json`.
+    /// Each file is a `NativeServiceState` JSON with a `services` array of
+    /// `{ name, pid, port, kind }`. We probe each pid to set Running/Stopped.
+    fn load_native_services(data_dir: &std::path::Path) -> Vec<ComposeService> {
+        let native_dir = data_dir.join("native");
+        let mut out = Vec::new();
+        let entries = match std::fs::read_dir(&native_dir) {
+            Ok(e) => e,
+            Err(_) => return out,
+        };
+        for entry in entries.flatten() {
+            let p = entry.path();
+            if p.extension().and_then(|s| s.to_str()) != Some("json") { continue; }
+            let content = match std::fs::read_to_string(&p) {
+                Ok(c) => c,
+                Err(_) => continue,
+            };
+            let v: serde_json::Value = match serde_json::from_str(&content) {
+                Ok(v) => v,
+                Err(_) => continue,
+            };
+            if let Some(svcs) = v.get("services").and_then(|s| s.as_array()) {
+                for s in svcs {
+                    let name = s.get("name").and_then(|n| n.as_str()).unwrap_or("?").to_string();
+                    let port = s.get("port").and_then(|n| n.as_u64()).unwrap_or(0);
+                    let kind = s.get("kind").and_then(|k| k.as_str()).unwrap_or("?");
+                    let pid = s.get("pid").and_then(|n| n.as_u64()).unwrap_or(0) as u32;
+                    let alive = Self::pid_alive(pid);
+                    out.push(ComposeService {
+                        name,
+                        status: if alive { "Running".to_string() } else { "Stopped".to_string() },
+                        image: format!("{} :{}", kind.to_lowercase(), port),
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    #[cfg(windows)]
+    fn pid_alive(pid: u32) -> bool {
+        if pid == 0 { return false; }
+        use windows_sys::Win32::System::Threading::{OpenProcess, PROCESS_QUERY_LIMITED_INFORMATION, GetExitCodeProcess};
+        use windows_sys::Win32::Foundation::CloseHandle;
+        const STILL_ACTIVE: u32 = 259;
+        unsafe {
+            let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+            if h == 0 { return false; }
+            let mut code: u32 = 0;
+            GetExitCodeProcess(h, &mut code);
+            CloseHandle(h);
+            code == STILL_ACTIVE
+        }
+    }
+
+    #[cfg(unix)]
+    fn pid_alive(pid: u32) -> bool {
+        if pid == 0 { return false; }
+        unsafe { libc::kill(pid as libc::pid_t, 0) == 0 }
+    }
+
+    #[cfg(not(any(windows, unix)))]
+    fn pid_alive(_pid: u32) -> bool { false }
 
     fn next_row(&mut self) {
         if self.containers.is_empty() { return; }
