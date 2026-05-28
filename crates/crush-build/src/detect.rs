@@ -259,7 +259,7 @@ impl CrushSpecDetector {
         } else {
             let dev_entry = format!("{} run dev", pm);
             let dev_install = format!("{} install", pm);
-            let entry_prod = match surfaced_framework.as_str() {
+            let framework_entry_prod = match surfaced_framework.as_str() {
                 "Vite" => format!("{} exec vite preview -- --port $PORT --host 0.0.0.0", pm),
                 "Next.js" => format!("{} run start", pm),
                 "Nuxt" => format!("{} run preview", pm),
@@ -268,7 +268,22 @@ impl CrushSpecDetector {
                 "Astro" => format!("{} run preview", pm),
                 _ => entry.clone(),
             };
-            let final_build_cmd = format!("{} install && {}", pm, build_cmd);
+            // Apply the docker-shape heuristic to the framework branch:
+            // when no prod-shape Docker artifacts exist, the default `crush`
+            // invocation should match the native `pnpm dev` workflow (HMR),
+            // not the framework's preview/start path.
+            let entry_prod = if Self::has_prod_docker_shape(root) {
+                framework_entry_prod
+            } else {
+                dev_entry.clone()
+            };
+            // If we flipped entry to dev_entry (no prod-shape Docker), skip
+            // the heavy `pnpm run build` step too — dev servers compile on the fly.
+            let final_build_cmd = if Self::has_prod_docker_shape(root) {
+                format!("{} install && {}", pm, build_cmd)
+            } else {
+                format!("{} install", pm)
+            };
             (dev_entry, dev_install, entry_prod, final_build_cmd)
         };
 
