@@ -16,6 +16,7 @@ pub mod attest;
 pub mod progress;
 pub mod analysis;
 pub mod service_orchestrator;
+pub mod proxy;
 
 use std::path::{Path, PathBuf};
 use std::fs;

@@ -23,7 +23,7 @@ members = [
 ]
 
 [workspace.package]
-version = "0.7.72"
+version = "0.7.73"
 edition = "2021"
 authors = ["Crush Contributors"]
 license = "MIT OR Apache-2.0"
@@ -38,6 +38,7 @@ tokio-util = { version = "0.7", features = ["codec", "io"] }
 anyhow = "1.0"
 thiserror = "1.0"
 async-trait = "0.1"
+futures = "0.3"
 
 # Serialization & CLI
 serde = { version = "1.0", features = ["derive"] }

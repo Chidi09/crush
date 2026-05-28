@@ -6,6 +6,7 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 use crush_types::*;
 use crush_build::{StackDetector, BuildEngine};
+use crush_build::run::RunEvent;
 use crush_build::{
     detect_backend, parse_compose, parse_spring_config,
     stop_dep_service,
@@ -37,8 +38,9 @@ use crush_reliability::{
 };
 mod runtime;
 mod job_object;
-mod proxy;
 use std::sync::Arc;
+use std::sync::atomic::{AtomicBool, Ordering};
+use crush_build::run::Stream;
 
 #[cfg(target_os = "windows")]
 use crush_runtime_windows::WindowsRuntime;
@@ -1587,6 +1589,66 @@ fn extract_dockerfile_hints(path: &std::path::Path) -> (Option<u16>, Option<Stri
     (port, None)
 }
 
+fn format_detection_line_raw(language: &str, _framework: &str, _confidence: f32) -> String {
+    let (runtime_raw, framework) = if let Some(idx) = language.find(" (") {
+        let rt = &language[..idx];
+        let fw = language[idx + 2..].trim_end_matches(')');
+        (rt, if fw == rt || fw == "generic" || fw.is_empty() { "" } else { fw })
+    } else {
+        (language, "")
+    };
+
+    let runtime_display = match runtime_raw {
+        "node" | "typescript" => "Node.js",
+        "python" => "Python",
+        "rust" => "Rust",
+        "go" => "Go",
+        "java" => "Java",
+        "dotnet" => ".NET",
+        "ruby" => "Ruby",
+        "php" => "PHP",
+        "elixir" => "Elixir",
+        "swift" => "Swift",
+        "deno" => "Deno",
+        "bun" => "Bun",
+        other => other,
+    };
+
+    let lang_part = if runtime_raw == "typescript" { " · TypeScript" } else { "" };
+
+    if framework.is_empty() {
+        format!("{}{}", runtime_display, lang_part)
+    } else {
+        let fw_display = match framework {
+            "next" => "Next.js",
+            "nuxt" => "Nuxt",
+            "express" => "Express",
+            "fastapi" => "FastAPI",
+            "flask" => "Flask",
+            "django" => "Django",
+            "rails" => "Rails",
+            "sinatra" => "Sinatra",
+            "laravel" => "Laravel",
+            "symfony" => "Symfony",
+            "gin" => "Gin",
+            "echo" => "Echo",
+            "fiber" => "Fiber",
+            "actix" => "Actix-web",
+            "rocket" => "Rocket",
+            "axum" => "Axum",
+            "phoenix" => "Phoenix",
+            "remix" => "Remix",
+            "astro" => "Astro",
+            "svelte" | "sveltekit" => "SvelteKit",
+            "vue" => "Vue",
+            "angular" => "Angular",
+            "react" => "React",
+            other => other,
+        };
+        format!("{}{} · {}", runtime_display, lang_part, fw_display)
+    }
+}
+
 fn format_detection_line(stack: &crush_build::InferredStack) -> String {
     let (runtime_raw, framework) = if let Some(idx) = stack.language.find(" (") {
         let rt = &stack.language[..idx];
@@ -1690,1087 +1752,211 @@ async fn main() -> anyhow::Result<()> {
     match command {
         Commands::Default => {
             let project_root = std::env::current_dir()?;
-            let overall_start = std::time::Instant::now();
             let project_name = project_root.file_name()
                 .map(|n| n.to_string_lossy().to_lowercase().replace([' ', '-'], "_"))
                 .unwrap_or_else(|| "app".into());
 
-            // ── 1. Compose: start dep services, extract app hints ────────────────
-            // Look for compose in project root and common infra subdirs
-            // (infra/, docker/, .docker/, deploy/, ops/, devops/).
-            let compose_files = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
-            let compose_dirs = [".", "infra", "docker", ".docker", "deploy", "ops", "devops"];
-            let mut compose_path: Option<std::path::PathBuf> = None;
-            for d in &compose_dirs {
-                for f in &compose_files {
-                    let candidate = project_root.join(d).join(f);
-                    if candidate.exists() {
-                        compose_path = Some(candidate);
-                        break;
-                    }
-                }
-                if compose_path.is_some() { break; }
-            }
-            if std::env::var("CRUSH_DEBUG_COMPOSE").is_ok() {
-                eprintln!("[debug] project_root = {}", project_root.display());
-                eprintln!("[debug] compose_path = {:?}", compose_path);
-            }
-            if let Some(ref cp) = compose_path {
-                if let Some(parent) = cp.parent() {
-                    if parent != project_root.as_path() {
-                        println!("   {} compose: {}", "↳".cyan(),
-                            cp.strip_prefix(&project_root).unwrap_or(cp).display().to_string().dimmed());
-                    }
-                }
-            }
+            let options = crush_build::run::RunOptions {
+                dev: cli.dev,
+                rebuild: cli.rebuild,
+                repack: cli.repack,
+                no_proxy: cli.no_proxy,
+                watch: cli.watch,
+                memory_bytes: cli.memory,
+                cpu_fraction: cli.cpus,
+                priority: cli.priority.clone(),
+                assume_yes: cli.no_interactive,
+            };
 
-            let mut dep_env: Vec<(String, String)> = Vec::new();
-            let mut dep_service_names: Vec<String> = Vec::new();
-            let mut app_command_override: Option<String> = None;
-            let mut port_override: Option<u16> = None;
+            let handle = crush_build::run::run_project(project_root.clone(), data_dir.clone(), options).await?;
+            let mut events = handle.events;
 
-            if let Some(ref cp) = compose_path {
-                match parse_compose(cp) {
-                    Ok(parsed) => {
-                        if !parsed.dep_services.is_empty() {
-                            let backend = detect_backend();
-                            let state_dir = data_dir.join("services");
+            let mut overall_start = std::time::Instant::now();
+            let mut image_name = String::new();
+            let mut is_multi_service = false;
+            let mut dep_count = 0usize;
+            let mut per_service_color: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+            let mut next_color = 0usize;
+            let filter: std::sync::Arc<tokio::sync::RwLock<FilterMode>> = std::sync::Arc::new(tokio::sync::RwLock::new(FilterMode::All));
+            let multi_service: std::sync::Arc<std::sync::atomic::AtomicBool> = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let mut any_output = false;
 
-                            // Fire-and-forget Garnet prefetch alongside compose startup
-                            let prefetch_dir = data_dir.clone();
-                            tokio::spawn(async move {
-                                let _ = crush_services::prefetch(prefetch_dir.join("cache").join("binaries")).await;
-                            });
-
-                            // Start all dep services in parallel
-                            let dep_futures: Vec<_> = parsed.dep_services.iter()
-                                .map(|dep| {
-                                    let dep = dep.clone();
-                                    let pname = project_name.clone();
-                                    let dd = data_dir.clone();
-                                    async move {
-                                        let res = start_dep_service_smart(&dep, &pname, &dd).await;
-                                        (dep, res)
-                                    }
-                                })
-                                .collect();
-                            let dep_results = futures::future::join_all(dep_futures).await;
-
-                            let mut running_containers = Vec::new();
-                            let mut running_natives = Vec::new();
-
-                            for (dep, result) in dep_results {
-                                print!("   ↳ starting {} ({})... ", dep.name, dep.image);
-                                use std::io::Write;
-                                let _ = std::io::stdout().flush();
-
-                                match result {
-                                    Ok(StartedService::Native(running)) => {
-                                        let note = if running.kind == crush_services::ServiceKind::Postgres {
-                                            "[native]"
-                                        } else {
-                                            #[cfg(target_os = "windows")]
-                                            { "[garnet]" }
-                                            #[cfg(not(target_os = "windows"))]
-                                            { "[native]" }
-                                        };
-                                        println!("ok  {}", note);
-                                        dep_service_names.push(dep.name.clone());
-                                        dep_env.extend(synthesize_dep_env(&dep));
-                                        running_natives.push(running);
-                                    }
-                                    Ok(StartedService::Container(cname)) => {
-                                        println!("ok  [container]");
-                                        dep_service_names.push(dep.name.clone());
-                                        dep_env.extend(synthesize_dep_env(&dep));
-                                        running_containers.push(RunningContainer {
-                                            service_name: dep.name.clone(),
-                                            container_name: cname,
-                                            ports: dep.ports.clone(),
-                                        });
-                                    }
-                                    Err(e) => println!("failed: {}", e),
-                                }
-                            }
-
-                            if !running_containers.is_empty() {
-                                let state = ServiceState {
-                                    project: project_name.clone(),
-                                    backend: backend.as_str().to_string(),
-                                    containers: running_containers,
-                                    started_at: std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default().as_secs(),
-                                };
-                                let _ = save_service_state(&state_dir, &state);
-                            }
-
-                            if !running_natives.is_empty() {
-                                let state = NativeServiceState {
-                                    project: project_name.clone(),
-                                    services: running_natives,
-                                    started_at: std::time::SystemTime::now()
-                                        .duration_since(std::time::UNIX_EPOCH)
-                                        .unwrap_or_default().as_secs(),
-                                };
-                                let _ = save_native_state(&state_dir, &state);
-                            }
-                        }
-                        if let Some(hints) = parsed.app_hints {
-                            // App-hint env wins over synthesized defaults
-                            // (user explicitly set them in compose).
-                            let rewritten = rewrite_env_hostnames(&hints.env, &dep_service_names);
-                            for (k, v) in rewritten {
-                                if let Some(slot) = dep_env.iter_mut().find(|(ek, _)| ek == &k) {
-                                    slot.1 = v;
-                                } else {
-                                    dep_env.push((k, v));
-                                }
-                            }
-                            app_command_override = hints.command;
-                            port_override = hints.port;
-                        }
-                    }
-                    Err(e) => {
-                        println!("   ↳ compose parse warning: {} — proceeding with stack detection", e);
-                    }
-                }
-            }
-
-            // ── 2b. Spring Boot fallback: no compose file? Parse application.yml ──
-            // Lets Java/Spring projects deployed without Docker still get postgres/redis
-            // auto-started from their datasource config.
-            if dep_service_names.is_empty() {
-                let spring_deps = parse_spring_config(&project_root);
-                if !spring_deps.is_empty() {
-                    let state_dir = data_dir.join("services");
-                    let mut running_natives = Vec::new();
-                    let mut running_containers = Vec::new();
-                    let backend = detect_backend();
-
-                    let spring_futures: Vec<_> = spring_deps.iter()
-                        .map(|dep| {
-                            let dep = dep.clone();
-                            let pname = project_name.clone();
-                            let dd = data_dir.clone();
-                            async move {
-                                let res = start_dep_service_smart(&dep, &pname, &dd).await;
-                                (dep, res)
-                            }
-                        })
-                        .collect();
-                    let spring_results = futures::future::join_all(spring_futures).await;
-
-                    for (dep, result) in spring_results {
-                        print!("   ↳ starting {} ({}) [from application.yml]... ", dep.name, dep.image);
-                        use std::io::Write;
-                        let _ = std::io::stdout().flush();
-                        match result {
-                            Ok(StartedService::Native(running)) => {
-                                println!("ok  [native]");
-                                dep_service_names.push(dep.name.clone());
-                                dep_env.extend(synthesize_dep_env(&dep));
-                                running_natives.push(running);
-                            }
-                            Ok(StartedService::Container(cname)) => {
-                                println!("ok  [container]");
-                                dep_service_names.push(dep.name.clone());
-                                dep_env.extend(synthesize_dep_env(&dep));
-                                running_containers.push(RunningContainer {
-                                    service_name: dep.name.clone(),
-                                    container_name: cname,
-                                    ports: dep.ports.clone(),
-                                });
-                            }
-                            Err(e) => println!("failed: {}", e),
-                        }
-                    }
-                    if !running_natives.is_empty() {
-                        let _ = save_native_state(&state_dir, &NativeServiceState {
-                            project: project_name.clone(),
-                            services: running_natives,
-                            started_at: std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-                        });
-                    }
-                    if !running_containers.is_empty() {
-                        let _ = save_service_state(&state_dir, &ServiceState {
-                            project: project_name.clone(),
-                            backend: backend.as_str().to_string(),
-                            containers: running_containers,
-                            started_at: std::time::SystemTime::now()
-                                .duration_since(std::time::UNIX_EPOCH).unwrap_or_default().as_secs(),
-                        });
-                    }
-                }
-            }
-
-            // ── 3. Stack Detection ────────────────
-            let detector = StackDetector::new();
-            let stack = detector.detect(&project_root).await?;
-
-            // Generic fallback with no executable entrypoint.sh is unrunnable.
-            // If we found project-looking subdirs, point the user there instead
-            // of trying to spawn a missing entrypoint.sh.
-            if stack.language.starts_with("generic")
-                && !project_root.join("entrypoint.sh").exists()
-                && !stack.generic_subdir_hint.is_empty()
+            // Keystroke listener for multi-service mode
             {
-                eprintln!(" {} couldn't detect a project at {}",
-                    "✗".red().bold(), project_root.display().to_string().bold());
-                eprintln!("   ↳ found project-looking subdirectories:");
-                for s in &stack.generic_subdir_hint {
-                    eprintln!("       cd {} && crush", s);
-                }
-                std::process::exit(2);
-            }
-
-            let extra_note = if !dep_service_names.is_empty() {
-                format!(" (+ {} service{})", dep_service_names.len(),
-                    if dep_service_names.len() == 1 { "" } else { "s" })
-            } else { String::new() };
-
-            // Multi-service ("implicit monorepo") — backend/+frontend/ with no root
-            // app. Fire when 2+ services were found AND the root detection landed on
-            // the generic fallback (no real framework matched at the root level).
-            let root_is_generic = stack.language.starts_with("generic")
-                || stack.entry_point == "entrypoint.sh"
-                || stack.entry_point.is_empty();
-            let is_multi_service = stack.is_monorepo
-                && stack.services.len() >= 2
-                && root_is_generic;
-
-            if is_multi_service {
-                let legs = stack.services.iter()
-                    .map(|s| format!("{} ({})",
-                        s.name.bold(),
-                        s.runtime_type.cyan()))
-                    .collect::<Vec<_>>().join(" · ");
-                println!("   {} detected: {} services — {}",
-                    "↳".cyan(),
-                    stack.services.len().bold(),
-                    legs);
-            } else {
-                println!("   {} detected: {}{}",
-                    "↳".cyan(),
-                    format_detection_line(&stack).bold(),
-                    extra_note.dimmed());
-            }
-
-            // ── 4. Build ──────────────────────────────────────────────────────────
-            let cache_dir = data_dir.join("cache");
-            let engine = BuildEngine::new(cache_dir.clone());
-
-            // Content fingerprint: skip image pack on warm runs
-            let project_hash = crush_build::project_fingerprint(&project_root)?;
-            let hash_path = cache_dir.join("last-image").join(format!("{project_name}.hash"));
-            let prev_hash = std::fs::read_to_string(&hash_path).ok();
-
-            let build_start = std::time::Instant::now();
-            let outcome = if prev_hash.as_deref() == Some(&project_hash) && !cli.repack {
-                println!("   {} image fresh — {} {}",
-                    "✓".green().bold(),
-                    "skipping pack".dimmed(),
-                    "(--repack to force)".dimmed());
-                crush_build::BuildOutcome {
-                    was_cached: true,
-                    digest: project_hash.clone(),
-                    size_bytes: 0,
-                    duration_ms: 0,
-                }
-            } else {
-                let o = engine.execute_layered_build(&project_root, &stack).await?;
-                let _ = std::fs::create_dir_all(hash_path.parent().unwrap());
-                let _ = std::fs::write(&hash_path, &project_hash);
-                o
-            };
-            let build_elapsed = build_start.elapsed();
-
-            if outcome.was_cached {
-                println!("   {} dependencies layer cached {}",
-                    "↳".cyan(),
-                    "(unchanged)".dimmed());
-            }
-
-            let image_name = format!("{}:latest", project_name);
-            let size_mb = outcome.size_bytes as f64 / (1024.0 * 1024.0);
-
-            if outcome.was_cached {
-                println!(" {} crushed to image {} {}",
-                    "✓".green().bold(),
-                    image_name.bold(),
-                    format!("({:.0} MB)", size_mb).dimmed());
-            } else {
-                println!(" {} crushed to image {} {}",
-                    "✓".green().bold(),
-                    image_name.bold(),
-                    format!("({:.1}s · {:.0} MB)", build_elapsed.as_secs_f64(), size_mb)
-                        .dimmed());
-            }
-
-            // Append a record to data_dir/build-history.json so the GUI's
-            // Build screen has something to render. Schema lives in
-            // crush_build::run::BuildRecord and is read by `crush ps-history`.
-            let _ = crush_build::run::append_build_record(&data_dir, crush_build::run::BuildRecord {
-                timestamp_ms: std::time::SystemTime::now()
-                    .duration_since(std::time::UNIX_EPOCH)
-                    .map(|d| d.as_millis() as u64)
-                    .unwrap_or(0),
-                project_path: project_root.to_string_lossy().to_string(),
-                project_name: project_name.clone(),
-                language: stack.language.clone(),
-                framework: stack.language
-                    .split('(')
-                    .nth(1)
-                    .map(|s| s.trim_end_matches(')').to_string())
-                    .unwrap_or_default(),
-                duration_ms: build_elapsed.as_millis() as u64,
-                was_cached: outcome.was_cached,
-                size_bytes: outcome.size_bytes,
-                digest: outcome.digest.clone(),
-                success: true,
-            });
-
-            // ── 5. Prompt + native run ────────────────────────────────────────────
-            // Skip the prompt when everything's cached: image fresh AND (for
-            // node-ish projects) node_modules newer than lockfile. The user
-            // obviously came here to run; asking "are you sure?" on a warm
-            // run is friction with no information value.
-            let lang_for_prompt = stack.language.split(' ').next().unwrap_or("").to_lowercase();
-            let is_node_like = matches!(lang_for_prompt.as_str(), "node" | "typescript" | "bun" | "deno");
-            // For node-like projects we additionally require node_modules to be
-            // current. For everything else (Go/Rust/Python/Java) image-fresh
-            // alone is enough — they don't have a per-run install step.
-            let warm_run = outcome.was_cached
-                && (!is_node_like || node_deps_fresh(&project_root));
-
-            let should_run = if cli.no_interactive {
-                true
-            } else if warm_run {
-                println!("   {} warm run — launching", "↳".cyan());
-                true
-            } else {
-                use std::io::Write;
-                print!("   run it now? [Y/n] ");
-                std::io::stdout().flush().ok();
-                let mut input = String::new();
-                std::io::stdin().read_line(&mut input).ok();
-                let t = input.trim().to_lowercase();
-                t.is_empty() || t == "y" || t == "yes"
-            };
-
-            if should_run && is_multi_service {
-                use std::sync::Arc;
-                use tokio::sync::RwLock;
-                use tokio::sync::Semaphore;
-
-                let filter: Arc<RwLock<FilterMode>> = Arc::new(RwLock::new(FilterMode::All));
-
-                let url_sink: UrlSink = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
-
-                // ── Phase A: parallel builds ──────────────────────────────────
-                let sem = Arc::new(Semaphore::new(
-                    std::thread::available_parallelism().map(|p| p.get().min(4)).unwrap_or(2)
-                ));
-                let mut build_handles = Vec::new();
-                for sub in &stack.services {
-                    let sub_path = PathBuf::from(&sub.path);
-                    let build_cmd = if cli.dev {
-                        if sub.dev_install_command.is_empty() {
-                            None
-                        } else {
-                            let needs_install = match sub.runtime_type.as_str() {
-                                "node" => !sub_path.join("node_modules").exists(),
-                                "python" => !sub_path.join(".venv").exists(),
-                                "php" => !sub_path.join("vendor").exists(),
-                                "elixir" => !sub_path.join("deps").exists(),
-                                _ => true,
-                            };
-                            if needs_install { Some(sub.dev_install_command.clone()) } else { None }
-                        }
-                    } else {
-                        if sub.build_command.is_empty() {
-                            None
-                        } else if !cli.rebuild {
-                            if let Some(reason) = build_freshness(&sub_path, &sub.runtime_type) {
-                                println!("   {} {}: build fresh — {} {}",
-                                    "✓".green().bold(),
-                                    sub.name.bold(),
-                                    reason.dimmed(),
-                                    "(--rebuild to force)".dimmed());
-                                None
-                            } else {
-                                Some(sub.build_command.clone())
-                            }
-                        } else {
-                            Some(sub.build_command.clone())
-                        }
-                    };
-
-                    if let Some(icmd) = build_cmd.clone() {
-                        let sem = sem.clone();
-                        let sub = sub.clone();
-                        let sub_path = sub_path.clone();
-                        let dep_env = dep_env.clone();
-                        build_handles.push(tokio::spawn(async move {
-                            let _permit = sem.acquire().await.ok();
-                            run_build(&sub, &icmd, &sub_path, &dep_env).await
-                        }));
-                    }
-                }
-
-                if !build_handles.is_empty() {
-                    let results = futures::future::join_all(build_handles).await;
-                    if results.iter().any(|r| matches!(r, Ok(Err(_)) | Err(_))) {
-                        anyhow::bail!("one or more sub-service builds failed");
-                    }
-                }
-
-                // ── Phase B: start services ───────────────────────────────────
-                let mut children: Vec<(String, u16, tokio::process::Child)> = Vec::new();
-                let overall_spawn = std::time::Instant::now();
-                for sub in &stack.services {
-                    let sub_path = PathBuf::from(&sub.path);
-                    let run = if cli.dev { sub.dev_entry_point.clone() } else { sub.entry_point.clone() };
-                    let run = run.replace("$PORT", &sub.port.to_string());
-                    println!("   {} {}: starting {} on {}",
-                        "↳".cyan(),
-                        sub.name.bold(),
-                        format!("`{}`", run).dimmed(),
-                        format!(":{}", sub.port).cyan());
-                    let mut cmd = spawn_shell(&run, &sub_path, &dep_env);
-                    cmd.env("PORT", sub.port.to_string());
-                    cmd.stdout(std::process::Stdio::piped());
-                    cmd.stderr(std::process::Stdio::piped());
-                    match cmd.spawn() {
-                        Ok(mut child) => {
-                            job_object::assign(&child);
-                            let color_idx = children.len();
-                            // Reader tasks check shared filter state. Stderr is always shown
-                            // (and counts as "errors") so crashes never disappear.
-                            if let Some(stdout) = child.stdout.take() {
-                                let n = sub.name.clone();
-                                let f = filter.clone();
-                                let sink = url_sink.clone();
-                                tokio::spawn(async move {
-                                    use tokio::io::AsyncBufReadExt;
-                                    let reader = tokio::io::BufReader::new(stdout);
-                                    let mut lines = reader.lines();
-                                    while let Ok(Some(line)) = lines.next_line().await {
-                                        record_urls(&line, &sink).await;
-                                        if should_show(&*f.read().await, &n, &line, false) {
-                                            println!("{} {}", colour_prefix(&n, color_idx), line);
-                                        }
-                                    }
-                                });
-                            }
-                            if let Some(stderr) = child.stderr.take() {
-                                let n = sub.name.clone();
-                                let f = filter.clone();
-                                let sink = url_sink.clone();
-                                tokio::spawn(async move {
-                                    use tokio::io::AsyncBufReadExt;
-                                    let reader = tokio::io::BufReader::new(stderr);
-                                    let mut lines = reader.lines();
-                                    while let Ok(Some(line)) = lines.next_line().await {
-                                        record_urls(&line, &sink).await;
-                                        if should_show(&*f.read().await, &n, &line, true) {
-                                            eprintln!("{} {}", colour_prefix(&n, color_idx), line);
-                                        }
-                                    }
-                                });
-                            }
-                            children.push((sub.name.clone(), sub.port, child));
-                        }
-                        Err(e) => eprintln!("   {} {}: spawn failed: {}",
-                            "✗".red().bold(), sub.name.bold(), e),
-                    }
-                }
-
-                // Wait for ports to bind. Break as soon as every service is
-                // either bound or dead — no point waiting 30s for a crashed
-                // backend just to print the Ready panel.
-                let mut ready: Vec<(String, u16)> = Vec::new();
-                for _ in 0..300u32 {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                    let mut still_waiting = false;
-                    for (name, port, child) in children.iter_mut() {
-                        if ready.iter().any(|(n, _)| n == name) { continue; }
-                        if let Ok(Some(_)) = child.try_wait() { continue; } // crashed/exited
-                        if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.is_ok() {
-                            ready.push((name.clone(), *port));
-                        } else {
-                            still_waiting = true;
-                        }
-                    }
-                    if !still_waiting { break; }
-                }
-
-                let total = overall_start.elapsed().as_secs_f64();
-                let _ = overall_spawn;
-
-                // Probe each ready service for doc/health URLs in parallel.
-                let mut probe_handles = Vec::new();
-                for (name, port) in &ready {
-                    let name = name.clone();
-                    let port = *port;
-                    probe_handles.push(tokio::spawn(async move {
-                        (name, port, probe_service_links(port).await)
-                    }));
-                }
-                let mut probed: Vec<(String, u16, Vec<(&'static str, String)>)> = Vec::new();
-                for h in probe_handles {
-                    if let Ok(r) = h.await { probed.push(r); }
-                }
-
-                // ── Proxy: infer routes and spawn before the Ready panel ────
-                let proxy_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>;
-                let proxy_bound_port: Option<u16>;
-                if !cli.no_proxy {
-                    if let Some(proxy_cfg) = proxy::infer_routes(&stack) {
-                        let (ptx, prx) = tokio::sync::oneshot::channel::<()>();
-                        let routes_desc: String = proxy_cfg.routes.iter().map(|r| {
-                            format!("{} → :{}", r.path_prefix, r.target_port)
-                        }).collect::<Vec<_>>().join(", ");
-                        match proxy::run_proxy(proxy_cfg, prx).await {
-                            Ok(port) => {
-                                proxy_shutdown_tx = Some(ptx);
-                                proxy_bound_port = Some(port);
-                                println!();
-                                println!("  {}", "─".repeat(60).dimmed());
-                                println!("  {}  {}  {}",
-                                    "↳".cyan(),
-                                    format!("http://localhost:{}", port).cyan().bold(),
-                                    format!("(proxy — {})", routes_desc).dimmed());
-                            }
-                            Err(e) => {
-                                eprintln!("  {} proxy failed to start: {}", "⚠".yellow(), e);
-                                proxy_shutdown_tx = None;
-                                proxy_bound_port = None;
-                                println!();
-                                println!("  {}", "─".repeat(60).dimmed());
-                            }
-                        }
-                    } else {
-                        proxy_shutdown_tx = None;
-                        proxy_bound_port = None;
-                        println!();
-                        println!("  {}", "─".repeat(60).dimmed());
-                    }
-                } else {
-                    proxy_shutdown_tx = None;
-                    proxy_bound_port = None;
-                    println!();
-                    println!("  {}", "─".repeat(60).dimmed());
-                }
-
-                // Ready panel — clean, scannable summary of what's reachable.
-                let missing: Vec<&String> = children.iter()
-                    .map(|(n, _, _)| n)
-                    .filter(|n| !ready.iter().any(|(rn, _)| rn == *n))
-                    .collect();
-                let direct_label = if proxy_bound_port.is_some() { " (direct)" } else { "" };
-                for (name, port, links) in &probed {
-                    println!("  {} {}  {}{}",
-                        "✓".green().bold(),
-                        name.bold(),
-                        format!("http://localhost:{}", port).cyan(),
-                        direct_label.dimmed());
-                    for (label, url) in links {
-                        println!("           {} {:<8} {}",
-                            "↳".dimmed(),
-                            label.dimmed(),
-                            url.dimmed());
-                    }
-                }
-                for m in &missing {
-                    eprintln!("  {} {}  {}",
-                        "✗".red().bold(),
-                        m.bold(),
-                        "did not bind".dimmed());
-                }
-                // Any URLs the children printed that aren't already covered by the
-                // per-service port lines — turbo/monorepo children, secondary
-                // listeners, etc.
-                let discovered = url_sink.lock().await.clone();
-                let known_ports: std::collections::HashSet<u16> = probed.iter().map(|(_, p, _)| *p).collect();
-                let extras: Vec<&String> = discovered.iter()
-                    .filter(|u| {
-                        if let Some(rest) = u.splitn(2, "://").nth(1) {
-                            if let Some(port_str) = rest.split(|c: char| c == '/' || c == '?').next()
-                                .and_then(|hp| hp.rsplit(':').next()) {
-                                if let Ok(p) = port_str.parse::<u16>() {
-                                    return !known_ports.contains(&p);
-                                }
-                            }
-                        }
-                        true
-                    })
-                    .collect();
-                if !extras.is_empty() {
-                    println!("  {} also:", "↳".cyan());
-                    for u in extras { println!("     {}", u.cyan()); }
-                }
-                println!("  {}", "─".repeat(60).dimmed());
-                println!("  {}  started in {} · keys: {} all  {} errors  {} pause  {} service-N  {} quit",
-                    "↳".cyan(),
-                    format!("{:.1}s", total).dimmed(),
-                    "a".bold(), "e".bold(), "p".bold(), "1..".bold(), "q".bold());
-                println!();
-
-                // Switch to errors-only by default in prod mode so the page stays calm after Ready.
-                if !cli.dev {
-                    *filter.write().await = FilterMode::OnlyErrors;
-                }
-
-                // Interactive keystroke listener (line-buffered: key + Enter).
-                let names: Vec<String> = children.iter().map(|(n, _, _)| n.clone()).collect();
-                let f_clone = filter.clone();
-                let (quit_tx, mut quit_rx) = tokio::sync::oneshot::channel::<()>();
-                let mut quit_tx_opt = Some(quit_tx);
+                let f = filter.clone();
+                let ms = multi_service.clone();
                 tokio::spawn(async move {
                     use tokio::io::AsyncBufReadExt;
                     let stdin = tokio::io::stdin();
                     let mut reader = tokio::io::BufReader::new(stdin).lines();
                     while let Ok(Some(line)) = reader.next_line().await {
+                        if !ms.load(std::sync::atomic::Ordering::Relaxed) { continue; }
                         let key = line.trim().to_lowercase();
-                        let mut mode = f_clone.write().await;
+                        let mut mode = f.write().await;
                         match key.as_str() {
                             "a" => { *mode = FilterMode::All; eprintln!("  {} showing all logs", "→".cyan()); }
                             "e" => { *mode = FilterMode::OnlyErrors; eprintln!("  {} errors only", "→".cyan()); }
                             "p" => { *mode = FilterMode::Paused; eprintln!("  {} paused", "→".cyan()); }
-                            "q" => {
-                                eprintln!("  {} quitting", "→".cyan());
-                                if let Some(tx) = quit_tx_opt.take() { let _ = tx.send(()); }
-                                break;
-                            }
-                            n if n.parse::<usize>().is_ok() => {
-                                let idx: usize = n.parse().unwrap();
-                                if idx >= 1 && idx <= names.len() {
-                                    let name = names[idx - 1].clone();
-                                    eprintln!("  {} {} only", "→".cyan(), name.bold());
-                                    *mode = FilterMode::OnlyService(name);
-                                } else {
-                                    eprintln!("  {} no service at index {}", "✗".red(), idx);
-                                }
-                            }
-                            "" => {}
-                            _ => eprintln!("  {} unknown key '{}' (try a/e/p/1/q)", "?".yellow(), key),
+                            "q" => { eprintln!("  {} quitting", "→".cyan()); break; }
+                            _ => {}
                         }
                     }
                 });
-
-                let mut named_children: Vec<(String, tokio::process::Child)> =
-                    children.into_iter().map(|(n, _, c)| (n, c)).collect();
-
-                // ── Watch mode: restart affected sub-service on source changes ──
-                if cli.watch {
-                    let skip_dirs = [
-                        "node_modules", ".next", "target", "dist", "build", ".turbo",
-                        ".venv", "venv", "__pycache__", ".git", ".cache", ".pnpm",
-                        "vendor", "deps", "_build", "out", "bin", "obj", ".gradle", ".mvn",
-                    ];
-
-                    let (change_tx, mut change_rx) = tokio::sync::mpsc::channel::<Vec<PathBuf>>(256);
-
-                    // Spawn the file watcher using notify
-                    let watch_root = project_root.clone();
-                    let change_tx_w = change_tx.clone();
-                    tokio::spawn(async move {
-                        use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
-                        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
-                        let mut watcher = match RecommendedWatcher::new(
-                            move |res| {
-                                let _ = tx.blocking_send(res);
-                            },
-                            Config::default(),
-                        ) {
-                            Ok(w) => w,
-                            Err(_) => return,
-                        };
-                        let _ = watcher.watch(&watch_root, RecursiveMode::Recursive);
-
-                        // Debounce: accumulate events for 200ms
-                        use tokio::time::Duration;
-                        let mut pending = Vec::new();
-                        loop {
-                            tokio::select! {
-                                Some(Ok(event)) = rx.recv() => {
-                                    match event.kind {
-                                        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
-                                            for path in event.paths {
-                                                let name = path.file_name()
-                                                    .and_then(|n| n.to_str()).unwrap_or("");
-                                                if skip_dirs.iter().any(|s| *s == name)
-                                                    || path.extension().and_then(|e| e.to_str()).map_or(false, |e| {
-                                                        matches!(e, "log" | "lock" | "tmp" | "swp" | "swpx")
-                                                    })
-                                                {
-                                                    continue;
-                                                }
-                                                // Skip files in skipped directories by walking up
-                                                let mut skip = false;
-                                                for ancestor in path.ancestors() {
-                                                    if let Some(anc_name) = ancestor.file_name()
-                                                        .and_then(|n| n.to_str())
-                                                    {
-                                                        if skip_dirs.iter().any(|s| *s == anc_name) {
-                                                            skip = true;
-                                                            break;
-                                                        }
-                                                    }
-                                                }
-                                                if skip { continue; }
-                                                pending.push(path);
-                                            }
-                                        }
-                                        _ => {}
-                                    }
-                                }
-                                _ = tokio::time::sleep(Duration::from_millis(200)) => {
-                                    if !pending.is_empty() {
-                                        let _ = change_tx_w.send(std::mem::take(&mut pending)).await;
-                                    }
-                                }
-                            }
-                        }
-                    });
-
-                    let services_info: Vec<_> = stack.services.iter().map(|s|
-                        (s.name.clone(), PathBuf::from(&s.path), s.build_command.clone(), s.entry_point.clone(), s.port)
-                    ).collect();
-
-                    loop {
-                        tokio::select! {
-                            Some(changed) = change_rx.recv() => {
-                                // Find which service owns the changed files
-                                let mut affected: Option<usize> = None;
-                                for path in &changed {
-                                    for (i, (_, ref svc_path, ..)) in services_info.iter().enumerate() {
-                                        if path.starts_with(svc_path) || path == svc_path.as_path() {
-                                            affected = Some(i);
-                                            break;
-                                        }
-                                    }
-                                    if affected.is_some() { break; }
-                                }
-                                if let Some(idx) = affected {
-                                    let (ref name, ref svc_path, ref build_cmd, ref entry, port) = services_info[idx];
-
-                                    // Kill the running child for this service
-                                    if let Some(pos) = named_children.iter().position(|(n, _)| n == name) {
-                                        let (_, mut old_child) = named_children.remove(pos);
-                                        let _ = old_child.kill().await;
-                                        let _ = old_child.wait().await;
-                                    }
-
-                                    // Rebuild
-                                    if !build_cmd.is_empty() {
-                                        if let Err(e) = run_build(
-                                            &stack.services[idx],
-                                            build_cmd,
-                                            svc_path,
-                                            &dep_env,
-                                        ).await {
-                                            eprintln!("   {} {}: rebuild failed: {}",
-                                                "✗".red().bold(), name.bold(), e);
-                                            continue;
-                                        }
-                                    }
-
-                                    // Re-spawn
-                                    let run = entry.replace("$PORT", &port.to_string());
-                                    let mut new_cmd = spawn_shell(&run, svc_path, &dep_env);
-                                    new_cmd.env("PORT", port.to_string());
-                                    new_cmd.stdout(std::process::Stdio::piped());
-                                    new_cmd.stderr(std::process::Stdio::piped());
-                                    match new_cmd.spawn() {
-                                        Ok(mut child) => {
-                                            job_object::assign(&child);
-                                            // Re-attach output readers
-                                            if let Some(stdout) = child.stdout.take() {
-                                                let n = name.clone();
-                                                tokio::spawn(async move {
-                                                    use tokio::io::AsyncBufReadExt;
-                                                    let reader = tokio::io::BufReader::new(stdout);
-                                                    let mut lines = reader.lines();
-                                                    while let Ok(Some(line)) = lines.next_line().await {
-                                                        println!("{} {}", colour_prefix(&n, 0), line);
-                                                    }
-                                                });
-                                            }
-                                            if let Some(stderr) = child.stderr.take() {
-                                                let n = name.clone();
-                                                tokio::spawn(async move {
-                                                    use tokio::io::AsyncBufReadExt;
-                                                    let reader = tokio::io::BufReader::new(stderr);
-                                                    let mut lines = reader.lines();
-                                                    while let Ok(Some(line)) = lines.next_line().await {
-                                                        eprintln!("{} {}", colour_prefix(&n, 0), line);
-                                                    }
-                                                });
-                                            }
-                                            named_children.push((name.clone(), child));
-                                            eprintln!("   {} {}: restarted", "✓".green().bold(), name.bold());
-                                        }
-                                        Err(e) => eprintln!("   {} {}: re-spawn failed: {}",
-                                            "✗".red().bold(), name.bold(), e),
-                                    }
-                                }
-                            }
-                            _ = &mut quit_rx => {
-                                break;
-                            }
-                        }
-                    }
-                } else {
-                    // Block until any child exits OR the user presses 'q'. Then kill the rest.
-                    let exited: Option<(String, Option<i32>)>;
-                    loop {
-                        let mut hit: Option<(usize, Option<i32>)> = None;
-                        for (i, (_, c)) in named_children.iter_mut().enumerate() {
-                            if let Ok(Some(status)) = c.try_wait() {
-                                hit = Some((i, status.code()));
-                                break;
-                            }
-                        }
-                        if let Some((i, code)) = hit {
-                            exited = Some((named_children[i].0.clone(), code));
-                            break;
-                        }
-                        // Also poll the quit signal from the keystroke listener.
-                        match quit_rx.try_recv() {
-                            Ok(()) => { exited = None; break; }
-                            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => { exited = None; break; }
-                            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
-                        }
-                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                    }
-                    if let Some((name, code)) = exited {
-                        eprintln!(" {} {} exited (code {}) — stopping other services",
-                            "✗".red().bold(), name.bold(), code.unwrap_or(-1));
-                    }
-                }
-                // Shut the proxy down before killing children.
-                if let Some(tx) = proxy_shutdown_tx { let _ = tx.send(()); }
-                for (_, mut c) in named_children { let _ = c.kill().await; }
-                return Ok(());
             }
 
-            if should_run {
-                let port = port_override.unwrap_or(stack.default_port);
-                let entry = if cli.dev { &stack.dev_entry_point } else { &stack.entry_point };
-                let install = if cli.dev { &stack.dev_install_command } else { &stack.build_command };
-
-                let entry_str = app_command_override.as_deref().unwrap_or(entry);
-                let parts: Vec<&str> = entry_str.split_whitespace().collect();
-                if parts.is_empty() {
-                    eprintln!("No entry point detected — run your app manually.");
-                    return Ok(());
-                }
-
-                let lang = stack.language.split(' ').next().unwrap_or("").to_lowercase();
-                
-                // If the install command is just `<pm> install` (no `&& build`
-                // step), short-circuit when node_modules is already up to date.
-                // Avoids the ~10s `pnpm install` "Already up to date" tax on warm runs.
-                let is_install_only = (lang == "node" || lang == "typescript" || lang == "bun" || lang == "deno")
-                    && !install.is_empty() && !install.contains("&&");
-                let node_skip = is_install_only && !cli.rebuild && node_deps_fresh(&project_root);
-
-                let install_cmd: Option<String> = if cli.dev {
-                    if install.is_empty() {
-                        None
-                    } else if node_skip {
-                        println!("   {} dependencies fresh — node_modules newer than lockfile {}",
-                            "✓".green().bold(),
-                            "(--rebuild to force)".dimmed());
-                        None
-                    } else {
-                        let needs_install = match lang.as_str() {
-                            "node" | "typescript" | "bun" | "deno" => !project_root.join("node_modules").exists(),
-                            "python" => !project_root.join(".venv").exists(),
-                            "php" => !project_root.join("vendor").exists(),
-                            "elixir" => !project_root.join("deps").exists(),
-                            _ => true,
-                        };
-                        if needs_install { Some(install.clone()) } else { None }
-                    }
-                } else {
-                    if install.is_empty() {
-                        None
-                    } else if node_skip {
-                        println!("   {} dependencies fresh — node_modules newer than lockfile {}",
-                            "✓".green().bold(),
-                            "(--rebuild to force)".dimmed());
-                        None
-                    } else if !cli.rebuild {
-                        if let Some(reason) = build_freshness(&project_root, &stack.language) {
-                            println!("   {} build fresh — {} {}",
-                                "✓".green().bold(),
-                                reason.dimmed(),
-                                "(--rebuild to force)".dimmed());
-                            None
+            while let Some(event) = events.recv().await {
+                match event {
+                    RunEvent::Detected { language, framework, confidence, is_monorepo, port, dep_count: dc } => {
+                        dep_count = dc;
+                        is_multi_service = is_monorepo;
+                        multi_service.store(is_monorepo, std::sync::atomic::Ordering::Relaxed);
+                        let extra_note = if dep_count > 0 {
+                            format!(" (+ {} service{})", dep_count, if dep_count == 1 { "" } else { "s" })
+                        } else { String::new() };
+                        if is_monorepo {
+                            any_output = true;
+                            let legs = language.split(',')
+                                .map(|s| s.trim().bold().to_string())
+                                .collect::<Vec<_>>().join(" · ");
+                            println!("   {} detected: {} services — {}",
+                                "↳".cyan(),
+                                "2+".bold(),
+                                legs.dimmed());
                         } else {
-                            Some(install.clone())
+                            println!("   {} detected: {}{}",
+                                "↳".cyan(),
+                                format_detection_line_raw(&language, &framework, confidence).bold(),
+                                extra_note.dimmed());
                         }
-                    } else {
-                        Some(install.clone())
-                    }
-                };
-
-                if let Some(ref icmd) = install_cmd {
-                    let build_start = std::time::Instant::now();
-                    if cli.dev {
-                        println!("   {} installing dependencies {}",
-                            "↳".cyan(),
-                            format!("({})", icmd).dimmed());
-                    } else {
-                        println!("   {} building... {}",
-                            "⚙".yellow().bold(),
-                            format!("({})", icmd).dimmed());
                     }
 
-                    let mut cmd = spawn_shell(icmd, &project_root, &dep_env);
-                    cmd.stdout(std::process::Stdio::piped());
-                    cmd.stderr(std::process::Stdio::piped());
-
-                    match cmd.spawn() {
-                        Ok(mut child) => {
-                            job_object::assign(&child);
-                            if let Some(stdout) = child.stdout.take() {
-                                tokio::spawn(async move {
-                                    use tokio::io::AsyncBufReadExt;
-                                    let reader = tokio::io::BufReader::new(stdout);
-                                    let mut lines = reader.lines();
-                                    while let Ok(Some(line)) = lines.next_line().await {
-                                        println!("   {}", line);
-                                    }
-                                });
-                            }
-                            if let Some(stderr) = child.stderr.take() {
-                                tokio::spawn(async move {
-                                    use tokio::io::AsyncBufReadExt;
-                                    let reader = tokio::io::BufReader::new(stderr);
-                                    let mut lines = reader.lines();
-                                    while let Ok(Some(line)) = lines.next_line().await {
-                                        eprintln!("   {}", line);
-                                    }
-                                });
-                            }
-
-                            let status = child.wait().await
-                                .map_err(|e| anyhow::anyhow!("Failed to run `{}`: {}", icmd, e))?;
-                            if !status.success() {
-                                anyhow::bail!("Build failed: `{}`", icmd);
-                            }
-                        }
-                        Err(e) => anyhow::bail!("Failed to spawn `{}`: {}", icmd, e),
+                    RunEvent::DepStarted { name, image, native } => {
+                        let note = if native { "[native]" } else { "[container]" };
+                        println!("   ↳ starting {} ({})... ok  {}", name, image, note);
                     }
 
-                    if !cli.dev {
-                        println!("   {} built in {:.1}s",
+                    RunEvent::DepFailed { name, error } => {
+                        eprintln!("   ↳ starting {}... failed: {}", name, error);
+                    }
+
+                    RunEvent::ImageFresh { digest } => {
+                        let _ = digest;
+                        println!("   {} image fresh — {} {}",
                             "✓".green().bold(),
-                            build_start.elapsed().as_secs_f64());
+                            "skipping pack".dimmed(),
+                            "(--repack to force)".dimmed());
+                        image_name = format!("{}:latest", project_name);
                     }
-                }
 
-                let spawn_start = std::time::Instant::now();
-                let mut cmd = spawn_shell(entry_str, &project_root, &dep_env);
-                cmd.env("PORT", port.to_string());
-                // Python on Windows defaults stdout to the system codepage
-                // (cp1252) — print('🔧') crashes with UnicodeEncodeError.
-                // PYTHONUTF8=1 (PEP 540) forces UTF-8 I/O for all open()
-                // and stdout/stderr regardless of locale. PYTHONUNBUFFERED=1
-                // makes prints appear immediately instead of buffering.
-                if matches!(lang.as_str(), "python") {
-                    cmd.env("PYTHONUTF8", "1");
-                    cmd.env("PYTHONUNBUFFERED", "1");
-                }
-                cmd.stdout(std::process::Stdio::piped());
-                cmd.stderr(std::process::Stdio::piped());
-
-                let mut child = cmd.spawn()
-                    .map_err(|e| anyhow::anyhow!("Failed to start `{}`: {}", entry_str, e))?;
-                job_object::assign(&child);
-
-                let url_sink: UrlSink = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
-                if let Some(stdout) = child.stdout.take() {
-                    let sink = url_sink.clone();
-                    tokio::spawn(async move {
-                        use tokio::io::AsyncBufReadExt;
-                        let reader = tokio::io::BufReader::new(stdout);
-                        let mut lines = reader.lines();
-                        while let Ok(Some(line)) = lines.next_line().await {
-                            record_urls(&line, &sink).await;
-                            println!("{}", line);
-                        }
-                    });
-                }
-                if let Some(stderr) = child.stderr.take() {
-                    let sink = url_sink.clone();
-                    tokio::spawn(async move {
-                        use tokio::io::AsyncBufReadExt;
-                        let reader = tokio::io::BufReader::new(stderr);
-                        let mut lines = reader.lines();
-                        while let Ok(Some(line)) = lines.next_line().await {
-                            record_urls(&line, &sink).await;
-                            eprintln!("{}", line);
-                        }
-                    });
-                }
-
-                let mut port_ready = false;
-                for _ in 0..100u32 {
-                    tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-                    if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.is_ok() {
-                        port_ready = true;
-                        break;
+                    RunEvent::ImagePacked { digest, size_bytes, duration_ms } => {
+                        let _ = digest;
+                        image_name = format!("{}:latest", project_name);
+                        let size_mb = size_bytes as f64 / (1024.0 * 1024.0);
+                        println!(" {} crushed to image {} {}",
+                            "✓".green().bold(),
+                            image_name.bold(),
+                            format!("({:.1}s · {:.0} MB)", duration_ms as f64 / 1000.0, size_mb).dimmed());
                     }
-                    if let Ok(Some(_)) = child.try_wait() { break; }
-                }
 
-                if port_ready {
-                    let startup_s = spawn_start.elapsed().as_secs_f64();
-                    let total_s = overall_start.elapsed().as_secs_f64();
-                    println!(" {} running natively on {} {}",
-                        "✓".green().bold(),
-                        format!(":{}", port).cyan().bold(),
-                        format!("— started in {:.1}s (total: {:.1}s!)", startup_s, total_s)
-                            .dimmed());
-                    // Give sub-procs (turbo children, etc.) a beat to announce URLs.
-                    tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
-                    // Probe well-known doc/health paths (swagger, openapi, /docs, /healthz)
-                    // so backend APIs surface their endpoints without us reading stdout.
-                    let probed = probe_service_links_for(port, &stack.language).await;
-                    let urls = url_sink.lock().await;
-                    let has_anything = !urls.is_empty() || !probed.is_empty();
-                    if has_anything {
-                        println!("   {} open:", "↳".cyan());
-                        for u in urls.iter() {
-                            println!("     {}", u.cyan());
-                        }
-                        for (label, url) in &probed {
-                            println!("     {} {}", format!("[{label}]").dimmed(), url.cyan());
+                    RunEvent::BuildStarted { command, service_name } => {
+                        if let Some(svc) = service_name {
+                            println!("   {} {}: building... {}", "⚙".yellow().bold(), svc.bold(), format!("({})", command).dimmed());
+                        } else {
+                            println!("   {} building... {}", "⚙".yellow().bold(), format!("({})", command).dimmed());
                         }
                     }
-                } else if let Ok(Some(status)) = child.try_wait() {
-                    eprintln!(" {} app exited before binding {} (exit code {})",
-                        "✗".red().bold(),
-                        format!(":{}", port).cyan(),
-                        status.code().unwrap_or(-1));
-                } else {
-                    eprintln!(" {} no response on {} after 10s — app may still be starting or bound to a different port",
-                        "⚠".yellow().bold(),
-                        format!(":{}", port).cyan());
-                }
 
-                let status = child.wait().await
-                    .map_err(|e| anyhow::anyhow!("Process wait error: {}", e))?;
-                if let Some(code) = status.code() {
-                    if code != 0 { std::process::exit(code); }
+                    RunEvent::BuildOutput { line, stream, service_name } => {
+                        if let Some(svc) = &service_name {
+                            let idx = *per_service_color.entry(svc.clone()).or_insert_with(|| { let c = next_color; next_color += 1; c });
+                            let show = should_show(&*filter.read().await, svc, &line, stream == Stream::Stderr);
+                            if show {
+                                match stream {
+                                    Stream::Stdout => println!("{} {}", colour_prefix(svc, idx), line),
+                                    Stream::Stderr => eprintln!("{} {}", colour_prefix(svc, idx), line),
+                                }
+                            }
+                        } else {
+                            match stream {
+                                Stream::Stdout => println!("   {}", line),
+                                Stream::Stderr => eprintln!("   {}", line),
+                            }
+                        }
+                    }
+
+                    RunEvent::BuildFinished { duration_ms, success, service_name } => {
+                        let _ = service_name;
+                        if success {
+                            println!("   {} built in {:.1}s", "✓".green().bold(), duration_ms as f64 / 1000.0);
+                        } else {
+                            anyhow::bail!("Build failed");
+                        }
+                    }
+
+                    RunEvent::Spawning { command, port, service_name } => {
+                        let _ = command;
+                        if let Some(svc) = &service_name {
+                            println!("   {} {}: starting on {}", "↳".cyan(), svc.bold(), format!(":{}", port).cyan());
+                        }
+                    }
+
+                    RunEvent::AppOutput { line, stream, service_name } => {
+                        if let Some(svc) = &service_name {
+                            let idx = *per_service_color.entry(svc.clone()).or_insert_with(|| { let c = next_color; next_color += 1; c });
+                            let show = should_show(&*filter.read().await, svc, &line, stream == Stream::Stderr);
+                            if show {
+                                match stream {
+                                    Stream::Stdout => println!("{} {}", colour_prefix(svc, idx), line),
+                                    Stream::Stderr => eprintln!("{} {}", colour_prefix(svc, idx), line),
+                                }
+                            }
+                        } else {
+                            match stream {
+                                Stream::Stdout => println!("{}", line),
+                                Stream::Stderr => eprintln!("{}", line),
+                            }
+                        }
+                    }
+
+                    RunEvent::PortBound { port, startup_ms, total_ms, urls, service_name } => {
+                        if let Some(svc) = &service_name {
+                            println!("  {} {}  http://localhost:{}", "✓".green().bold(), svc.bold(), port.to_string().cyan());
+                            for (label, url) in &urls {
+                                println!("           {} {:<8} {}", "↳".dimmed(), label.dimmed(), url.dimmed());
+                            }
+                        } else {
+                            let startup_s = startup_ms as f64 / 1000.0;
+                            let total_s = total_ms as f64 / 1000.0;
+                            println!(" {} running natively on {} {}",
+                                "✓".green().bold(),
+                                format!(":{}", port).cyan().bold(),
+                                format!("— started in {:.1}s (total: {:.1}s!)", startup_s, total_s).dimmed());
+                            if !urls.is_empty() {
+                                println!("   {} open:", "↳".cyan());
+                                for (label, url) in &urls {
+                                    if label == "discovered" {
+                                        println!("     {}", url.cyan());
+                                    } else {
+                                        println!("     {} {}", format!("[{}]", label).dimmed(), url.cyan());
+                                    }
+                                }
+                            }
+                        }
+                    }
+
+                    RunEvent::Exited { code } => {
+                        println!("   {} exited with code {}", "✗".red().bold(), code);
+                    }
+
+                    RunEvent::Warning { message } => {
+                        eprintln!("   {} {}", "⚠".yellow().bold(), message);
+                    }
+
+                    _ => {}
                 }
             }
+
+            Ok(())
         }
         Commands::Detect(args) => {
             info!("Detecting project stack...");

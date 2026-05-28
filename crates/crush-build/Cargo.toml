@@ -30,6 +30,20 @@ indicatif = "0.17"
 chrono = { version = "0.4", features = ["serde"] }
 uuid = { version = "1.13", features = ["v4"] }
 rayon = "1.10"
+futures = { workspace = true }
+reqwest = { workspace = true }
+notify = "6"
+
+hyper = { version = "1", features = ["server", "client", "http1"] }
+hyper-util = { version = "0.1", features = ["tokio", "server-auto", "client-legacy", "http1"] }
+http-body-util = "0.1"
+bytes = "1"
+
+[target.'cfg(target_os = "windows")'.dependencies]
+windows-sys = { version = "0.52", features = [
+    "Win32_System_Threading",
+    "Win32_Foundation",
+] }
 
 [dev-dependencies]
 tempfile = "3"
