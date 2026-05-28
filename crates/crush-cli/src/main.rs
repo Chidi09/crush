@@ -773,24 +773,55 @@ async fn probe_service_links(port: u16) -> Vec<(&'static str, String)> {
         ("/healthz", "health"),
         ("/graphql", "graphql"),
     ];
+    // Fingerprint `/` first. SPAs (Vite, Next dev, CRA) return the same
+    // index.html for every unmatched route — we use this to discard false
+    // positives where the response is just the SPA shell.
+    let root_url = format!("http://localhost:{}/", port);
+    let root_body: Option<String> = match client.get(&root_url).send().await {
+        Ok(r) if r.status().is_success() => r.text().await.ok(),
+        _ => None,
+    };
+    let is_spa_shell = |body: &str| -> bool {
+        if let Some(root) = root_body.as_ref() {
+            // Exact match OR same shell with router-stamped title swap.
+            body == root || (body.len() > 200 && body.len() == root.len())
+        } else { false }
+    };
+
     let mut hits: Vec<(&'static str, String)> = Vec::new();
     let mut seen_labels = std::collections::HashSet::new();
     for (path, label) in probes {
         if seen_labels.contains(label) { continue; }
         let url = format!("http://localhost:{}{}", port, path);
         if let Ok(resp) = client.get(&url).send().await {
-            if resp.status().is_success() {
-                let ct = resp.headers().get("content-type")
-                    .and_then(|h| h.to_str().ok()).unwrap_or("");
-                // Filter out SPA fallback 200s — only count HTML/JSON that
-                // looks like real API docs.
-                let plausible = ct.contains("json")
-                    || (ct.contains("html") && (path.contains("swagger") || path.contains("docs") || path.contains("graphql")))
-                    || path.contains("health");
-                if plausible {
-                    seen_labels.insert(label);
-                    hits.push((label, url));
+            if !resp.status().is_success() { continue; }
+            let ct = resp.headers().get("content-type")
+                .and_then(|h| h.to_str().ok()).unwrap_or("").to_string();
+            let body = resp.text().await.unwrap_or_default();
+
+            let plausible = if ct.contains("json") {
+                // Real JSON endpoints rarely return the SPA shell.
+                true
+            } else if ct.contains("html") {
+                if is_spa_shell(&body) { false }
+                else {
+                    // Look for actual content markers for the route type.
+                    let lower = body.to_lowercase();
+                    match label {
+                        "docs" => lower.contains("swagger") || lower.contains("openapi") || lower.contains("redoc"),
+                        "graphql" => lower.contains("graphql") || lower.contains("playground"),
+                        "health" => lower.contains("status") || lower.contains("\"up\"") || lower.contains("ok"),
+                        _ => false,
+                    }
                 }
+            } else if ct.contains("text/plain") && label == "health" {
+                let t = body.trim().to_lowercase();
+                t == "ok" || t == "up" || t == "healthy"
+            } else { false };
+
+            if plausible {
+                seen_labels.insert(label);
+                hits.push((label, url));
             }
         }
     }
