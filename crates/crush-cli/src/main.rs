@@ -36,6 +36,7 @@ use crush_reliability::{
 };
 mod runtime;
 mod job_object;
+mod proxy;
 use runtime::StatelessEngine;
 use std::sync::Arc;
 
@@ -65,6 +66,9 @@ struct Cli {
     dev: bool,
     #[arg(long, help = "Force a rebuild even if existing artifacts look fresh")]
     rebuild: bool,
+
+    #[arg(long, help = "Disable the built-in reverse proxy")]
+    no_proxy: bool,
 
     #[command(subcommand)]
     command: Option<Commands>,
@@ -1833,18 +1837,59 @@ async fn main() -> anyhow::Result<()> {
                     if let Ok(r) = h.await { probed.push(r); }
                 }
 
+                // ── Proxy: infer routes and spawn before the Ready panel ────
+                let proxy_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>;
+                let proxy_bound_port: Option<u16>;
+                if !cli.no_proxy {
+                    if let Some(proxy_cfg) = proxy::infer_routes(&stack) {
+                        let (ptx, prx) = tokio::sync::oneshot::channel::<()>();
+                        let routes_desc: String = proxy_cfg.routes.iter().map(|r| {
+                            format!("{} → :{}", r.path_prefix, r.target_port)
+                        }).collect::<Vec<_>>().join(", ");
+                        match proxy::run_proxy(proxy_cfg, prx).await {
+                            Ok(port) => {
+                                proxy_shutdown_tx = Some(ptx);
+                                proxy_bound_port = Some(port);
+                                println!();
+                                println!("  {}", "─".repeat(60).dimmed());
+                                println!("  {}  {}  {}",
+                                    "↳".cyan(),
+                                    format!("http://localhost:{}", port).cyan().bold(),
+                                    format!("(proxy — {})", routes_desc).dimmed());
+                            }
+                            Err(e) => {
+                                eprintln!("  {} proxy failed to start: {}", "⚠".yellow(), e);
+                                proxy_shutdown_tx = None;
+                                proxy_bound_port = None;
+                                println!();
+                                println!("  {}", "─".repeat(60).dimmed());
+                            }
+                        }
+                    } else {
+                        proxy_shutdown_tx = None;
+                        proxy_bound_port = None;
+                        println!();
+                        println!("  {}", "─".repeat(60).dimmed());
+                    }
+                } else {
+                    proxy_shutdown_tx = None;
+                    proxy_bound_port = None;
+                    println!();
+                    println!("  {}", "─".repeat(60).dimmed());
+                }
+
                 // Ready panel — clean, scannable summary of what's reachable.
                 let missing: Vec<&String> = children.iter()
                     .map(|(n, _, _)| n)
                     .filter(|n| !ready.iter().any(|(rn, _)| rn == *n))
                     .collect();
-                println!();
-                println!("  {}", "─".repeat(60).dimmed());
+                let direct_label = if proxy_bound_port.is_some() { " (direct)" } else { "" };
                 for (name, port, links) in &probed {
-                    println!("  {} {}  {}",
+                    println!("  {} {}  {}{}",
                         "✓".green().bold(),
                         name.bold(),
-                        format!("http://localhost:{}", port).cyan());
+                        format!("http://localhost:{}", port).cyan(),
+                        direct_label.dimmed());
                     for (label, url) in links {
                         println!("           {} {:<8} {}",
                             "↳".dimmed(),
@@ -1957,6 +2002,8 @@ async fn main() -> anyhow::Result<()> {
                     eprintln!(" {} {} exited (code {}) — stopping other services",
                         "✗".red().bold(), name.bold(), code.unwrap_or(-1));
                 }
+                // Shut the proxy down before killing children.
+                if let Some(tx) = proxy_shutdown_tx { let _ = tx.send(()); }
                 for (_, mut c) in named_children { let _ = c.kill().await; }
                 return Ok(());
             }
