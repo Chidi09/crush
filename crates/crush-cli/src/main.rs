@@ -1099,6 +1099,20 @@ fn mtime(p: &std::path::Path) -> Option<std::time::SystemTime> {
 /// Returns Some(reason) if the existing build artifact is newer than every
 /// source/dep input we care about. Returns None when we should rebuild
 /// (artifact missing, source newer, or stack unknown).
+/// True if `node_modules` exists and is at least as new as the package
+/// manifest + lockfile — i.e. running `pnpm install` would be a no-op.
+fn node_deps_fresh(root: &std::path::Path) -> bool {
+    let nm = root.join("node_modules");
+    if !nm.exists() { return false; }
+    let nm_mtime = match mtime(&nm) { Some(t) => t, None => return false };
+    for lock in ["pnpm-lock.yaml", "package-lock.json", "yarn.lock", "bun.lockb", "package.json"] {
+        if let Some(t) = mtime(&root.join(lock)) {
+            if t > nm_mtime { return false; }
+        }
+    }
+    true
+}
+
 fn build_freshness(root: &std::path::Path, language: &str) -> Option<String> {
     let lang = language.to_lowercase();
 
@@ -2330,8 +2344,20 @@ async fn main() -> anyhow::Result<()> {
 
                 let lang = stack.language.split(' ').next().unwrap_or("").to_lowercase();
                 
+                // If the install command is just `<pm> install` (no `&& build`
+                // step), short-circuit when node_modules is already up to date.
+                // Avoids the ~10s `pnpm install` "Already up to date" tax on warm runs.
+                let is_install_only = (lang == "node" || lang == "typescript" || lang == "bun" || lang == "deno")
+                    && !install.is_empty() && !install.contains("&&");
+                let node_skip = is_install_only && !cli.rebuild && node_deps_fresh(&project_root);
+
                 let install_cmd: Option<String> = if cli.dev {
                     if install.is_empty() {
+                        None
+                    } else if node_skip {
+                        println!("   {} dependencies fresh — node_modules newer than lockfile {}",
+                            "✓".green().bold(),
+                            "(--rebuild to force)".dimmed());
                         None
                     } else {
                         let needs_install = match lang.as_str() {
@@ -2345,6 +2371,11 @@ async fn main() -> anyhow::Result<()> {
                     }
                 } else {
                     if install.is_empty() {
+                        None
+                    } else if node_skip {
+                        println!("   {} dependencies fresh — node_modules newer than lockfile {}",
+                            "✓".green().bold(),
+                            "(--rebuild to force)".dimmed());
                         None
                     } else if !cli.rebuild {
                         if let Some(reason) = build_freshness(&project_root, &stack.language) {
