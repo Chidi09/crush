@@ -15,7 +15,7 @@ export interface PostAttributes {
 }
 
 @Component({
-  selector: 'page-blog',
+  selector: 'page-blog-index',
   standalone: true,
   imports: [CommonModule, RouterLink],
   template: `
@@ -116,11 +116,13 @@ export interface PostAttributes {
     </div>
   `,
 })
-export default class BlogPage implements OnInit {
+export default class BlogIndexPage implements OnInit {
   // Dynamically load all Markdown files under /src/content/blog/
   readonly posts = injectContentFiles<PostAttributes>((contentFile) =>
     contentFile.filename.includes('/src/content/blog/')
-  ).sort((a, b) => new Date(b.attributes.date).getTime() - new Date(a.attributes.date).getTime());
+  )
+    .map((post) => ({ ...post, slug: post.slug.replace('blog/', '') }))
+    .sort((a, b) => new Date(b.attributes.date).getTime() - new Date(a.attributes.date).getTime());
 
   constructor(
     private title: Title,

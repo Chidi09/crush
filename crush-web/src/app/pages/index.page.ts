@@ -49,15 +49,15 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
               class="border-crush-orange/50 bg-crush-orange/10 text-crush-orange hover:bg-crush-orange/20"
               >v0.7.74</span
             >
-            <span class="text-sm text-crush-textMuted">Docker-Compatible Windows Dev Runner</span>
+            <span class="text-sm text-crush-textMuted">Lightweight Docker Desktop Alternative</span>
           </div>
           <h1
             class="text-4xl font-extrabold tracking-tight text-white sm:text-5xl lg:text-6xl text-balance"
           >
-            The perfect dev experience on Windows <span class="gradient-text">without the VM bloat</span>
+            Run docker-compose on Windows <span class="gradient-text">without WSL2</span> or Docker Desktop
           </h1>
           <p class="mt-6 text-lg leading-8 text-crush-textMuted max-w-2xl mx-auto">
-            Stop wasting GBs of RAM on WSL2 and Docker Desktop. Crush reads your compose configuration and runs your services natively using Windows Job Objects for zero-VM development. Full OCI registry support, native speed, and ejects to standard Dockerfiles when you ship.
+            No VMs, no daemons, no memory hogging. Crush auto-detects your stack and starts your development services (Postgres, Redis, pgvector) natively on Windows using Job Objects. Fast, lightweight, and ejects to standard Dockerfiles.
           </p>
           <div class="mt-10 flex items-center justify-center gap-4 flex-wrap">
             <a
@@ -1336,11 +1336,11 @@ export default class IndexPage implements OnInit {
   ) {}
 
   ngOnInit(): void {
-    this.title.setTitle('Crush — Native Windows Dev Runner & Lightweight Docker Alternative');
+    this.title.setTitle('Crush — Lightweight Docker Desktop Alternative for Windows (No WSL2)');
     this.meta.updateTag({
       name: 'description',
       content:
-        'The perfect Windows dev experience without the VM overhead. Run docker-compose dependencies like Postgres & Redis natively with ultra-low RAM and 100% Docker compatibility.',
+        'A fast, lightweight Docker Desktop alternative for native Windows development. Run docker-compose dependencies like Postgres & Redis with sub-second startup and zero VM memory overhead.',
     });
     const script = this.document.createElement('script');
     script.type = 'application/ld+json';

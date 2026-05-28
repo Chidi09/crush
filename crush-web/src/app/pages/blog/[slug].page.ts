@@ -186,7 +186,7 @@ export default class BlogPostPage implements OnInit {
   copied = false;
 
   readonly post$ = injectContent<PostAttributes>({
-    customFilterFn: (post) => post.filename.includes('blog/'),
+    subdirectory: 'blog',
   });
 
   ngOnInit(): void {
