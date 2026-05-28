@@ -44,6 +44,7 @@ hyper-util = { version = "0.1", features = ["tokio", "server-auto", "client-lega
 http-body-util = "0.1"
 bytes = "1"
 futures = "0.3"
+notify = "6"
 
 [target.'cfg(target_os = "linux")'.dependencies]
 crush-runtime-linux = { workspace = true }

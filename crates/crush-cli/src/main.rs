@@ -64,6 +64,10 @@ struct Cli {
 
     #[arg(long, short = 'D', help = "Run dev-mode (HMR / watch / reload) instead of prod")]
     dev: bool,
+
+    #[arg(long, help = "Watch source files and restart affected services on change")]
+    watch: bool,
+
     #[arg(long, help = "Force a rebuild even if existing artifacts look fresh")]
     rebuild: bool,
 
@@ -2095,33 +2099,196 @@ async fn main() -> anyhow::Result<()> {
                     }
                 });
 
-                // Block until any child exits OR the user presses 'q'. Then kill the rest.
                 let mut named_children: Vec<(String, tokio::process::Child)> =
                     children.into_iter().map(|(n, _, c)| (n, c)).collect();
-                let exited: Option<(String, Option<i32>)>;
-                loop {
-                    let mut hit: Option<(usize, Option<i32>)> = None;
-                    for (i, (_, c)) in named_children.iter_mut().enumerate() {
-                        if let Ok(Some(status)) = c.try_wait() {
-                            hit = Some((i, status.code()));
-                            break;
+
+                // ── Watch mode: restart affected sub-service on source changes ──
+                if cli.watch {
+                    let skip_dirs = [
+                        "node_modules", ".next", "target", "dist", "build", ".turbo",
+                        ".venv", "venv", "__pycache__", ".git", ".cache", ".pnpm",
+                        "vendor", "deps", "_build", "out", "bin", "obj", ".gradle", ".mvn",
+                    ];
+
+                    let (change_tx, mut change_rx) = tokio::sync::mpsc::channel::<Vec<PathBuf>>(256);
+
+                    // Spawn the file watcher using notify
+                    let watch_root = project_root.clone();
+                    let change_tx_w = change_tx.clone();
+                    tokio::spawn(async move {
+                        use notify::{Config, EventKind, RecommendedWatcher, RecursiveMode, Watcher};
+                        let (tx, mut rx) = tokio::sync::mpsc::channel(256);
+                        let mut watcher = match RecommendedWatcher::new(
+                            move |res| {
+                                let _ = tx.blocking_send(res);
+                            },
+                            Config::default(),
+                        ) {
+                            Ok(w) => w,
+                            Err(_) => return,
+                        };
+                        let _ = watcher.watch(&watch_root, RecursiveMode::Recursive);
+
+                        // Debounce: accumulate events for 200ms
+                        use tokio::time::Duration;
+                        let mut pending = Vec::new();
+                        loop {
+                            tokio::select! {
+                                Some(Ok(event)) = rx.recv() => {
+                                    match event.kind {
+                                        EventKind::Create(_) | EventKind::Modify(_) | EventKind::Remove(_) => {
+                                            for path in event.paths {
+                                                let name = path.file_name()
+                                                    .and_then(|n| n.to_str()).unwrap_or("");
+                                                if skip_dirs.iter().any(|s| *s == name)
+                                                    || path.extension().and_then(|e| e.to_str()).map_or(false, |e| {
+                                                        matches!(e, "log" | "lock" | "tmp" | "swp" | "swpx")
+                                                    })
+                                                {
+                                                    continue;
+                                                }
+                                                // Skip files in skipped directories by walking up
+                                                let mut skip = false;
+                                                for ancestor in path.ancestors() {
+                                                    if let Some(anc_name) = ancestor.file_name()
+                                                        .and_then(|n| n.to_str())
+                                                    {
+                                                        if skip_dirs.iter().any(|s| *s == anc_name) {
+                                                            skip = true;
+                                                            break;
+                                                        }
+                                                    }
+                                                }
+                                                if skip { continue; }
+                                                pending.push(path);
+                                            }
+                                        }
+                                        _ => {}
+                                    }
+                                }
+                                _ = tokio::time::sleep(Duration::from_millis(200)) => {
+                                    if !pending.is_empty() {
+                                        let _ = change_tx_w.send(std::mem::take(&mut pending)).await;
+                                    }
+                                }
+                            }
+                        }
+                    });
+
+                    let services_info: Vec<_> = stack.services.iter().map(|s|
+                        (s.name.clone(), PathBuf::from(&s.path), s.build_command.clone(), s.entry_point.clone(), s.port)
+                    ).collect();
+
+                    loop {
+                        tokio::select! {
+                            Some(changed) = change_rx.recv() => {
+                                // Find which service owns the changed files
+                                let mut affected: Option<usize> = None;
+                                for path in &changed {
+                                    for (i, (_, ref svc_path, ..)) in services_info.iter().enumerate() {
+                                        if path.starts_with(svc_path) || path == svc_path.as_path() {
+                                            affected = Some(i);
+                                            break;
+                                        }
+                                    }
+                                    if affected.is_some() { break; }
+                                }
+                                if let Some(idx) = affected {
+                                    let (ref name, ref svc_path, ref build_cmd, ref entry, port) = services_info[idx];
+
+                                    // Kill the running child for this service
+                                    if let Some(pos) = named_children.iter().position(|(n, _)| n == name) {
+                                        let (_, mut old_child) = named_children.remove(pos);
+                                        let _ = old_child.kill().await;
+                                        let _ = old_child.wait().await;
+                                    }
+
+                                    // Rebuild
+                                    if !build_cmd.is_empty() {
+                                        if let Err(e) = run_build(
+                                            &stack.services[idx],
+                                            build_cmd,
+                                            svc_path,
+                                            &dep_env,
+                                        ).await {
+                                            eprintln!("   {} {}: rebuild failed: {}",
+                                                "✗".red().bold(), name.bold(), e);
+                                            continue;
+                                        }
+                                    }
+
+                                    // Re-spawn
+                                    let run = entry.replace("$PORT", &port.to_string());
+                                    let mut new_cmd = spawn_shell(&run, svc_path, &dep_env);
+                                    new_cmd.env("PORT", port.to_string());
+                                    new_cmd.stdout(std::process::Stdio::piped());
+                                    new_cmd.stderr(std::process::Stdio::piped());
+                                    match new_cmd.spawn() {
+                                        Ok(mut child) => {
+                                            job_object::assign(&child);
+                                            // Re-attach output readers
+                                            if let Some(stdout) = child.stdout.take() {
+                                                let n = name.clone();
+                                                tokio::spawn(async move {
+                                                    use tokio::io::AsyncBufReadExt;
+                                                    let reader = tokio::io::BufReader::new(stdout);
+                                                    let mut lines = reader.lines();
+                                                    while let Ok(Some(line)) = lines.next_line().await {
+                                                        println!("{} {}", colour_prefix(&n, 0), line);
+                                                    }
+                                                });
+                                            }
+                                            if let Some(stderr) = child.stderr.take() {
+                                                let n = name.clone();
+                                                tokio::spawn(async move {
+                                                    use tokio::io::AsyncBufReadExt;
+                                                    let reader = tokio::io::BufReader::new(stderr);
+                                                    let mut lines = reader.lines();
+                                                    while let Ok(Some(line)) = lines.next_line().await {
+                                                        eprintln!("{} {}", colour_prefix(&n, 0), line);
+                                                    }
+                                                });
+                                            }
+                                            named_children.push((name.clone(), child));
+                                            eprintln!("   {} {}: restarted", "✓".green().bold(), name.bold());
+                                        }
+                                        Err(e) => eprintln!("   {} {}: re-spawn failed: {}",
+                                            "✗".red().bold(), name.bold(), e),
+                                    }
+                                }
+                            }
+                            _ = &mut quit_rx => {
+                                break;
+                            }
                         }
                     }
-                    if let Some((i, code)) = hit {
-                        exited = Some((named_children[i].0.clone(), code));
-                        break;
+                } else {
+                    // Block until any child exits OR the user presses 'q'. Then kill the rest.
+                    let exited: Option<(String, Option<i32>)>;
+                    loop {
+                        let mut hit: Option<(usize, Option<i32>)> = None;
+                        for (i, (_, c)) in named_children.iter_mut().enumerate() {
+                            if let Ok(Some(status)) = c.try_wait() {
+                                hit = Some((i, status.code()));
+                                break;
+                            }
+                        }
+                        if let Some((i, code)) = hit {
+                            exited = Some((named_children[i].0.clone(), code));
+                            break;
+                        }
+                        // Also poll the quit signal from the keystroke listener.
+                        match quit_rx.try_recv() {
+                            Ok(()) => { exited = None; break; }
+                            Err(tokio::sync::oneshot::error::TryRecvError::Closed) => { exited = None; break; }
+                            Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+                        }
+                        tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
                     }
-                    // Also poll the quit signal from the keystroke listener.
-                    match quit_rx.try_recv() {
-                        Ok(()) => { exited = None; break; }
-                        Err(tokio::sync::oneshot::error::TryRecvError::Closed) => { exited = None; break; }
-                        Err(tokio::sync::oneshot::error::TryRecvError::Empty) => {}
+                    if let Some((name, code)) = exited {
+                        eprintln!(" {} {} exited (code {}) — stopping other services",
+                            "✗".red().bold(), name.bold(), code.unwrap_or(-1));
                     }
-                    tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
-                }
-                if let Some((name, code)) = exited {
-                    eprintln!(" {} {} exited (code {}) — stopping other services",
-                        "✗".red().bold(), name.bold(), code.unwrap_or(-1));
                 }
                 // Shut the proxy down before killing children.
                 if let Some(tx) = proxy_shutdown_tx { let _ = tx.send(()); }
