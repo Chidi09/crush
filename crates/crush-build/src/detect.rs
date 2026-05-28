@@ -1321,6 +1321,7 @@ impl Default for Detection {
             services: vec![],
             dockerfile_found: None,
             base_image: "ubuntu:22.04".to_string(),
+            generic_subdir_hint: vec![],
         }
     }
 }
