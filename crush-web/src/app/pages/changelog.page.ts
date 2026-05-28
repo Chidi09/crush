@@ -42,22 +42,30 @@ import { HlmBadgeDirective } from '../ui/badge';
 export default class ChangelogPage implements OnInit {
   releases = [
     {
-      version: 'v0.1.0-beta',
-      date: '2025-05-25',
+      version: 'v0.8.0-alpha',
+      date: 'In Development',
       items: [
-        'Initial beta release',
-        'Windows native container runtime using Job Objects',
-        'crush build — auto-detect stack and build OCI images',
-        'crush run — run containers with sub-second starts',
-        'crush watch — dev mode with auto-rebuild on file changes',
-        'crush migrate — Dockerfile to Crushfile conversion',
-        'crush compose — docker-compose.yml support',
-        'crush secrets — encrypted secret store with AES-256-GCM',
-        'crush scan — vulnerability scanning for images',
-        'crush sbom — SPDX JSON SBOM generation',
-        'DOCKER_HOST socket compatibility layer',
-        'Firecracker microVM for Linux builds on Windows',
-        'Cross-platform: Windows, macOS, Linux',
+        'Scaffolded Tauri 2 + SvelteKit desktop app GUI shell',
+        'Implemented Tauri command bindings for process control, image management, and native settings',
+        'Wired real backends (crush-api Unix socket, crush-proto OCI gate, and crush-tui sparklines)',
+        'Created high-fidelity brand icons generator to avoid windres resources compilation errors'
+      ],
+    },
+    {
+      version: 'v0.7.74',
+      date: '2026-05-28',
+      items: [
+        'First stable native Windows dev runner release series',
+        'Automatic local stack detection (Next, Nuxt, Vite, AnalogJS, Spring Boot, FastAPI, Django, Go, Rust, Rails, Laravel, Phoenix, .NET)',
+        'Auto-starts native dependencies (PostgreSQL, MySQL) and synchronizes database credentials on startup',
+        'Integrates Microsoft Garnet as a zero-VM, ultra-low memory Redis-compatible host cache on Windows',
+        'Compiles pgvector natively against your host Postgres via local MSVC on first use',
+        'Enforces complete process-tree termination on Ctrl+C via kernel-level Windows Job Objects',
+        'Supports Turborepo, Nx, pnpm-workspaces, and multi-service monorepos',
+        'Provides `--memory`, `--cpus`, and `--priority` resources capping via Job Object boundaries',
+        'Adds crush eject to write standardized, production-ready Dockerfile and docker-compose.yml files',
+        'Adds crush update to self-update the CLI binary directly from GitHub releases',
+        'Adds AI-powered crush debug command to analyze local stack traces and suggest quick fixes'
       ],
     },
   ];
