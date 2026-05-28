@@ -815,9 +815,12 @@ async fn probe_service_links_for(port: u16, framework: &str) -> Vec<(&'static st
     ];
     // Framework-narrowed lists — probe only what these frameworks actually
     // expose. Avoids 5-10 stack traces in the app log per crush run.
+    // Note: /v3/api-docs intentionally omitted — springdoc lazy-inits on
+    // first request (~4s), which exceeds our 700ms probe timeout and triggers
+    // an AsyncRequestNotUsable stack trace in the app log. swagger-ui is the
+    // human-facing URL anyway and back-links to /v3/api-docs internally.
     let spring: &[(&str, &str)] = &[
         ("/swagger-ui/index.html", "docs"),
-        ("/v3/api-docs", "openapi"),
         ("/actuator/health", "health"),
     ];
     let fastapi: &[(&str, &str)] = &[
