@@ -1263,6 +1263,30 @@ async fn record_urls(line: &str, sink: &UrlSink) {
 /// when installed via nvm/scoop/Volta). On Unix, executes directly via the
 /// program parts to preserve argv handling.
 fn spawn_shell(cmdline: &str, cwd: &std::path::Path, env: &[(String, String)]) -> tokio::process::Command {
+    // Use $JAVA_HOME/bin/java when set, so we match the JDK Maven used.
+    // The bare `java` on PATH often points to an older JRE that can't
+    // load Java 17/21 class files (UnsupportedClassVersionError).
+    let cmdline = if cmdline.starts_with("java ") {
+        if let Ok(jh) = std::env::var("JAVA_HOME") {
+            let bin = if cfg!(target_os = "windows") {
+                format!("{}\\bin\\java.exe", jh.trim_end_matches(['\\', '/']))
+            } else {
+                format!("{}/bin/java", jh.trim_end_matches('/'))
+            };
+            if std::path::Path::new(&bin).exists() {
+                // Quote so paths with spaces survive cmd.exe / bash.
+                format!("\"{}\" {}", bin, &cmdline[5..])
+            } else {
+                cmdline.to_string()
+            }
+        } else {
+            cmdline.to_string()
+        }
+    } else {
+        cmdline.to_string()
+    };
+    let cmdline = cmdline.as_str();
+
     // Expand `target/*.jar` ourselves — cmd.exe doesn't glob, and bash's
     // globbing only triggers if the file actually exists at parse time.
     // We pick the first jar that isn't `.original` (Spring Boot's repackage
