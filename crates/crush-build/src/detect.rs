@@ -611,13 +611,9 @@ impl CrushSpecDetector {
         } else if has_conda {
             "conda env create -f environment.yml".to_string()
         } else if root.join(".venv").exists() {
-            // Bare Django/Flask projects: no manifest, deps already in .venv.
-            // Nothing to install — the venv is the source of truth.
-            "echo 'No install required (.venv present, no requirements.txt)'".to_string()
+            "echo 'using existing .venv'".to_string()
         } else {
-            // Last-resort: tell the user clearly instead of trying to install
-            // from a missing requirements.txt.
-            "echo 'No install: no requirements.txt, pyproject.toml, or .venv found — add one or run pip install yourself'".to_string()
+            "echo 'no manifest — using system python (add requirements.txt or .venv if deps are missing)'".to_string()
         };
 
         // Invoke venv binaries directly — avoids uv trying to reinstall the editable
