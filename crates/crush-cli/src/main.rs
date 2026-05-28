@@ -2636,6 +2636,15 @@ async fn main() -> anyhow::Result<()> {
                 let spawn_start = std::time::Instant::now();
                 let mut cmd = spawn_shell(entry_str, &project_root, &dep_env);
                 cmd.env("PORT", port.to_string());
+                // Python on Windows defaults stdout to the system codepage
+                // (cp1252) — print('🔧') crashes with UnicodeEncodeError.
+                // PYTHONUTF8=1 (PEP 540) forces UTF-8 I/O for all open()
+                // and stdout/stderr regardless of locale. PYTHONUNBUFFERED=1
+                // makes prints appear immediately instead of buffering.
+                if matches!(lang.as_str(), "python") {
+                    cmd.env("PYTHONUTF8", "1");
+                    cmd.env("PYTHONUNBUFFERED", "1");
+                }
                 cmd.stdout(std::process::Stdio::piped());
                 cmd.stderr(std::process::Stdio::piped());
 
