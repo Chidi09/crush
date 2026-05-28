@@ -453,7 +453,8 @@ pub fn build_freshness(root: &Path, language: &str) -> Option<String> {
             let target = root.join("target");
             if !target.exists() { return None; }
             let src = root.join("src");
-            let latest_src = latest_mtime_any(&src, |_| true);
+            let always = |_: &Path| true;
+            let latest_src = latest_mtime_any(&src, &always);
             let target_time = std::fs::metadata(&target).and_then(|m| m.modified()).ok()?;
             if let Some(src_time) = latest_src {
                 if target_time >= src_time { Some("target up-to-date".into()) } else { None }
@@ -464,7 +465,8 @@ pub fn build_freshness(root: &Path, language: &str) -> Option<String> {
         "go" => {
             let bin = root.join("target");
             if !bin.exists() { return None; }
-            let latest_src = latest_mtime_any(root, |p| p.extension().map_or(false, |e| e == "go"));
+            let go_pred = |p: &Path| p.extension().map_or(false, |e| e == "go");
+            let latest_src = latest_mtime_any(root, &go_pred);
             let bin_time = std::fs::metadata(&bin).and_then(|m| m.modified()).ok()?;
             if let Some(src_time) = latest_src {
                 if bin_time >= src_time { Some("binary up-to-date".into()) } else { None }
@@ -475,9 +477,8 @@ pub fn build_freshness(root: &Path, language: &str) -> Option<String> {
         "java" => {
             let target = root.join("target");
             if !target.exists() { return None; }
-            let latest_src = latest_mtime_any(&root.join("src"), |p| {
-                p.extension().map_or(false, |e| e == "java" || e == "kt" || e == "kts")
-            });
+            let java_pred = |p: &Path| p.extension().map_or(false, |e| e == "java" || e == "kt" || e == "kts");
+            let latest_src = latest_mtime_any(&root.join("src"), &java_pred);
             let target_time = std::fs::metadata(&target).and_then(|m| m.modified()).ok()?;
             if let Some(src_time) = latest_src {
                 if target_time >= src_time { Some("target up-to-date".into()) } else { None }
@@ -489,18 +490,20 @@ pub fn build_freshness(root: &Path, language: &str) -> Option<String> {
     }
 }
 
-fn latest_mtime_any<F: Fn(&Path) -> bool>(root: &Path, pred: F) -> Option<std::time::SystemTime> {
+fn latest_mtime_any(root: &Path, pred: &dyn Fn(&Path) -> bool) -> Option<std::time::SystemTime> {
     let mut latest: Option<std::time::SystemTime> = None;
     if let Ok(entries) = std::fs::read_dir(root) {
         for entry in entries.flatten() {
             let path = entry.path();
             if path.is_dir() {
-                // skip common large dirs
-                let name = path.file_name()?.to_str()?;
+                let name = match path.file_name().and_then(|n| n.to_str()) {
+                    Some(n) => n,
+                    None => continue,
+                };
                 if matches!(name, "node_modules" | ".next" | "target" | "dist" | "build" | ".turbo"
                     | ".venv" | "venv" | "__pycache__" | ".git" | ".cache" | "vendor" | "deps"
                     | "_build" | "out" | "bin" | "obj" | ".gradle" | ".mvn") { continue; }
-                if let Some(sub) = latest_mtime_any(&path, &pred) {
+                if let Some(sub) = latest_mtime_any(&path, pred) {
                     if latest.map_or(true, |l| sub > l) { latest = Some(sub); }
                 }
             } else if pred(&path) {
