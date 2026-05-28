@@ -1361,8 +1361,21 @@ async fn main() -> anyhow::Result<()> {
                 .unwrap_or_else(|| "app".into());
 
             // ── 1. Compose: start dep services, extract app hints ────────────────
+            // Look for compose in project root and common infra subdirs
+            // (infra/, docker/, .docker/, deploy/, ops/, devops/).
             let compose_files = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
-            let compose_path = compose_files.iter().map(|f| project_root.join(f)).find(|p| p.exists());
+            let compose_dirs = [".", "infra", "docker", ".docker", "deploy", "ops", "devops"];
+            let compose_path = compose_dirs.iter()
+                .flat_map(|d| compose_files.iter().map(move |f| project_root.join(d).join(f)))
+                .find(|p| p.exists());
+            if let Some(ref cp) = compose_path {
+                if let Some(parent) = cp.parent() {
+                    if parent != project_root.as_path() {
+                        println!("   {} compose: {}", "↳".cyan(),
+                            cp.strip_prefix(&project_root).unwrap_or(cp).display().to_string().dimmed());
+                    }
+                }
+            }
 
             let mut dep_env: Vec<(String, String)> = Vec::new();
             let mut dep_service_names: Vec<String> = Vec::new();

@@ -394,14 +394,16 @@ impl CrushSpecDetector {
             || root.join("lerna.json").exists();
         if is_monorepo {
             if let Some(scripts) = scripts {
-                for key in ["dev", "start"] {
+                // Prefer `start` over `dev` for the prod entry. `dev_entry_point`
+                // is computed separately and explicitly uses `<pm> run dev`.
+                for key in ["start", "dev"] {
                     if scripts.get(key).and_then(|v| v.as_str()).is_some() {
                         return format!("{} run {}", pm, key);
                     }
                 }
             }
             // Last resort for unscripted monorepos
-            return format!("{} dev", pm);
+            return format!("{} start", pm);
         }
 
         if let Some(scripts) = scripts {
