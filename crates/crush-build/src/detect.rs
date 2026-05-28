@@ -69,6 +69,10 @@ pub struct Detection {
     pub services: Vec<SubService>,
     pub dockerfile_found: Option<String>,
     pub base_image: String,
+    /// For Generic fallback: immediate child dirs that look like real projects
+    /// (have a package.json / Cargo.toml / etc). Empty otherwise.
+    #[serde(default)]
+    pub generic_subdir_hint: Vec<String>,
 }
 
 struct Signals {
@@ -1123,6 +1127,7 @@ impl CrushSpecDetector {
     }
 
     fn fallback(&self, root: &Path) -> Detection {
+        let hint = Self::generic_subdir_hint(root);
         Detection {
             project_name: root.file_name().unwrap_or_default().to_string_lossy().to_string(),
             runtime_type: RuntimeType::Generic,
@@ -1135,8 +1140,35 @@ impl CrushSpecDetector {
             dev_install_command: "".to_string(),
             port: 80,
             confidence: 0.5,
+            generic_subdir_hint: hint,
             ..Default::default()
         }
+    }
+
+    /// Scan immediate child directories for project markers. If found, return
+    /// a list of relative paths so the CLI can suggest "did you mean to cd into X?"
+    fn generic_subdir_hint(root: &Path) -> Vec<String> {
+        let markers = [
+            "package.json", "Cargo.toml", "go.mod", "pyproject.toml",
+            "requirements.txt", "pom.xml", "build.gradle", "build.gradle.kts",
+            "Gemfile", "composer.json", "mix.exs", "Package.swift",
+        ];
+        let mut hits = Vec::new();
+        let entries = match std::fs::read_dir(root) {
+            Ok(e) => e,
+            Err(_) => return hits,
+        };
+        for entry in entries.flatten() {
+            if !entry.file_type().map(|t| t.is_dir()).unwrap_or(false) { continue; }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if name.starts_with('.') || name == "node_modules" || name == "target" { continue; }
+            let p = entry.path();
+            if markers.iter().any(|m| p.join(m).exists()) {
+                hits.push(name);
+            }
+        }
+        hits.sort();
+        hits
     }
 
     fn detect_rust_framework(content: &str, root: &Path) -> String {

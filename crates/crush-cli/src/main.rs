@@ -1706,6 +1706,22 @@ async fn main() -> anyhow::Result<()> {
             let detector = StackDetector::new();
             let stack = detector.detect(&project_root).await?;
 
+            // Generic fallback with no executable entrypoint.sh is unrunnable.
+            // If we found project-looking subdirs, point the user there instead
+            // of trying to spawn a missing entrypoint.sh.
+            if stack.language.starts_with("generic")
+                && !project_root.join("entrypoint.sh").exists()
+                && !stack.generic_subdir_hint.is_empty()
+            {
+                eprintln!(" {} couldn't detect a project at {}",
+                    "✗".red().bold(), project_root.display().to_string().bold());
+                eprintln!("   ↳ found project-looking subdirectories:");
+                for s in &stack.generic_subdir_hint {
+                    eprintln!("       cd {} && crush", s);
+                }
+                std::process::exit(2);
+            }
+
             let extra_note = if !dep_service_names.is_empty() {
                 format!(" (+ {} service{})", dep_service_names.len(),
                     if dep_service_names.len() == 1 { "" } else { "s" })

@@ -57,6 +57,8 @@ pub struct InferredStack {
     pub is_monorepo: bool,
     #[serde(default)]
     pub services: Vec<crate::detect::SubService>,
+    #[serde(default)]
+    pub generic_subdir_hint: Vec<String>,
 }
 
 pub struct BuildOutcome {
@@ -139,6 +141,7 @@ impl From<Detection> for InferredStack {
             base_image: d.base_image,
             is_monorepo: d.is_monorepo,
             services: d.services,
+            generic_subdir_hint: d.generic_subdir_hint,
         }
     }
 }
