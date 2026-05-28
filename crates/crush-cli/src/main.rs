@@ -2519,11 +2519,18 @@ async fn main() -> anyhow::Result<()> {
                             .dimmed());
                     // Give sub-procs (turbo children, etc.) a beat to announce URLs.
                     tokio::time::sleep(tokio::time::Duration::from_millis(800)).await;
+                    // Probe well-known doc/health paths (swagger, openapi, /docs, /healthz)
+                    // so backend APIs surface their endpoints without us reading stdout.
+                    let probed = probe_service_links(port).await;
                     let urls = url_sink.lock().await;
-                    if !urls.is_empty() {
+                    let has_anything = !urls.is_empty() || !probed.is_empty();
+                    if has_anything {
                         println!("   {} open:", "↳".cyan());
                         for u in urls.iter() {
                             println!("     {}", u.cyan());
+                        }
+                        for (label, url) in &probed {
+                            println!("     {} {}", format!("[{label}]").dimmed(), url.cyan());
                         }
                     }
                 } else if let Ok(Some(status)) = child.try_wait() {
