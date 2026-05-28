@@ -450,13 +450,28 @@ impl CrushSpecDetector {
     /// `compose.dev.yaml`) and `Dockerfile.dev` are ignored.
     fn has_prod_docker_shape(root: &Path) -> bool {
         let prod_dockerfile = root.join("Dockerfile");
-        if prod_dockerfile.exists() { return true; }
+        if prod_dockerfile.exists() && !Self::is_eject_generated(&prod_dockerfile) { return true; }
 
         let dirs = [".", "infra", "docker", ".docker", "deploy", "ops", "devops"];
         let names = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
         for d in &dirs {
             for n in &names {
-                if root.join(d).join(n).exists() { return true; }
+                let p = root.join(d).join(n);
+                if p.exists() && !Self::is_eject_generated(&p) { return true; }
+            }
+        }
+        false
+    }
+
+    fn is_eject_generated(path: &Path) -> bool {
+        // Read only the first 256 bytes; the marker is on line 1.
+        if let Ok(mut f) = fs::File::open(path) {
+            use std::io::Read;
+            let mut buf = [0u8; 256];
+            if let Ok(n) = f.read(&mut buf) {
+                return std::str::from_utf8(&buf[..n])
+                    .map(|s| s.contains("# crush:eject"))
+                    .unwrap_or(false);
             }
         }
         false
