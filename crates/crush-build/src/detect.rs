@@ -240,7 +240,33 @@ impl CrushSpecDetector {
         let scripts = json["scripts"].as_object();
         let build_cmd = self.infer_node_build(&json, root, has_ts, has_deno);
         let entry = self.infer_node_entry(&json, scripts, root, has_ts);
-        let port = Self::detect_port_framework(&framework, 3000);
+        // Trust the dev/start script over the framework signal for port:
+        // an Angular project whose `dev` is literally `vite` should report
+        // 5173 (vite's port), not 4200 (ng serve's). Same for the opposite.
+        let port = {
+            let framework_port = Self::detect_port_framework(&framework, 3000);
+            let script_port = scripts.and_then(|s| {
+                for key in ["dev", "start"] {
+                    if let Some(v) = s.get(key).and_then(|x| x.as_str()) {
+                        let t = v.trim().to_lowercase();
+                        // Look at the first token (the actual command).
+                        let cmd0 = t.split_whitespace().next().unwrap_or("");
+                        let p = match cmd0 {
+                            "vite" => Some(5173),
+                            "nuxt" => Some(3000),
+                            "next" => Some(3000),
+                            "astro" => Some(4321),
+                            "ng" if t.contains("serve") => Some(4200),
+                            "remix-serve" => Some(3000),
+                            _ => None,
+                        };
+                        if p.is_some() { return p; }
+                    }
+                }
+                None
+            });
+            script_port.unwrap_or(framework_port)
+        };
 
         let is_monorepo = json["workspaces"].is_array()
             || json["workspaces"]["packages"].is_array()
@@ -510,7 +536,12 @@ impl CrushSpecDetector {
         let has_pdm = root.join("pdm.lock").exists();
         let has_conda = root.join("environment.yml").exists() || root.join("environment.yaml").exists();
 
-        if !has_pyproject && !has_requirements && !has_setup && !has_conda { return None; }
+        // manage.py is an unambiguous Django marker — proceed even when the
+        // project ships no requirements/pyproject (deps installed via OS pkg
+        // manager, system Python, etc.) so we don't get hijacked by a stray
+        // package.json at the same root.
+        let has_manage_py = root.join("manage.py").exists();
+        if !has_pyproject && !has_requirements && !has_setup && !has_conda && !has_manage_py { return None; }
 
         let version = if let Some(v) = VersionResolver::from_python_version(root) {
             v

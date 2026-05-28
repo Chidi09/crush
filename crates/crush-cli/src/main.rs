@@ -1327,6 +1327,43 @@ async fn record_urls(line: &str, sink: &UrlSink) {
 /// `.bat`, and `.ps1` shims (pnpm, npm, yarn, uvicorn are all .cmd on Windows
 /// when installed via nvm/scoop/Volta). On Unix, executes directly via the
 /// program parts to preserve argv handling.
+/// Rewrites bash-style `$VAR` and `${VAR}` to cmd.exe-style `%VAR%`.
+/// Only handles identifier vars (alpha/digit/underscore) — leaves shell
+/// special vars like `$@` `$1` alone since cmd.exe has no equivalent.
+fn translate_env_refs_for_cmd(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let mut chars = s.chars().peekable();
+    while let Some(c) = chars.next() {
+        if c != '$' { out.push(c); continue; }
+        match chars.peek() {
+            Some(&'{') => {
+                chars.next(); // consume {
+                let mut name = String::new();
+                while let Some(&nc) = chars.peek() {
+                    if nc == '}' { chars.next(); break; }
+                    if nc.is_ascii_alphanumeric() || nc == '_' { name.push(nc); chars.next(); }
+                    else { break; }
+                }
+                if !name.is_empty() {
+                    out.push_str(&format!("%{}%", name));
+                } else {
+                    out.push('$'); out.push('{'); out.push_str(&name); out.push('}');
+                }
+            }
+            Some(&nc) if nc.is_ascii_alphabetic() || nc == '_' => {
+                let mut name = String::new();
+                while let Some(&nc) = chars.peek() {
+                    if nc.is_ascii_alphanumeric() || nc == '_' { name.push(nc); chars.next(); }
+                    else { break; }
+                }
+                out.push_str(&format!("%{}%", name));
+            }
+            _ => out.push('$'),
+        }
+    }
+    out
+}
+
 fn spawn_shell(cmdline: &str, cwd: &std::path::Path, env: &[(String, String)]) -> tokio::process::Command {
     // Use $JAVA_HOME/bin/java when set, so we match the JDK Maven used.
     // The bare `java` on PATH often points to an older JRE that can't
@@ -1394,6 +1431,11 @@ fn spawn_shell(cmdline: &str, cwd: &std::path::Path, env: &[(String, String)]) -
         } else {
             cmdline.to_string()
         };
+        // Translate bash-style `$VAR` to cmd.exe-style `%VAR%`. Several
+        // detected entries (uvicorn --port $PORT, etc.) use bash syntax;
+        // without this cmd.exe passes them literally and the server binds
+        // to the wrong port.
+        let fixed = translate_env_refs_for_cmd(&fixed);
         let mut c = tokio::process::Command::new("cmd");
         c.arg("/c").arg(fixed);
         c
