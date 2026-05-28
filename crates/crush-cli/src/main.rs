@@ -35,6 +35,7 @@ use crush_reliability::{
     VaultEngine
 };
 mod runtime;
+mod job_object;
 use runtime::StatelessEngine;
 use std::sync::Arc;
 
@@ -1347,6 +1348,12 @@ async fn main() -> anyhow::Result<()> {
         .with_env_filter(EnvFilter::from_default_env())
         .init();
 
+    // Set up the Windows Job Object on startup. Every child we spawn after
+    // this gets assigned to the job, and Windows kills the entire job tree
+    // when crush exits — Ctrl+C, panic, terminal closed, all of it. Closest
+    // we can get to docker-on-Linux's clean teardown story.
+    job_object::init();
+
     let cli = Cli::parse();
     let data_dir = dirs_or_default();
     let store = ImageStore::new(data_dir.join("images")).await?;
@@ -1681,6 +1688,7 @@ async fn main() -> anyhow::Result<()> {
 
                         match cmd.spawn() {
                             Ok(mut child) => {
+                                job_object::assign(&child);
                                 if let Some(stdout) = child.stdout.take() {
                                     let n_clone = n.clone();
                                     tokio::spawn(async move {
@@ -1746,6 +1754,7 @@ async fn main() -> anyhow::Result<()> {
                     cmd.stderr(std::process::Stdio::piped());
                     match cmd.spawn() {
                         Ok(mut child) => {
+                            job_object::assign(&child);
                             let color_idx = children.len();
                             // Reader tasks check shared filter state. Stderr is always shown
                             // (and counts as "errors") so crashes never disappear.
@@ -2015,6 +2024,7 @@ async fn main() -> anyhow::Result<()> {
 
                     match cmd.spawn() {
                         Ok(mut child) => {
+                            job_object::assign(&child);
                             if let Some(stdout) = child.stdout.take() {
                                 tokio::spawn(async move {
                                     use tokio::io::AsyncBufReadExt;
@@ -2060,6 +2070,7 @@ async fn main() -> anyhow::Result<()> {
 
                 let mut child = cmd.spawn()
                     .map_err(|e| anyhow::anyhow!("Failed to start `{}`: {}", entry_str, e))?;
+                job_object::assign(&child);
 
                 let url_sink: UrlSink = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
                 if let Some(stdout) = child.stdout.take() {
@@ -2683,7 +2694,8 @@ async fn main() -> anyhow::Result<()> {
 
                 let mut child = cmd.spawn()
                     .map_err(|e| CrushError::Internal(anyhow::anyhow!("Failed to spawn foreground container: {}", e)))?;
-                
+                job_object::assign_std(&child);
+
                 let pid = child.id();
                 let mut c_upd = container.clone();
                 c_upd.status = ContainerStatus::Running;
