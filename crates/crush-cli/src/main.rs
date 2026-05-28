@@ -1274,8 +1274,15 @@ fn spawn_shell(cmdline: &str, cwd: &std::path::Path, env: &[(String, String)]) -
                 format!("{}/bin/java", jh.trim_end_matches('/'))
             };
             if std::path::Path::new(&bin).exists() {
-                // Quote so paths with spaces survive cmd.exe / bash.
-                format!("\"{}\" {}", bin, &cmdline[5..])
+                // Only wrap in quotes if the path has spaces — cmd.exe doubly
+                // escapes the quotes Tokio adds, producing a literal `\"path\"`
+                // that fails to resolve.
+                let prefix = if bin.contains(' ') {
+                    format!("\"{}\"", bin)
+                } else {
+                    bin
+                };
+                format!("{} {}", prefix, &cmdline[5..])
             } else {
                 cmdline.to_string()
             }
