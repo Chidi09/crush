@@ -6,6 +6,6 @@ pub mod state;
 
 pub use driver::{ServiceDriver, RunningService, ServiceConfig, ServiceKind};
 pub use postgres::PostgresDriver;
-pub use redis_compat::RedisCompatDriver;
+pub use redis_compat::{RedisCompatDriver, prefetch};
 pub use binary_cache::BinaryCache;
 pub use state::{NativeServiceState, save_native_state, load_native_state, clear_native_state};

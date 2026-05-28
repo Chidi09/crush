@@ -7,6 +7,19 @@ use std::time::Duration;
 use crate::driver::{ServiceDriver, RunningService, ServiceConfig, ServiceKind};
 use crate::binary_cache::{BinaryCache, BinarySpec, ArchiveType};
 
+/// Best-effort prefetch: download the Garnet / Valkey binary into the cache
+/// without starting the server. Called early from the CLI so the binary is on
+/// disk by the time `start_dep_service_smart` runs. Errors are silently ignored
+/// — the real start path will re-download on a miss.
+pub async fn prefetch(cache_dir: PathBuf) -> Result<()> {
+    let cache = BinaryCache::new(cache_dir);
+    #[cfg(target_os = "windows")]
+    { let _ = cache.ensure(&GARNET_SPEC).await; }
+    #[cfg(not(target_os = "windows"))]
+    { let _ = cache.ensure(&VALKEY_SPEC).await; }
+    Ok(())
+}
+
 #[cfg(target_os = "windows")]
 static GARNET_SPEC: BinarySpec = BinarySpec {
     service: "garnet",

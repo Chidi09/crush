@@ -1476,15 +1476,36 @@ async fn main() -> anyhow::Result<()> {
                         if !parsed.dep_services.is_empty() {
                             let backend = detect_backend();
                             let state_dir = data_dir.join("services");
+
+                            // Fire-and-forget Garnet prefetch alongside compose startup
+                            let prefetch_dir = data_dir.clone();
+                            tokio::spawn(async move {
+                                let _ = crush_services::prefetch(prefetch_dir.join("cache").join("binaries")).await;
+                            });
+
+                            // Start all dep services in parallel
+                            let dep_futures: Vec<_> = parsed.dep_services.iter()
+                                .map(|dep| {
+                                    let dep = dep.clone();
+                                    let pname = project_name.clone();
+                                    let dd = data_dir.clone();
+                                    async move {
+                                        let res = start_dep_service_smart(&dep, &pname, &dd).await;
+                                        (dep, res)
+                                    }
+                                })
+                                .collect();
+                            let dep_results = futures::future::join_all(dep_futures).await;
+
                             let mut running_containers = Vec::new();
                             let mut running_natives = Vec::new();
 
-                            for dep in &parsed.dep_services {
+                            for (dep, result) in dep_results {
                                 print!("   ↳ starting {} ({})... ", dep.name, dep.image);
                                 use std::io::Write;
                                 let _ = std::io::stdout().flush();
 
-                                match start_dep_service_smart(dep, &project_name, &data_dir).await {
+                                match result {
                                     Ok(StartedService::Native(running)) => {
                                         let note = if running.kind == crush_services::ServiceKind::Postgres {
                                             "[native]"
@@ -1496,13 +1517,13 @@ async fn main() -> anyhow::Result<()> {
                                         };
                                         println!("ok  {}", note);
                                         dep_service_names.push(dep.name.clone());
-                                        dep_env.extend(synthesize_dep_env(dep));
+                                        dep_env.extend(synthesize_dep_env(&dep));
                                         running_natives.push(running);
                                     }
                                     Ok(StartedService::Container(cname)) => {
                                         println!("ok  [container]");
                                         dep_service_names.push(dep.name.clone());
-                                        dep_env.extend(synthesize_dep_env(dep));
+                                        dep_env.extend(synthesize_dep_env(&dep));
                                         running_containers.push(RunningContainer {
                                             service_name: dep.name.clone(),
                                             container_name: cname,
@@ -1568,21 +1589,34 @@ async fn main() -> anyhow::Result<()> {
                     let mut running_containers = Vec::new();
                     let backend = detect_backend();
 
-                    for dep in &spring_deps {
+                    let spring_futures: Vec<_> = spring_deps.iter()
+                        .map(|dep| {
+                            let dep = dep.clone();
+                            let pname = project_name.clone();
+                            let dd = data_dir.clone();
+                            async move {
+                                let res = start_dep_service_smart(&dep, &pname, &dd).await;
+                                (dep, res)
+                            }
+                        })
+                        .collect();
+                    let spring_results = futures::future::join_all(spring_futures).await;
+
+                    for (dep, result) in spring_results {
                         print!("   ↳ starting {} ({}) [from application.yml]... ", dep.name, dep.image);
                         use std::io::Write;
                         let _ = std::io::stdout().flush();
-                        match start_dep_service_smart(dep, &project_name, &data_dir).await {
+                        match result {
                             Ok(StartedService::Native(running)) => {
                                 println!("ok  [native]");
                                 dep_service_names.push(dep.name.clone());
-                                dep_env.extend(synthesize_dep_env(dep));
+                                dep_env.extend(synthesize_dep_env(&dep));
                                 running_natives.push(running);
                             }
                             Ok(StartedService::Container(cname)) => {
                                 println!("ok  [container]");
                                 dep_service_names.push(dep.name.clone());
-                                dep_env.extend(synthesize_dep_env(dep));
+                                dep_env.extend(synthesize_dep_env(&dep));
                                 running_containers.push(RunningContainer {
                                     service_name: dep.name.clone(),
                                     container_name: cname,
@@ -1760,14 +1794,14 @@ async fn main() -> anyhow::Result<()> {
                         }
                     };
 
-                    if let Some(ref icmd) = build_cmd {
+                    if let Some(icmd) = build_cmd.clone() {
                         let sem = sem.clone();
                         let sub = sub.clone();
                         let sub_path = sub_path.clone();
                         let dep_env = dep_env.clone();
                         build_handles.push(tokio::spawn(async move {
                             let _permit = sem.acquire().await.ok();
-                            run_build(&sub, icmd, &sub_path, &dep_env).await
+                            run_build(&sub, &icmd, &sub_path, &dep_env).await
                         }));
                     }
                 }
