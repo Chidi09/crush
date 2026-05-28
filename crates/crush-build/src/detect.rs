@@ -265,6 +265,8 @@ impl CrushSpecDetector {
             let dev_install = format!("{} install", pm);
             let framework_entry_prod = match surfaced_framework.as_str() {
                 "Vite" => format!("{} exec vite preview -- --port $PORT --host 0.0.0.0", pm),
+                "AnalogJS" => format!("{} exec vite preview -- --port $PORT --host 0.0.0.0", pm),
+                "Angular" => format!("{} run start", pm),
                 "Next.js" => format!("{} run start", pm),
                 "Nuxt" => format!("{} run preview", pm),
                 "SvelteKit" => "node build/index.js".to_string(),
@@ -342,6 +344,8 @@ impl CrushSpecDetector {
         if dep_set.contains("remix") || dep_set.contains("@remix-run/node") { s.add("Remix", 8.0); }
         if dep_set.contains("@builder.io/qwik") { s.add("Qwik", 8.0); }
         if dep_set.contains("@solidjs/start") { s.add("SolidStart", 8.0); }
+        if dep_set.contains("@analogjs/platform") || dep_set.contains("@analogjs/router") { s.add("AnalogJS", 10.0); }
+        if dep_set.contains("@angular/core") { s.add("Angular", 9.0); }
         if dep_set.contains("fastify") { s.add("Fastify", 8.0); }
         if dep_set.contains("express") { s.add("Express", 6.0); }
         if dep_set.contains("hono") { s.add("Hono", 8.0); }
@@ -1201,6 +1205,9 @@ impl CrushSpecDetector {
             "Astro"     => 4321,
             "SolidStart"=> 3000,
             "Qwik"      => 5173,
+            "Vite"      => 5173,
+            "AnalogJS"  => 5173,
+            "Angular"   => 4200,
             _ => default,
         }
     }
