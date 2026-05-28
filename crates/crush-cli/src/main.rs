@@ -1365,9 +1365,21 @@ async fn main() -> anyhow::Result<()> {
             // (infra/, docker/, .docker/, deploy/, ops/, devops/).
             let compose_files = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
             let compose_dirs = [".", "infra", "docker", ".docker", "deploy", "ops", "devops"];
-            let compose_path = compose_dirs.iter()
-                .flat_map(|d| compose_files.iter().map(move |f| project_root.join(d).join(f)))
-                .find(|p| p.exists());
+            let mut compose_path: Option<std::path::PathBuf> = None;
+            for d in &compose_dirs {
+                for f in &compose_files {
+                    let candidate = project_root.join(d).join(f);
+                    if candidate.exists() {
+                        compose_path = Some(candidate);
+                        break;
+                    }
+                }
+                if compose_path.is_some() { break; }
+            }
+            if std::env::var("CRUSH_DEBUG_COMPOSE").is_ok() {
+                eprintln!("[debug] project_root = {}", project_root.display());
+                eprintln!("[debug] compose_path = {:?}", compose_path);
+            }
             if let Some(ref cp) = compose_path {
                 if let Some(parent) = cp.parent() {
                     if parent != project_root.as_path() {
