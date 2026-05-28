@@ -223,6 +223,7 @@ fn get_or_init_job() -> Option<isize> {
     use std::ptr;
     use windows_sys::Win32::Foundation::*;
     use windows_sys::Win32::System::Threading::*;
+    use windows_sys::Win32::System::JobObjects::*;
     static JOB: OnceLock<isize> = OnceLock::new();
     let handle = JOB.get_or_init(|| {
         unsafe {
@@ -273,6 +274,7 @@ pub fn assign_to_job(child: &tokio::process::Child) {
             unsafe {
                 use windows_sys::Win32::Foundation::*;
                 use windows_sys::Win32::System::Threading::*;
+                use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
                 let proc_handle = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, id);
                 if !proc_handle.is_invalid() {
                     AssignProcessToJobObject(handle as *mut _, proc_handle);
@@ -532,12 +534,14 @@ fn latest_mtime_any<F: Fn(&Path) -> bool>(root: &Path, pred: F) -> Option<std::t
 pub fn node_deps_fresh(root: &Path) -> bool {
     let nm = root.join("node_modules");
     if !nm.exists() { return false; }
-    let nm_mtime = std::fs::metadata(&nm).and_then(|m| m.modified());
-    // Check pnpm-lock.yaml, yarn.lock, or package-lock.json
+    let nm_mtime = match std::fs::metadata(&nm).and_then(|m| m.modified()) {
+        Ok(t) => t,
+        Err(_) => return false,
+    };
     for lock_name in &["pnpm-lock.yaml", "yarn.lock", "package-lock.json"] {
         let lock = root.join(lock_name);
-        if let (Ok(nm_t), Ok(lock_t)) = (nm_mtime, std::fs::metadata(&lock).and_then(|m| m.modified())) {
-            if nm_t >= lock_t { return true; }
+        if let Ok(lock_t) = std::fs::metadata(&lock).and_then(|m| m.modified()) {
+            if nm_mtime >= lock_t { return true; }
         }
     }
     false
