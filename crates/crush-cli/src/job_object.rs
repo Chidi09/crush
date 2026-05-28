@@ -16,12 +16,17 @@ mod imp {
         JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE, JOB_OBJECT_LIMIT_PROCESS_MEMORY,
         JOB_OBJECT_LIMIT_JOB_MEMORY, JobObjectCpuRateControlInformation,
         JOBOBJECT_CPU_RATE_CONTROL_INFORMATION, JOB_OBJECT_CPU_RATE_CONTROL_ENABLE,
-        JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP,
+        JOB_OBJECT_CPU_RATE_CONTROL_HARD_CAP, JOB_OBJECT_LIMIT_PRIORITY_CLASS,
     };
+
+    // Win32 priority class constants — match windows.h / processthreadsapi.h.
+    pub const PRIORITY_HIGH: u32 = 0x0080;          // HIGH_PRIORITY_CLASS
+    pub const PRIORITY_ABOVE_NORMAL: u32 = 0x8000;  // ABOVE_NORMAL_PRIORITY_CLASS
 
     pub struct Limits {
         pub memory_bytes: Option<u64>,
         pub cpu_percent: Option<u8>,
+        pub priority_class: Option<u32>,
     }
 
     pub struct Job(HANDLE);
@@ -39,7 +44,7 @@ mod imp {
     static JOB: OnceLock<Option<Job>> = OnceLock::new();
 
     fn create() -> Option<Job> {
-        create_with_limits(Limits { memory_bytes: None, cpu_percent: None })
+        create_with_limits(Limits { memory_bytes: None, cpu_percent: None, priority_class: None })
     }
 
     fn create_with_limits(limits: Limits) -> Option<Job> {
@@ -54,6 +59,11 @@ mod imp {
                     JOB_OBJECT_LIMIT_PROCESS_MEMORY | JOB_OBJECT_LIMIT_JOB_MEMORY;
                 info.ProcessMemoryLimit = mem as usize;
                 info.JobMemoryLimit = mem as usize;
+            }
+
+            if let Some(pclass) = limits.priority_class {
+                info.BasicLimitInformation.LimitFlags |= JOB_OBJECT_LIMIT_PRIORITY_CLASS;
+                info.BasicLimitInformation.PriorityClass = pclass;
             }
 
             let ok = SetInformationJobObject(
@@ -122,9 +132,12 @@ mod imp {
 
 #[cfg(not(windows))]
 mod imp {
+    pub const PRIORITY_HIGH: u32 = 0;
+    pub const PRIORITY_ABOVE_NORMAL: u32 = 0;
     pub struct Limits {
         pub memory_bytes: Option<u64>,
         pub cpu_percent: Option<u8>,
+        pub priority_class: Option<u32>,
     }
     pub fn init() {}
     pub fn init_with_limits(_limits: Limits) { init() }
@@ -132,4 +145,4 @@ mod imp {
     pub fn assign_std(_child: &std::process::Child) {}
 }
 
-pub use imp::{assign, assign_std, init, init_with_limits, Limits};
+pub use imp::{assign, assign_std, init, init_with_limits, Limits, PRIORITY_HIGH, PRIORITY_ABOVE_NORMAL};

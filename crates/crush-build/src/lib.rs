@@ -78,6 +78,21 @@ pub fn project_fingerprint(root: &Path) -> Result<String> {
             "vendor" | "deps" | "_build" | "out" | "bin" | "obj" | ".gradle" | ".mvn")
     }
 
+    // Read `.crushignore` once — additive to the hardcoded skip list.
+    // Format: one pattern per line, # for comments. Supports plain names
+    // (matches any dir with that name) and trailing-slash form (dir only).
+    // No glob/regex — keep parsing minimal and fast.
+    let extra_skips: Vec<String> = fs::read_to_string(root.join(".crushignore"))
+        .ok()
+        .map(|content| content
+            .lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| l.trim_end_matches('/').to_string())
+            .collect())
+        .unwrap_or_default();
+    let is_user_skip = |name: &str| extra_skips.iter().any(|s| s == name);
+
     let mut entries: Vec<(String, u128)> = Vec::new();
     let mut stack: Vec<PathBuf> = vec![root.to_path_buf()];
 
@@ -100,11 +115,14 @@ pub fn project_fingerprint(root: &Path) -> Result<String> {
                 Err(_) => continue,
             };
             if ft.is_dir() {
-                if is_skip(&name) {
+                if is_skip(&name) || is_user_skip(&name) {
                     continue;
                 }
                 stack.push(path);
             } else if ft.is_file() {
+                if is_user_skip(&name) {
+                    continue;
+                }
                 let rel = path.strip_prefix(root).unwrap_or(&path).to_string_lossy().to_string();
                 let mtime_ns = match entry.metadata().ok().and_then(|m| m.modified().ok()) {
                     Some(t) => t.duration_since(SystemTime::UNIX_EPOCH).unwrap_or_default().as_nanos(),

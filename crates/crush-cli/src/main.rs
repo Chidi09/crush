@@ -78,6 +78,8 @@ struct Cli {
     memory: Option<u64>,
     #[arg(long, value_parser = parse_cpu_fraction, help = "CPU cap (e.g. 0.5, 2). 1.0 = one core.")]
     cpus: Option<f32>,
+    #[arg(long, help = "Boost process priority. Values: high, above-normal. Windows only.")]
+    priority: Option<String>,
 
     #[arg(long, help = "Disable the built-in reverse proxy")]
     no_proxy: bool,
@@ -1122,6 +1124,15 @@ fn latest_mtime<F: Fn(&std::path::Path) -> bool>(root: &std::path::Path, pred: F
             ".venv" | "venv" | "__pycache__" | ".git" | ".cache" | ".pnpm" |
             "vendor" | "deps" | "_build" | "out" | "bin" | "obj" | ".gradle" | ".mvn")
     }
+    let extra_skips: Vec<String> = std::fs::read_to_string(root.join(".crushignore"))
+        .ok()
+        .map(|content| content.lines()
+            .map(|l| l.trim())
+            .filter(|l| !l.is_empty() && !l.starts_with('#'))
+            .map(|l| l.trim_end_matches('/').to_string())
+            .collect())
+        .unwrap_or_default();
+    let is_user_skip = |name: &str| extra_skips.iter().any(|s| s == name);
     let mut latest: Option<std::time::SystemTime> = None;
     let mut stack: Vec<std::path::PathBuf> = vec![root.to_path_buf()];
     while let Some(dir) = stack.pop() {
@@ -1132,9 +1143,9 @@ fn latest_mtime<F: Fn(&std::path::Path) -> bool>(root: &std::path::Path, pred: F
             if name.starts_with('.') && name != ".env" { continue; }
             let ft = match entry.file_type() { Ok(t) => t, Err(_) => continue };
             if ft.is_dir() {
-                if is_skip(&name) { continue; }
+                if is_skip(&name) || is_user_skip(&name) { continue; }
                 stack.push(p);
-            } else if pred(&p) {
+            } else if pred(&p) && !is_user_skip(&name) {
                 if let Ok(meta) = entry.metadata() {
                     if let Ok(m) = meta.modified() {
                         latest = Some(latest.map_or(m, |cur| cur.max(m)));
@@ -1600,9 +1611,15 @@ async fn main() -> anyhow::Result<()> {
     // this gets assigned to the job, and Windows kills the entire job tree
     // when crush exits — Ctrl+C, panic, terminal closed, all of it. Closest
     // we can get to docker-on-Linux's clean teardown story.
+    let priority_class = cli.priority.as_deref().and_then(|p| match p.to_lowercase().as_str() {
+        "high" => Some(job_object::PRIORITY_HIGH),
+        "above-normal" | "above_normal" | "abovenormal" => Some(job_object::PRIORITY_ABOVE_NORMAL),
+        _ => None,
+    });
     let limits = job_object::Limits {
         memory_bytes: cli.memory,
         cpu_percent: cli.cpus.map(|c| (c * 100.0) as u8),
+        priority_class,
     };
     job_object::init_with_limits(limits);
     let data_dir = dirs_or_default();
