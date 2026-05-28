@@ -206,7 +206,6 @@ async fn handle(
 
     let io = TokioIo::new(stream);
     let (mut sender, conn) = match client_http1::Builder::new()
-        .keep_alive(true)
         .handshake::<_, Incoming>(io)
         .await
     {
@@ -267,8 +266,12 @@ async fn handle(
             let upstream_upgrade = hyper::upgrade::on(&mut upstream_resp);
             tokio::spawn(async move {
                 match tokio::try_join!(client_upgrade, upstream_upgrade) {
-                    Ok((mut client_io, mut upstream_io)) => {
-                        let _ = tokio::io::copy_bidirectional(&mut client_io, &mut upstream_io).await;
+                    Ok((client_io, upstream_io)) => {
+                        // hyper 1.x Upgraded implements hyper::rt::Read/Write;
+                        // TokioIo adapts that to tokio::io::AsyncRead/Write.
+                        let mut c = TokioIo::new(client_io);
+                        let mut u = TokioIo::new(upstream_io);
+                        let _ = tokio::io::copy_bidirectional(&mut c, &mut u).await;
                     }
                     Err(e) => {
                         eprintln!("[proxy] WebSocket upgrade failed: {e}");
