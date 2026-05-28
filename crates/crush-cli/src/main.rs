@@ -1263,6 +1263,32 @@ async fn record_urls(line: &str, sink: &UrlSink) {
 /// when installed via nvm/scoop/Volta). On Unix, executes directly via the
 /// program parts to preserve argv handling.
 fn spawn_shell(cmdline: &str, cwd: &std::path::Path, env: &[(String, String)]) -> tokio::process::Command {
+    // Expand `target/*.jar` ourselves — cmd.exe doesn't glob, and bash's
+    // globbing only triggers if the file actually exists at parse time.
+    // We pick the first jar that isn't `.original` (Spring Boot's repackage
+    // leaves the pre-repackage jar as `<name>.jar.original`).
+    let cmdline = if cmdline.contains("target/*.jar") {
+        let target = cwd.join("target");
+        let jar = std::fs::read_dir(&target).ok().and_then(|entries| {
+            entries.flatten()
+                .filter_map(|e| {
+                    let p = e.path();
+                    let name = p.file_name()?.to_str()?.to_string();
+                    if name.ends_with(".jar") && !name.ends_with(".jar.original") {
+                        Some(name)
+                    } else { None }
+                })
+                .next()
+        });
+        if let Some(jar) = jar {
+            cmdline.replace("target/*.jar", &format!("target/{}", jar))
+        } else {
+            cmdline.to_string()
+        }
+    } else {
+        cmdline.to_string()
+    };
+    let cmdline = cmdline.as_str();
     let mut cmd = if cfg!(target_os = "windows") {
         // cmd.exe parses `./foo` as command `.` with arg `/foo`. Rewrite a
         // leading `./` to `.\` so the binary resolves correctly. Forward
