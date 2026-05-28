@@ -204,7 +204,11 @@ pub fn parse_compose(path: &Path) -> anyhow::Result<ParsedCompose> {
                 continue;
             };
             
-            let is_dep = is_dep_image(&image) || !has_local_build(&svc.build);
+            // Only recognized infrastructure images count as deps. Services
+            // without a local build that aren't on the dep image list are
+            // almost always the user's own app variants (blue/green, canary,
+            // worker pools) — starting them via crush would be wrong.
+            let is_dep = is_dep_image(&image);
             if is_dep {
                 let ports = svc.ports.iter()
                     .filter_map(|p| parse_port_pair(p))

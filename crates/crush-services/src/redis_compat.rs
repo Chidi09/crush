@@ -10,10 +10,10 @@ use crate::binary_cache::{BinaryCache, BinarySpec, ArchiveType};
 #[cfg(target_os = "windows")]
 static GARNET_SPEC: BinarySpec = BinarySpec {
     service: "garnet",
-    version: "1.0.4",
-    url: "https://github.com/microsoft/garnet/releases/download/v1.0.4/GarnetServer-1.0.4-win-x64.exe",
+    version: "1.1.9",
+    url: "https://github.com/microsoft/garnet/releases/download/v1.1.9/win-x64-based-readytorun.zip",
     sha256: "",
-    archive_type: ArchiveType::Exe,
+    archive_type: ArchiveType::Zip,
 };
 
 #[cfg(not(target_os = "windows"))]
@@ -70,9 +70,15 @@ impl RedisCompatDriver {
     fn get_executable_path(&self, dest_dir: &Path) -> Option<PathBuf> {
         #[cfg(target_os = "windows")]
         {
-            let exe = dest_dir.join("garnet.exe");
-            if exe.exists() {
-                return Some(exe);
+            // Microsoft Garnet's win-x64 zip ships GarnetServer.exe at the
+            // archive root; older single-binary releases used garnet.exe.
+            for name in &["GarnetServer.exe", "garnet.exe"] {
+                let exe = dest_dir.join(name);
+                if exe.exists() { return Some(exe); }
+            }
+            // Some packaging variants nest the binary under a subdir.
+            if let Some(p) = self.find_binary_in_dir(dest_dir, "GarnetServer.exe") {
+                return Some(p);
             }
         }
         #[cfg(not(target_os = "windows"))]
