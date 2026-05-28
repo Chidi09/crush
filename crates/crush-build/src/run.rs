@@ -102,9 +102,27 @@ pub enum RunEvent {
     /// The app exited. `code` is the OS exit code (Windows: u32 truncated).
     Exited { code: i32 },
 
+    /// A pre-formatted output line. The CLI prints this verbatim for
+    /// byte-identical output. The GUI ignores this and uses the structured
+    /// variants instead.
+    Line {
+        text: String,
+        #[serde(default)]
+        stream: Stream,
+    },
+
     /// A non-fatal warning the UI can surface (e.g. "no response on :3000
     /// after 10s — app may still be starting").
     Warning { message: String },
+
+    /// Warm-run marker: the image was fresh AND deps are current, so the
+    /// CLI auto-proceeds past the prompt. CLI prints `↳ warm run — launching`.
+    WarmRun,
+
+    /// The node_modules / .venv / vendor / deps directory is newer than the
+    /// project's lockfile, so the install step was skipped. CLI prints
+    /// `✓ dependencies fresh — node_modules newer than lockfile (--rebuild to force)`.
+    DepsFresh,
 }
 
 /// Options that change the run flow's behaviour. Maps onto the CLI's
@@ -1027,9 +1045,7 @@ async fn run_project_inner(
     let should_run = if options.assume_yes {
         true
     } else if warm_run {
-        let _ = tx.send(RunEvent::Warning {
-            message: "warm run — launching".into(),
-        }).await;
+        let _ = tx.send(RunEvent::WarmRun).await;
         true
     } else {
         let answer = tokio::task::spawn_blocking(|| {
@@ -1476,6 +1492,12 @@ async fn run_project_inner(
     let is_install_only = (lang == "node" || lang == "typescript" || lang == "bun" || lang == "deno")
         && !install.is_empty() && !install.contains("&&");
     let node_skip = is_install_only && !options.rebuild && node_deps_fresh(project_root);
+
+    // The "dependencies fresh — node_modules newer than lockfile" line in
+    // the CLI fires exactly when node_skip caused us to drop the install.
+    if node_skip {
+        let _ = tx.send(RunEvent::DepsFresh).await;
+    }
 
     let install_cmd: Option<String> = if options.dev {
         if install.is_empty() {

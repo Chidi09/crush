@@ -1845,7 +1845,17 @@ async fn main() -> anyhow::Result<()> {
                             "✓".green().bold(),
                             "skipping pack".dimmed(),
                             "(--repack to force)".dimmed());
+                        // Mirror v0.7.72 output exactly: cached image
+                        // implies layered-deps cache and emits the
+                        // "crushed to image" headline at 0 MB.
+                        println!("   {} dependencies layer cached {}",
+                            "↳".cyan(),
+                            "(unchanged)".dimmed());
                         image_name = format!("{}:latest", project_name);
+                        println!(" {} crushed to image {} {}",
+                            "✓".green().bold(),
+                            image_name.bold(),
+                            "(0 MB)".dimmed());
                     }
 
                     RunEvent::ImagePacked { digest, size_bytes, duration_ms } => {
@@ -1950,6 +1960,16 @@ async fn main() -> anyhow::Result<()> {
 
                     RunEvent::Warning { message } => {
                         eprintln!("   {} {}", "⚠".yellow().bold(), message);
+                    }
+
+                    RunEvent::WarmRun => {
+                        println!("   {} warm run — launching", "↳".cyan());
+                    }
+
+                    RunEvent::DepsFresh => {
+                        println!("   {} dependencies fresh — node_modules newer than lockfile {}",
+                            "✓".green().bold(),
+                            "(--rebuild to force)".dimmed());
                     }
 
                     _ => {}
