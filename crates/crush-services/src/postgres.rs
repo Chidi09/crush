@@ -240,21 +240,19 @@ impl ServiceDriver for PostgresDriver {
             if let Ok(s) = status { if s.success() { break; } }
         }
 
-        // Ensure the database exists (idempotent CREATE DATABASE).
+        // Ensure the database exists. CREATE DATABASE can't run in a DO block
+        // or transaction, so we just try and ignore the "already exists" error.
         if let Some(ref db) = config.database {
-            let target_db = format!(
-                "SELECT 'CREATE DATABASE \"{d}\" OWNER \"{u}\"' \
-                 WHERE NOT EXISTS (SELECT FROM pg_database WHERE datname = '{d}')\\gexec",
-                d = db.replace('"', ""),
-                u = username.replace('"', ""),
-            );
+            let safe_db = db.replace('"', "");
+            let safe_user = username.replace('"', "");
+            let create = format!("CREATE DATABASE \"{}\" OWNER \"{}\"", safe_db, safe_user);
             let _ = tokio::process::Command::new(&psql)
                 .args([
                     "-h", "localhost",
                     "-p", &config.port.to_string(),
                     "-U", &username,
                     "-d", "postgres",
-                    "-c", &target_db,
+                    "-c", &create,
                 ])
                 .env("PGPASSWORD", &password)
                 .stdout(std::process::Stdio::null())
