@@ -49,18 +49,15 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
               class="border-crush-orange/50 bg-crush-orange/10 text-crush-orange hover:bg-crush-orange/20"
               >v0.7</span
             >
-            <span class="text-sm text-crush-textMuted">Native Windows dev runner</span>
+            <span class="text-sm text-crush-textMuted">Docker-Compatible Windows Dev Runner</span>
           </div>
           <h1
             class="text-4xl font-extrabold tracking-tight text-white sm:text-5xl lg:text-6xl text-balance"
           >
-            <span class="gradient-text">cd, type crush</span>,
-            Postgres &amp; deps just work
+            The perfect dev experience on Windows <span class="gradient-text">without the VM bloat</span>
           </h1>
           <p class="mt-6 text-lg leading-8 text-crush-textMuted max-w-2xl mx-auto">
-            No Docker. No WSL2. No daemon. Crush detects your stack, auto-starts the deps
-            (Postgres, Redis, pgvector — natively, no containers), runs your app, and kills
-            the whole process tree on Ctrl+C. Eject to a real Dockerfile when you ship.
+            Stop wasting GBs of RAM on WSL2 and Docker Desktop. Crush reads your compose configuration and runs your services natively using Windows Job Objects for zero-VM development. Full OCI registry support, native speed, and ejects to standard Dockerfiles when you ship.
           </p>
           <div class="mt-10 flex items-center justify-center gap-4 flex-wrap">
             <a
@@ -1339,11 +1336,11 @@ export default class IndexPage implements OnInit {
   ) {}
 
   ngOnInit(): void {
-    this.title.setTitle('Crush | cd, type crush — Postgres and deps just work on Windows');
+    this.title.setTitle('Crush — Native Windows Dev Runner & Lightweight Docker Alternative');
     this.meta.updateTag({
       name: 'description',
       content:
-        'Native Windows dev runner. Detects your stack, starts Postgres / Redis / pgvector natively (no containers, no WSL2), runs your app, and kills the whole tree on Ctrl+C. Eject to a real Dockerfile for production.',
+        'The perfect Windows dev experience without the VM overhead. Run docker-compose dependencies like Postgres & Redis natively with ultra-low RAM and 100% Docker compatibility.',
     });
     const script = this.document.createElement('script');
     script.type = 'application/ld+json';
