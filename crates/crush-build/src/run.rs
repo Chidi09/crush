@@ -213,74 +213,55 @@ pub fn read_build_history(data_dir: &std::path::Path) -> Vec<BuildRecord> {
 
 // ── Windows Job Object helpers ──────────────────────────────────────────
 // Lazy-init a kill-on-close job on first `assign_to_job` call.
-// Separate from the CLI's own job object (initialized with resource limits
-// for explicit CLI commands like `Watch`). The GUI / run_project flow gets
-// a basic job that ensures child processes die when crush exits.
+// Uses the same patterns as the CLI's own job_object module.
 
 #[cfg(target_os = "windows")]
-fn get_or_init_job() -> Option<isize> {
+mod job_imp {
     use std::sync::OnceLock;
-    use std::ptr;
-    use windows_sys::Win32::Foundation::*;
-    use windows_sys::Win32::System::Threading::*;
-    use windows_sys::Win32::System::JobObjects::*;
-    static JOB: OnceLock<isize> = OnceLock::new();
-    let handle = JOB.get_or_init(|| {
+    use windows_sys::Win32::Foundation::CloseHandle;
+    use windows_sys::Win32::System::JobObjects::{
+        AssignProcessToJobObject, CreateJobObjectW, SetInformationJobObject,
+        JobObjectExtendedLimitInformation, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
+        JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+    };
+
+    struct Job(windows_sys::Win32::Foundation::HANDLE);
+    unsafe impl Send for Job {}
+    unsafe impl Sync for Job {}
+    impl Drop for Job {
+        fn drop(&mut self) { unsafe { CloseHandle(self.0); } }
+    }
+
+    static JOB: OnceLock<Option<Job>> = OnceLock::new();
+
+    fn create() -> Option<Job> {
         unsafe {
-            let job = CreateJobObjectW(ptr::null(), ptr::null());
-            if job.is_invalid() { return 0; }
-            let mut info = JOBOBJECT_EXTENDED_LIMIT_INFORMATION {
-                BasicLimitInformation: JOBOBJECT_BASIC_LIMIT_INFORMATION {
-                    PerProcessUserTimeLimit: 0,
-                    PerJobUserTimeLimit: 0,
-                    LimitFlags: JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-                    MinimumWorkingSetSize: 0,
-                    MaximumWorkingSetSize: 0,
-                    ActiveProcessLimit: 0,
-                    Affinity: 0,
-                    PriorityClass: 0,
-                    SchedulingClass: 0,
-                },
-                IoInfo: IO_COUNTERS {
-                    ReadOperationCount: 0,
-                    WriteOperationCount: 0,
-                    OtherOperationCount: 0,
-                    ReadTransferCount: 0,
-                    WriteTransferCount: 0,
-                    OtherTransferCount: 0,
-                },
-                ProcessMemoryLimit: 0,
-                JobMemoryLimit: 0,
-                PeakProcessMemoryUsed: 0,
-                PeakJobMemoryUsed: 0,
-            };
+            let h = CreateJobObjectW(std::ptr::null(), std::ptr::null());
+            if h == 0 { return None; }
+            let mut info: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
             info.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            SetInformationJobObject(
-                job,
+            let ok = SetInformationJobObject(
+                h,
                 JobObjectExtendedLimitInformation,
                 &info as *const _ as *const _,
                 std::mem::size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
             );
-            job as isize
+            if ok == 0 { CloseHandle(h); return None; }
+            Some(Job(h))
         }
-    });
-    if *handle == 0 { None } else { Some(*handle) }
+    }
+
+    pub fn get() -> Option<windows_sys::Win32::Foundation::HANDLE> {
+        JOB.get_or_init(|| create()).as_ref().map(|j| j.0)
+    }
 }
 
 #[cfg(target_os = "windows")]
 pub fn assign_to_job(child: &tokio::process::Child) {
-    if let Some(handle) = get_or_init_job() {
-        if let Some(id) = child.id() {
-            unsafe {
-                use windows_sys::Win32::Foundation::*;
-                use windows_sys::Win32::System::Threading::*;
-                use windows_sys::Win32::System::JobObjects::AssignProcessToJobObject;
-                let proc_handle = OpenProcess(PROCESS_SET_QUOTA | PROCESS_TERMINATE, 0, id);
-                if !proc_handle.is_invalid() {
-                    AssignProcessToJobObject(handle as *mut _, proc_handle);
-                    CloseHandle(proc_handle);
-                }
-            }
+    use std::os::windows::io::AsRawHandle;
+    if let Some(job) = job_imp::get() {
+        unsafe {
+            let _ = AssignProcessToJobObject(job, child.as_raw_handle() as windows_sys::Win32::Foundation::HANDLE);
         }
     }
 }
@@ -549,13 +530,13 @@ pub fn node_deps_fresh(root: &Path) -> bool {
 
 /// Probe well-known doc/health URLs on a port. Framework-narrowed to
 /// reduce log noise.
-pub async fn probe_service_links(port: u16) -> Vec<(&'static str, String)> {
+pub async fn probe_service_links(port: u16) -> Vec<(String, String)> {
     probe_service_links_for(port, "").await
 }
 
 /// Framework-aware URL probing. Returns (label, url) pairs for each
 /// responding endpoint.
-pub async fn probe_service_links_for(port: u16, framework: &str) -> Vec<(&'static str, String)> {
+pub async fn probe_service_links_for(port: u16, framework: &str) -> Vec<(String, String)> {
     let client = match reqwest::Client::builder()
         .timeout(std::time::Duration::from_millis(700))
         .redirect(reqwest::redirect::Policy::limited(3))
@@ -613,7 +594,7 @@ pub async fn probe_service_links_for(port: u16, framework: &str) -> Vec<(&'stati
     for (path, label) in candidates {
         if let Ok(resp) = client.get(&url(path)).send().await {
             if resp.status().is_success() {
-                results.push((label, url(path)));
+                results.push((label.to_string(), url(path)));
             }
         }
     }
@@ -943,7 +924,8 @@ async fn run_project_inner(
 
     // ── 3. Stack Detection ────────────────
     let detector = StackDetector::new();
-    let stack = detector.detect(project_root).await?;
+    let project_root_buf = project_root.to_path_buf();
+    let stack = detector.detect(&project_root_buf).await?;
 
     if stack.language.starts_with("generic")
         && !project_root.join("entrypoint.sh").exists()
@@ -995,7 +977,7 @@ async fn run_project_inner(
             duration_ms: 0,
         }
     } else {
-        let o = engine.execute_layered_build(project_root, &stack).await?;
+        let o = engine.execute_layered_build(&project_root_buf, &stack).await?;
         let _ = std::fs::create_dir_all(hash_path.parent().unwrap());
         let _ = std::fs::write(&hash_path, &project_hash);
         o
@@ -1209,7 +1191,7 @@ async fn run_project_inner(
         }
 
         // Probe each ready service for URLs
-        let mut probed: Vec<(String, u16, Vec<(&'static str, String)>)> = Vec::new();
+        let mut probed: Vec<(String, u16, Vec<(String, String)>)> = Vec::new();
         for (name, port) in &ready {
             let links = probe_service_links(*port).await;
             probed.push((name.clone(), *port, links));
@@ -1446,7 +1428,7 @@ async fn run_project_inner(
             let exited: Option<(String, Option<i32>)>;
             loop {
                 let mut hit: Option<(usize, Option<i32>)> = None;
-                for (i, (_, c)) in children.iter_mut().enumerate() {
+                for (i, (_, _, c)) in children.iter_mut().enumerate() {
                     if let Ok(Some(status)) = c.try_wait() {
                         hit = Some((i, status.code()));
                         break;
@@ -1466,7 +1448,7 @@ async fn run_project_inner(
 
         // Cleanup
         if let Some(tx_p) = proxy_shutdown_tx { let _ = tx_p.send(()); }
-        for (_, mut c) in children { let _ = c.kill().await; }
+        for (_, _, mut c) in children { let _ = c.kill().await; }
         return Ok(());
     }
 
