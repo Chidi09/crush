@@ -310,6 +310,7 @@ impl CrushSpecDetector {
             services: vec![],
             dockerfile_found: None,
             base_image: String::new(),
+            generic_subdir_hint: vec![],
         })
     }
 
