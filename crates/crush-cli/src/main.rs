@@ -1820,7 +1820,22 @@ async fn main() -> anyhow::Result<()> {
             }
 
             // ── 5. Prompt + native run ────────────────────────────────────────────
+            // Skip the prompt when everything's cached: image fresh AND (for
+            // node-ish projects) node_modules newer than lockfile. The user
+            // obviously came here to run; asking "are you sure?" on a warm
+            // run is friction with no information value.
+            let lang_for_prompt = stack.language.split(' ').next().unwrap_or("").to_lowercase();
+            let is_node_like = matches!(lang_for_prompt.as_str(), "node" | "typescript" | "bun" | "deno");
+            // For node-like projects we additionally require node_modules to be
+            // current. For everything else (Go/Rust/Python/Java) image-fresh
+            // alone is enough — they don't have a per-run install step.
+            let warm_run = outcome.was_cached
+                && (!is_node_like || node_deps_fresh(&project_root));
+
             let should_run = if cli.no_interactive {
+                true
+            } else if warm_run {
+                println!("   {} warm run — launching", "↳".cyan());
                 true
             } else {
                 use std::io::Write;
