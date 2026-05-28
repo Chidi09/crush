@@ -865,7 +865,7 @@ async fn probe_service_links_for(port: u16, framework: &str) -> Vec<(&'static st
 
     let mut hits: Vec<(&'static str, String)> = Vec::new();
     let mut seen_labels = std::collections::HashSet::new();
-    for (path, label) in probes {
+    for &(path, label) in probes {
         if seen_labels.contains(label) { continue; }
         let url = format!("http://localhost:{}{}", port, path);
         if let Ok(resp) = client.get(&url).send().await {
@@ -896,7 +896,14 @@ async fn probe_service_links_for(port: u16, framework: &str) -> Vec<(&'static st
 
             if plausible {
                 seen_labels.insert(label);
-                hits.push((label, url));
+                let static_label: &'static str = match label {
+                    "docs" => "docs",
+                    "openapi" => "openapi",
+                    "health" => "health",
+                    "graphql" => "graphql",
+                    _ => "other",
+                };
+                hits.push((static_label, url));
             }
         }
     }
