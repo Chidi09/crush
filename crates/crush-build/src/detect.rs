@@ -886,28 +886,43 @@ impl CrushSpecDetector {
             } else { ("Java (Gradle)", 8080) }
         };
 
+        // Docker-shape heuristic (same rule used for Node frameworks):
+        // when no Dockerfile/compose is present we treat this as a dev
+        // workflow and prefer the framework's run-from-source entry —
+        // skips the 30-90s `mvn package` step and enables Spring Boot
+        // DevTools hot-restart if the dep is on the classpath.
+        let dev_shape = !Self::has_prod_docker_shape(root);
+
         let (build_cmd, entry_prod, dev_entry) = if has_maven {
-            (
-                "mvn -B package -Dmaven.test.skip=true".to_string(),
-                "java -jar target/*.jar".to_string(),
-                match framework {
-                    "Spring Boot" => "mvn spring-boot:run -Dmaven.test.skip=true".to_string(),
-                    "Quarkus" => "mvn quarkus:dev -Dmaven.test.skip=true".to_string(),
-                    "Micronaut" => "mvn mn:run -Dmaven.test.skip=true".to_string(),
-                    _ => "mvn spring-boot:run -Dmaven.test.skip=true".to_string(),
-                }
-            )
+            let mvn_dev = match framework {
+                "Spring Boot" => "mvn spring-boot:run -Dmaven.test.skip=true".to_string(),
+                "Quarkus" => "mvn quarkus:dev -Dmaven.test.skip=true".to_string(),
+                "Micronaut" => "mvn mn:run -Dmaven.test.skip=true".to_string(),
+                _ => "mvn spring-boot:run -Dmaven.test.skip=true".to_string(),
+            };
+            let mvn_prod_entry = "java -jar target/*.jar".to_string();
+            let mvn_prod_build = "mvn -B package -Dmaven.test.skip=true".to_string();
+            // No package step needed when we're going to spring-boot:run —
+            // the plugin compiles + runs in one shot.
+            let (build, entry) = if dev_shape {
+                ("mvn -B compile -Dmaven.test.skip=true".to_string(), mvn_dev.clone())
+            } else {
+                (mvn_prod_build, mvn_prod_entry)
+            };
+            (build, entry, mvn_dev)
         } else {
-            (
-                "gradle bootJar -x test".to_string(),
-                "java -jar build/libs/*.jar".to_string(),
-                match framework {
-                    "Spring Boot" => "gradle bootRun -x test".to_string(),
-                    "Quarkus" => "gradle quarkusDev -x test".to_string(),
-                    "Micronaut" => "gradle run -x test".to_string(),
-                    _ => "gradle bootRun -x test".to_string(),
-                }
-            )
+            let gradle_dev = match framework {
+                "Spring Boot" => "gradle bootRun -x test".to_string(),
+                "Quarkus" => "gradle quarkusDev -x test".to_string(),
+                "Micronaut" => "gradle run -x test".to_string(),
+                _ => "gradle bootRun -x test".to_string(),
+            };
+            let (build, entry) = if dev_shape {
+                ("gradle classes -x test".to_string(), gradle_dev.clone())
+            } else {
+                ("gradle bootJar -x test".to_string(), "java -jar build/libs/*.jar".to_string())
+            };
+            (build, entry, gradle_dev)
         };
 
         Some(Detection {
