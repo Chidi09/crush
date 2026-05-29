@@ -57,6 +57,26 @@ export interface DiagnosisResult {
   fix: string | null;
 }
 
+export interface ProjectInfo {
+  name: string;
+  runtime: string;
+  version: string;
+  framework: string | null;
+  port: number;
+  confidence: number;
+  is_monorepo: boolean;
+  env_required: string[];
+  service_count: number;
+}
+
+export interface SystemInfo {
+  version: string;
+  os: string;
+  arch: string;
+  data_dir: string;
+  disk_used_bytes: number;
+}
+
 export interface LogLine {
   ts: string;
   stream: string;
@@ -171,6 +191,14 @@ export function openUrl(url: string): Promise<void> {
 
 export function revealInExplorer(path: string): Promise<void> {
   return invoke('reveal_in_explorer', { path });
+}
+
+export function detectProject(path: string): Promise<ProjectInfo> {
+  return invoke('detect_project', { path });
+}
+
+export function systemInfo(): Promise<SystemInfo> {
+  return invoke('system_info');
 }
 
 // Event listeners

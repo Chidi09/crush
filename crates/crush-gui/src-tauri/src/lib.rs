@@ -52,6 +52,8 @@ pub fn run() {
             commands::platform::pick_project_directory,
             commands::platform::open_url,
             commands::platform::reveal_in_explorer,
+            commands::system::detect_project,
+            commands::system::system_info,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running Crush GUI");
