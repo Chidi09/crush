@@ -14,8 +14,9 @@ pub fn run() {
     tauri::Builder::default()
         .plugin(tauri_plugin_shell::init())
         .setup(move |app| {
-            let rt = tokio::runtime::Handle::current();
-            let store = rt.block_on(async {
+            // The setup closure does not run inside a Tokio runtime context, so
+            // `Handle::current()` would panic. Use Tauri's managed async runtime.
+            let store = tauri::async_runtime::block_on(async {
                 crush_image::ImageStore::new(data_dir.join("images"))
                     .await
                     .expect("Failed to initialize image store")
