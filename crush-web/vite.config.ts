@@ -6,7 +6,10 @@ export default defineConfig(({ mode }) => ({
   ssr: {
     noExternal: ['@spartan-ng/**', '@ng-icons/core', '@ng-icons/lucide', 'clsx'],
   },
-
+  build: {
+    outDir: 'dist/client',
+    emptyOutDir: true,
+  },
   plugins: [
     analog({
       ssr: false,
