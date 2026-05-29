@@ -22,22 +22,31 @@
   let refreshing = $state(false);
 
   let runningCount = $derived($containers.filter(c => c.status === 'running').length);
+  let pollId: ReturnType<typeof setInterval> | null = null;
 
   onMount(async () => {
     startPolling();
     const saved = localStorage.getItem(LAST_PROJECT);
     if (saved) { projectPath = saved; detectStack(saved); }
     await loadAll();
+    // keep services / images / build history live (cheap reads); disk walk stays on-demand
+    pollId = setInterval(refreshLight, 5000);
   });
-  onDestroy(() => stopPolling());
+  onDestroy(() => { stopPolling(); if (pollId) clearInterval(pollId); });
+
+  async function refreshLight() {
+    await Promise.allSettled([
+      refreshServices(),
+      refreshImages(),
+      api.listBuildHistory(8).then(b => builds = b).catch(() => {}),
+    ]);
+  }
 
   async function loadAll() {
     refreshing = true;
     await Promise.allSettled([
-      refreshServices(),
-      refreshImages(),
+      refreshLight(),
       api.systemInfo().then(s => sys = s).catch(() => {}),
-      api.listBuildHistory(8).then(b => builds = b).catch(() => {}),
     ]);
     refreshing = false;
   }
@@ -189,7 +198,7 @@
             <div class="list-row">
               <StatusBadge status="running" />
               <span class="lr-name">{svc.name}</span>
-              <span class="lr-kind">{svc.kind}</span>
+              <span class="lr-kind">{svc.kind} · {svc.project}</span>
               <span class="lr-port mono">:{svc.port}</span>
             </div>
           {/each}

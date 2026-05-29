@@ -1,7 +1,30 @@
 use serde::Serialize;
 use tauri::State;
-use std::collections::HashMap;
 use crate::state::AppState;
+
+/// A native service's state file persists its PID; verify the process is still
+/// alive so we don't report stale/dead services (e.g. a redis whose process was
+/// killed but whose state JSON was never cleaned up).
+#[cfg(target_os = "windows")]
+fn pid_alive(pid: u32) -> bool {
+    use windows_sys::Win32::System::Threading::{OpenProcess, GetExitCodeProcess, PROCESS_QUERY_LIMITED_INFORMATION};
+    use windows_sys::Win32::Foundation::CloseHandle;
+    const STILL_ACTIVE: u32 = 259;
+    if pid == 0 { return false; }
+    unsafe {
+        let h = OpenProcess(PROCESS_QUERY_LIMITED_INFORMATION, 0, pid);
+        if h == 0 { return false; }
+        let mut code: u32 = 0;
+        let ok = GetExitCodeProcess(h, &mut code);
+        CloseHandle(h);
+        ok != 0 && code == STILL_ACTIVE
+    }
+}
+
+#[cfg(not(target_os = "windows"))]
+fn pid_alive(pid: u32) -> bool {
+    pid != 0 && std::path::Path::new(&format!("/proc/{pid}")).exists()
+}
 
 #[derive(Debug, Clone, Serialize)]
 pub struct NativeServiceSummary {
@@ -30,6 +53,7 @@ pub async fn list_native_services(state: State<'_, AppState>) -> Result<Vec<Nati
                 use crush_services::load_native_state;
                 if let Some(state_data) = load_native_state(&services_dir.parent().unwrap_or(&services_dir), project) {
                     for svc in &state_data.services {
+                        if !pid_alive(svc.pid) { continue; }
                         let kind = match svc.kind {
                             crush_services::ServiceKind::Postgres => "postgres",
                             crush_services::ServiceKind::RedisCompat => "redis-compat",

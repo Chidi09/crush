@@ -43,14 +43,15 @@ pub async fn run_project(
         loop {
             select! {
                 Some(event) = events.recv() => {
-                    let kind = event_name(&event);
-                    let _ = emit_window.emit(&format!("run-event::{}::{}", run_id, kind), &event);
+                    // RunEvent is internally tagged (#[serde(tag = "kind")]), so the
+                    // frontend listens on one channel and switches on payload.kind.
+                    let _ = emit_window.emit(&format!("run-event::{}", run_id), &event);
                     if matches!(event, crush_build::run::RunEvent::Exited { .. }) {
                         break;
                     }
                 }
                 _ = &mut abort_rx => {
-                    let _ = emit_window.emit(&format!("run-event::{}::aborted", run_id), "");
+                    let _ = emit_window.emit(&format!("run-event::{}", run_id), serde_json::json!({ "kind": "exited", "code": 130 }));
                     break;
                 }
                 else => break,
@@ -65,6 +66,7 @@ pub async fn run_project(
     Ok(run_id.to_string())
 }
 
+#[allow(dead_code)]
 fn event_name(event: &crush_build::run::RunEvent) -> &'static str {
     match event {
         crush_build::run::RunEvent::Detected { .. } => "detected",
