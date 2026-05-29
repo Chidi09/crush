@@ -1,6 +1,8 @@
 use serde::Serialize;
 use tauri::{State, Window};
 use crate::state::AppState;
+use crate::events;
+use crush_types::StorageBackend;
 
 #[derive(Debug, Clone, Serialize)]
 pub struct ImageSummary {
@@ -30,10 +32,15 @@ pub async fn list_images(state: State<'_, AppState>) -> Result<Vec<ImageSummary>
 }
 
 #[tauri::command]
-pub async fn pull_image(_reference: String, _window: Window, _state: State<'_, AppState>) -> Result<String, String> {
-    // Registry pull with per-layer progress lands with the Images screen (v0.8.0 ship
-    // phase); the alpha is list-only. See CRUSH_V8_PLAN.md.
-    Err("Image pull is not yet implemented in this build".to_string())
+pub async fn pull_image(reference: String, window: Window, state: State<'_, AppState>) -> Result<String, String> {
+    // Real pull via the same StorageBackend the CLI uses — single source of truth.
+    // Per-blob streaming progress would need a callback hook in crush-image; until
+    // then we emit an indeterminate "in progress" then a completion the UI can show.
+    events::emit_pull_progress(&window, &reference, "downloading", 0, 0);
+    let img = state.store.pull_image(&reference).await.map_err(|e| e.to_string())?;
+    let layers = img.layers.len() as u64;
+    events::emit_pull_progress(&window, &reference, "complete", layers, layers);
+    Ok(img.id)
 }
 
 #[tauri::command]

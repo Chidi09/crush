@@ -52,6 +52,12 @@
   .dot-running {
     background: #4ade80;
     box-shadow: 0 0 6px rgba(74, 222, 128, 0.5);
+    animation: pulse 2s ease-in-out infinite;
+  }
+
+  @keyframes pulse {
+    0%, 100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.5); }
+    50% { box-shadow: 0 0 0 4px rgba(74, 222, 128, 0); }
   }
 
   .dot-exited {

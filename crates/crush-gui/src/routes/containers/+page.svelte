@@ -1,12 +1,18 @@
 <script lang="ts">
-  import { onMount, onDestroy } from 'svelte';
+  import { onMount, onDestroy, tick } from 'svelte';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
+  import Icon from '$lib/components/Icon.svelte';
   import * as api from '$lib/tauri';
   import { containers, loading, startPolling, stopPolling } from '$lib/stores/containers.svelte.ts';
-  import type { ContainerSummary } from '$lib/tauri';
+  import type { ContainerSummary, LogLine } from '$lib/tauri';
 
   let selectedContainer: ContainerSummary | null = $state(null);
   let searchQuery = $state('');
+  let logLines = $state<LogLine[]>([]);
+  let unlistenLogs: (() => void) | null = null;
+  let logEl: HTMLDivElement | undefined = $state();
+  let stopping = $state(false);
+  let copied = $state(false);
 
   let filtered = $derived(
     $containers.filter(c =>
@@ -15,18 +21,48 @@
   );
 
   onMount(() => startPolling());
-  onDestroy(() => stopPolling());
+  onDestroy(() => { stopPolling(); unlistenLogs?.(); });
 
-  function selectContainer(c: ContainerSummary) {
+  async function selectContainer(c: ContainerSummary) {
+    unlistenLogs?.();
     selectedContainer = c;
-    api.subscribeLogs(c.id).catch(() => {});
+    logLines = [];
+    copied = false;
+    try {
+      await api.subscribeLogs(c.id);
+      unlistenLogs = await api.onLogLine(c.id, async (line) => {
+        logLines = [...logLines.slice(-500), line];
+        await tick();
+        logEl?.scrollTo({ top: logEl.scrollHeight });
+      });
+    } catch { /* container may have no logs yet */ }
   }
 
   function closeDrawer() {
-    if (selectedContainer) {
-      api.unsubscribeLogs(selectedContainer.id).catch(() => {});
-    }
+    if (selectedContainer) api.unsubscribeLogs(selectedContainer.id).catch(() => {});
+    unlistenLogs?.();
+    unlistenLogs = null;
     selectedContainer = null;
+  }
+
+  async function stopContainer() {
+    if (!selectedContainer || stopping) return;
+    stopping = true;
+    try {
+      await api.stopContainer(selectedContainer.id);
+    } catch (e) {
+      console.error('Stop failed', e);
+    } finally {
+      stopping = false;
+    }
+  }
+
+  function copyId() {
+    if (!selectedContainer) return;
+    navigator.clipboard.writeText(selectedContainer.id).then(() => {
+      copied = true;
+      setTimeout(() => copied = false, 1500);
+    });
   }
 </script>
 
@@ -63,20 +99,43 @@
 </div>
 
 {#if selectedContainer}
-  <div class="drawer-overlay" onclick={closeDrawer}></div>
-  <div class="drawer">
+  <button class="drawer-overlay" onclick={closeDrawer} aria-label="Close"></button>
+  <div class="drawer animate-slide-up">
     <div class="drawer-header">
-      <h2>{selectedContainer.name}</h2>
+      <div class="drawer-title">
+        <StatusBadge status={selectedContainer.status} />
+        <h2>{selectedContainer.name}</h2>
+      </div>
       <button class="close-btn" onclick={closeDrawer}>×</button>
     </div>
     <div class="drawer-body">
-      <div class="drawer-info">
-        <span>Image: {selectedContainer.image}</span>
-        <span>Status: <StatusBadge status={selectedContainer.status} /></span>
-        <span>ID: {selectedContainer.id.substring(0, 12)}</span>
+      <div class="drawer-actions">
+        <button class="stop-action" onclick={stopContainer} disabled={stopping || selectedContainer.status !== 'running'}>
+          <Icon name="stop" size={12} fill /> {stopping ? 'Stopping…' : 'Stop'}
+        </button>
+        <button class="copy-id" onclick={copyId}>
+          <Icon name={copied ? 'check' : 'copy'} size={12} /> {copied ? 'Copied' : 'Copy ID'}
+        </button>
       </div>
-      <div class="crush-mono-panel logs-panel">
-        <p class="muted" style="padding: 12px;">Streaming logs… (open Logs page for full view)</p>
+
+      <dl class="info-grid">
+        <dt>Image</dt><dd class="mono">{selectedContainer.image}</dd>
+        <dt>ID</dt><dd class="mono">{selectedContainer.id.substring(0, 16)}</dd>
+        <dt>Uptime</dt><dd>{selectedContainer.uptime_secs ? formatDuration(selectedContainer.uptime_secs) : '—'}</dd>
+        {#if selectedContainer.ports.length > 0}
+          <dt>Ports</dt>
+          <dd class="mono">{#each selectedContainer.ports as p}<span class="port">{p.host_port}→{p.container_port}</span>{/each}</dd>
+        {/if}
+      </dl>
+
+      <div class="logs-head">Logs</div>
+      <div class="crush-mono-panel logs-panel" bind:this={logEl}>
+        {#each logLines as line}
+          <div class="dlog-line" class:stderr={line.stream === 'stderr'}>{line.text}</div>
+        {/each}
+        {#if logLines.length === 0}
+          <p class="muted" style="padding: 12px;">No log output yet…</p>
+        {/if}
       </div>
     </div>
   </div>
@@ -106,12 +165,29 @@
   .cell-image { font-family: var(--font-mono); font-size: 12px; color: var(--color-crush-text-muted); }
   .cell-up { font-family: var(--font-mono); font-size: 12px; color: var(--color-crush-text-muted); }
 
-  .drawer-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 40; }
-  .drawer { position: fixed; top: 0; right: 0; width: 400px; height: 100vh; background: var(--color-crush-dark); border-left: 1px solid var(--color-crush-border); z-index: 50; display: flex; flex-direction: column; }
+  .drawer-overlay { position: fixed; inset: 0; background: rgba(0,0,0,0.5); z-index: 40; border: none; padding: 0; cursor: default; }
+  .drawer { position: fixed; top: 0; right: 0; width: 440px; height: 100vh; background: var(--color-crush-dark); border-left: 1px solid var(--color-crush-border); z-index: 50; display: flex; flex-direction: column; }
   .drawer-header { display: flex; justify-content: space-between; align-items: center; padding: 16px 20px; border-bottom: 1px solid var(--color-crush-border); }
-  .drawer-header h2 { font-size: 16px; font-weight: 600; margin: 0; }
-  .close-btn { background: none; border: none; color: var(--color-crush-text-muted); font-size: 20px; cursor: pointer; }
-  .drawer-body { flex: 1; padding: 16px 20px; overflow-y: auto; }
-  .drawer-info { display: flex; flex-direction: column; gap: 6px; margin-bottom: 16px; font-size: 13px; color: var(--color-crush-text-muted); }
-  .logs-panel { height: 200px; }
+  .drawer-title { display: flex; align-items: center; gap: 10px; min-width: 0; }
+  .drawer-header h2 { font-size: 16px; font-weight: 600; margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .close-btn { background: none; border: none; color: var(--color-crush-text-muted); font-size: 20px; cursor: pointer; flex-shrink: 0; }
+  .drawer-body { flex: 1; padding: 16px 20px; overflow-y: auto; display: flex; flex-direction: column; min-height: 0; }
+
+  .drawer-actions { display: flex; gap: 8px; margin-bottom: 16px; }
+  .stop-action { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-crush-red); background: none; border: 1px solid rgba(239,68,68,0.3); border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+  .stop-action:hover:not(:disabled) { background: rgba(239,68,68,0.1); }
+  .stop-action:disabled { opacity: 0.4; cursor: not-allowed; }
+  .copy-id { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-crush-text-muted); background: none; border: 1px solid var(--color-crush-border); border-radius: 6px; padding: 6px 14px; cursor: pointer; }
+  .copy-id:hover { color: var(--color-crush-text); }
+
+  .info-grid { display: grid; grid-template-columns: 80px 1fr; gap: 6px 12px; margin: 0 0 20px; font-size: 13px; }
+  .info-grid dt { color: var(--color-crush-text-muted); text-transform: uppercase; letter-spacing: 0.05em; font-size: 11px; align-self: center; }
+  .info-grid dd { margin: 0; overflow: hidden; text-overflow: ellipsis; }
+  .info-grid .mono { font-family: var(--font-mono); font-size: 12px; }
+  .port { display: inline-block; font-family: var(--font-mono); font-size: 11px; background: rgba(224,85,64,0.08); border: 1px solid rgba(224,85,64,0.2); color: var(--color-crush-orange); border-radius: 6px; padding: 1px 8px; margin-right: 6px; }
+
+  .logs-head { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-crush-text-muted); margin-bottom: 8px; }
+  .logs-panel { flex: 1; min-height: 120px; overflow-y: auto; padding: 8px 12px; }
+  .dlog-line { color: var(--color-crush-text); padding: 1px 0; white-space: pre-wrap; word-break: break-all; }
+  .dlog-line.stderr { color: #fca5a5; }
 </style>
