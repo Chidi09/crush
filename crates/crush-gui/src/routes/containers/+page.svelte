@@ -24,7 +24,7 @@
   let previewPath = $state('/');
   let previewKey = $state(0); // bump to force iframe reload
 
-  let primaryPort = $derived(selected?.ports[0]?.host_port ?? null);
+  let primaryPort = $derived((selected as any)?.ports[0]?.host_port ?? null);
   let previewBase = $derived(primaryPort ? `http://localhost:${primaryPort}` : null);
   let previewUrl = $derived(previewBase ? `${previewBase}${previewPath}` : null);
 

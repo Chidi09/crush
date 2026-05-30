@@ -37,9 +37,9 @@ use crush_reliability::{
     VaultEngine
 };
 mod runtime;
+use runtime::StatelessEngine;
 mod job_object;
 use std::sync::Arc;
-use std::sync::atomic::{AtomicBool, Ordering};
 use crush_build::run::Stream;
 
 #[cfg(target_os = "windows")]
@@ -4353,7 +4353,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Deploy(args) => {
-            use crush_deploy::{DeploymentState, DeployProvider};
+            use crush_deploy::DeploymentState;
             use crush_build::parser::CrushfileParser;
 
             let root = std::env::current_dir()?;

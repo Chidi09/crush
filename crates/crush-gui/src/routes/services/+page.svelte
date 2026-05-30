@@ -103,7 +103,7 @@
             {#if svc.console_url}
               <div class="svc-conn">
                 <span class="conn-label">Console</span>
-                <a href={svc.console_url} target="_blank" onclick={(e) => { e.preventDefault(); api.openUrl(svc.console_url); }} class="console-link">
+                <a href={svc.console_url} target="_blank" onclick={(e) => { e.preventDefault(); api.openUrl(svc.console_url!); }} class="console-link">
                   Open Console ({svc.console_url})
                 </a>
               </div>

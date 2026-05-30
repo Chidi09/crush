@@ -8,7 +8,7 @@
   import { toast } from '$lib/stores/toast.svelte.ts';
   import type { DeploymentRecord, DeploymentDetail, GitInfo, BranchInfo } from '$lib/tauri';
 
-  let project = $derived($page.params.project);
+  let project = $derived($page.params.project || '');
 
   let list = $state<DeploymentRecord[]>([]);
   let loading = $state(true);
