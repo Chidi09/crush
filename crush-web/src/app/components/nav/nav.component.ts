@@ -1,9 +1,8 @@
-import { Component, signal, HostListener, inject } from '@angular/core';
+import { Component, signal, HostListener } from '@angular/core';
 import { RouterLink, RouterLinkActive } from '@angular/router';
 import { CommonModule } from '@angular/common';
 import { HlmButtonDirective } from '@spartan-ng/ui-button-helm';
 import { HlmIconComponent } from '@spartan-ng/ui-icon-helm';
-
 
 interface SearchItem {
   title: string;
@@ -293,8 +292,6 @@ const SEARCH_ITEMS: SearchItem[] = [
             >
           </a>
 
-
-
           <!-- Get Started Call to Action -->
           <a
             routerLink="/docs/getting-started"
@@ -382,7 +379,6 @@ const SEARCH_ITEMS: SearchItem[] = [
   `,
 })
 export class NavComponent {
-
   mobileOpen = signal(false);
   searchOpen = signal(false);
   searchQuery = signal('');

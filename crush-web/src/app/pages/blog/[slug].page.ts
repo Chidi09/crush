@@ -3,8 +3,6 @@ import { CommonModule } from '@angular/common';
 import { RouterLink, ActivatedRoute } from '@angular/router';
 import { Title, Meta } from '@angular/platform-browser';
 import { injectContent, MarkdownComponent } from '@analogjs/content';
-import { HlmButtonDirective } from '../ui/badge'; // reuse Spartan imports safely
-import { map } from 'rxjs/operators';
 
 export interface PostAttributes {
   title: string;
@@ -56,16 +54,26 @@ export interface PostAttributes {
               <span class="text-xs text-crush-textMuted">{{ post.attributes.readingTime }}</span>
             </div>
 
-            <h1 class="text-3xl font-extrabold text-white tracking-tight sm:text-4xl lg:text-5xl leading-tight mb-8">
+            <h1
+              class="text-3xl font-extrabold text-white tracking-tight sm:text-4xl lg:text-5xl leading-tight mb-8"
+            >
               {{ post.attributes.title }}
             </h1>
 
             <!-- Author & Metadata Block -->
-            <div class="flex items-center justify-between border-y border-crush-border/30 py-4 flex-wrap gap-4">
+            <div
+              class="flex items-center justify-between border-y border-crush-border/30 py-4 flex-wrap gap-4"
+            >
               <div class="flex items-center gap-3">
-                <div class="h-10 w-10 rounded-full border border-crush-border overflow-hidden bg-crush-surface/50 flex items-center justify-center">
+                <div
+                  class="h-10 w-10 rounded-full border border-crush-border overflow-hidden bg-crush-surface/50 flex items-center justify-center"
+                >
                   @if (post.attributes.authorImage) {
-                    <img [src]="post.attributes.authorImage" [alt]="post.attributes.author" class="h-full w-full object-cover" />
+                    <img
+                      [src]="post.attributes.authorImage"
+                      [alt]="post.attributes.author"
+                      class="h-full w-full object-cover"
+                    />
                   } @else {
                     <span class="text-sm font-bold text-crush-orange">C</span>
                   }
@@ -84,7 +92,9 @@ export interface PostAttributes {
                   title="Share on Twitter"
                 >
                   <svg viewBox="0 0 24 24" class="h-4 w-4 fill-current">
-                    <path d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z" />
+                    <path
+                      d="M18.244 2.25h3.308l-7.227 8.26 8.502 11.24H16.17l-5.214-6.817L4.99 21.75H1.68l7.73-8.835L1.254 2.25H8.08l4.713 6.231zm-1.161 17.52h1.833L7.084 4.126H5.117z"
+                    />
                   </svg>
                 </button>
                 <button
@@ -108,75 +118,83 @@ export interface PostAttributes {
           </header>
 
           <!-- Glassmorphism Article Container -->
-          <div class="prose prose-invert max-w-none rounded-2xl border border-crush-border/50 bg-crush-surface/10 p-6 sm:p-10 shadow-2xl backdrop-blur-sm relative mb-12">
-            <analog-markdown [content]="post.content" class="block markdown-body text-crush-text leading-relaxed font-sans text-base sm:text-lg"></analog-markdown>
+          <div
+            class="prose prose-invert max-w-none rounded-2xl border border-crush-border/50 bg-crush-surface/10 p-6 sm:p-10 shadow-2xl backdrop-blur-sm relative mb-12"
+          >
+            <analog-markdown
+              [content]="post.content"
+              class="block markdown-body text-crush-text leading-relaxed font-sans text-base sm:text-lg"
+            ></analog-markdown>
           </div>
         }
       </div>
     </article>
   `,
-  styles: [`
-    :host ::ng-deep .markdown-body {
-      color: #94a3b8; /* text-slate-400 */
-      font-size: 1.0625rem;
-      line-height: 1.8;
-    }
-    :host ::ng-deep .markdown-body h2 {
-      color: #ffffff;
-      font-weight: 700;
-      font-size: 1.5rem;
-      margin-top: 2rem;
-      margin-bottom: 1rem;
-    }
-    :host ::ng-deep .markdown-body h3 {
-      color: #ffffff;
-      font-weight: 700;
-      font-size: 1.25rem;
-      margin-top: 1.5rem;
-      margin-bottom: 0.75rem;
-    }
-    :host ::ng-deep .markdown-body p {
-      margin-bottom: 1.25rem;
-    }
-    :host ::ng-deep .markdown-body code {
-      color: #f97316; /* orange-500 */
-      background: rgba(249, 115, 22, 0.1);
-      padding: 0.2rem 0.4rem;
-      border-radius: 0.25rem;
-      font-family: 'JetBrains Mono', monospace;
-      font-size: 0.875em;
-    }
-    :host ::ng-deep .markdown-body pre {
-      background: #0f172a; /* slate-900 */
-      border: 1px solid rgba(255, 255, 255, 0.1);
-      border-radius: 0.75rem;
-      padding: 1.25rem;
-      margin: 1.5rem 0;
-      overflow-x: auto;
-    }
-    :host ::ng-deep .markdown-body pre code {
-      color: #f8fafc;
-      background: none;
-      padding: 0;
-      font-size: 0.875rem;
-    }
-    :host ::ng-deep .markdown-body ul, :host ::ng-deep .markdown-body ol {
-      margin-left: 1.5rem;
-      margin-bottom: 1.25rem;
-      list-style-type: disc;
-    }
-    :host ::ng-deep .markdown-body li {
-      margin-bottom: 0.5rem;
-    }
-    :host ::ng-deep .markdown-body blockquote {
-      border-left: 4px solid #f97316;
-      background: rgba(249, 115, 22, 0.05);
-      padding: 0.75rem 1.25rem;
-      margin: 1.5rem 0;
-      border-radius: 0 0.5rem 0.5rem 0;
-      color: #cbd5e1;
-    }
-  `]
+  styles: [
+    `
+      :host ::ng-deep .markdown-body {
+        color: #94a3b8; /* text-slate-400 */
+        font-size: 1.0625rem;
+        line-height: 1.8;
+      }
+      :host ::ng-deep .markdown-body h2 {
+        color: #ffffff;
+        font-weight: 700;
+        font-size: 1.5rem;
+        margin-top: 2rem;
+        margin-bottom: 1rem;
+      }
+      :host ::ng-deep .markdown-body h3 {
+        color: #ffffff;
+        font-weight: 700;
+        font-size: 1.25rem;
+        margin-top: 1.5rem;
+        margin-bottom: 0.75rem;
+      }
+      :host ::ng-deep .markdown-body p {
+        margin-bottom: 1.25rem;
+      }
+      :host ::ng-deep .markdown-body code {
+        color: #f97316; /* orange-500 */
+        background: rgba(249, 115, 22, 0.1);
+        padding: 0.2rem 0.4rem;
+        border-radius: 0.25rem;
+        font-family: 'JetBrains Mono', monospace;
+        font-size: 0.875em;
+      }
+      :host ::ng-deep .markdown-body pre {
+        background: #0f172a; /* slate-900 */
+        border: 1px solid rgba(255, 255, 255, 0.1);
+        border-radius: 0.75rem;
+        padding: 1.25rem;
+        margin: 1.5rem 0;
+        overflow-x: auto;
+      }
+      :host ::ng-deep .markdown-body pre code {
+        color: #f8fafc;
+        background: none;
+        padding: 0;
+        font-size: 0.875rem;
+      }
+      :host ::ng-deep .markdown-body ul,
+      :host ::ng-deep .markdown-body ol {
+        margin-left: 1.5rem;
+        margin-bottom: 1.25rem;
+        list-style-type: disc;
+      }
+      :host ::ng-deep .markdown-body li {
+        margin-bottom: 0.5rem;
+      }
+      :host ::ng-deep .markdown-body blockquote {
+        border-left: 4px solid #f97316;
+        background: rgba(249, 115, 22, 0.05);
+        padding: 0.75rem 1.25rem;
+        margin: 1.5rem 0;
+        border-radius: 0 0.5rem 0.5rem 0;
+        color: #cbd5e1;
+      }
+    `,
+  ],
 })
 export default class BlogPostPage implements OnInit {
   private route = inject(ActivatedRoute);
@@ -186,6 +204,7 @@ export default class BlogPostPage implements OnInit {
   copied = false;
 
   readonly post$ = injectContent<PostAttributes>({
+    param: 'slug',
     subdirectory: 'blog',
   });
 
@@ -196,11 +215,11 @@ export default class BlogPostPage implements OnInit {
         const titleStr = `${post.attributes.title} — Crush`;
         this.title.setTitle(titleStr);
         this.meta.updateTag({ name: 'description', content: post.attributes.excerpt });
-        
+
         // OpenGraph
         this.meta.updateTag({ property: 'og:title', content: titleStr });
         this.meta.updateTag({ property: 'og:description', content: post.attributes.excerpt });
-        
+
         // Twitter
         this.meta.updateTag({ name: 'twitter:title', content: titleStr });
         this.meta.updateTag({ name: 'twitter:description', content: post.attributes.excerpt });
