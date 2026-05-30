@@ -1,12 +1,14 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import StatusBadge from '$lib/components/StatusBadge.svelte';
   import TerminalPane from '$lib/components/TerminalPane.svelte';
+  import RunOverview from '$lib/components/RunOverview.svelte';
+  import { goto } from '$app/navigation';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import Icon from '$lib/components/Icon.svelte';
-  import Sparkline from '$lib/components/Sparkline.svelte';
+  import TechIcon from '$lib/components/TechIcon.svelte';
+  import { stackEffect } from '$lib/stack.ts';
   import * as api from '$lib/tauri';
-  import type { ProjectInfo, SystemInfo, BuildSummary } from '$lib/tauri';
+  import type { ProjectInfo, SystemInfo, BuildSummary, ResourceUsage, GitInfo } from '$lib/tauri';
   import { containers, startPolling, stopPolling } from '$lib/stores/containers.svelte.ts';
   import { services, refreshServices } from '$lib/stores/services.svelte.ts';
   import { images, refreshImages } from '$lib/stores/images.svelte.ts';
@@ -15,44 +17,84 @@
 
   let projectPath = $state<string | null>(null);
   let project = $state<ProjectInfo | null>(null);
+  let git = $state<GitInfo | null>(null);
   let detecting = $state(false);
   let sys = $state<SystemInfo | null>(null);
+  let res = $state<ResourceUsage | null>(null);
   let builds = $state<BuildSummary[]>([]);
   let activeRunId = $state<string | null>(null);
-  let stoppingAll = $state(false);
+  let runStatus = $state<'running' | 'exited' | 'failed'>('running');
+  let runPort = $state<number | null>(null);
+  let runUrl = $state<string | null>(null);
   let refreshing = $state(false);
 
+  // per-run deployment record state
+  let runStartMs = 0;
+  let buildLogBuf: string[] = [];
+  let runtimeLogBuf: string[] = [];
+  function openProjectPage(name: string) { goto(`/projects/${encodeURIComponent(name)}`); }
+
   let runningCount = $derived($containers.filter(c => c.status === 'running').length);
+  // Stack-aware glow for the Run buttons (rainbow for turbo/fast, brand for fullstack)
+  let fx = $derived(stackEffect(project?.stack_kind, project?.framework));
+
+  // Summary-card previews (top few items per resource).
+  let runningContainers = $derived($containers.filter(c => c.status === 'running'));
+  let topImages = $derived([...$images].sort((a, b) => b.size_bytes - a.size_bytes).slice(0, 3));
+  // A docker tag like "library/redis:7-alpine" → "redis" so TechIcon can match.
+  function imgTech(tag: string): string { return (tag.split(':')[0].split('/').pop() ?? tag); }
   let pollId: ReturnType<typeof setInterval> | null = null;
 
-  // rolling histories powering the stat-card sparklines (sampled live)
-  let hC = $state<number[]>([]);
-  let hI = $state<number[]>([]);
-  let hS = $state<number[]>([]);
-  let hD = $state<number[]>([]);
+  // Recent builds grouped by project (one row per project: latest state + count)
+  type ProjectBuilds = { project: string; language: string; framework: string; latest: BuildSummary; count: number };
+  function groupByProject(list: BuildSummary[]): ProjectBuilds[] {
+    const map = new Map<string, ProjectBuilds>();
+    for (const b of list) {
+      const g = map.get(b.project_name);
+      if (!g) {
+        map.set(b.project_name, { project: b.project_name, language: b.language, framework: b.framework, latest: b, count: 1 });
+      } else {
+        g.count++;
+        if (b.timestamp_ms > g.latest.timestamp_ms) { g.latest = b; g.language = b.language; g.framework = b.framework; }
+      }
+    }
+    return [...map.values()].sort((a, b) => b.latest.timestamp_ms - a.latest.timestamp_ms);
+  }
+  const PER_PAGE = 6;
+  let buildPage = $state(0);
+  let projects = $derived(groupByProject(builds));
+  let pageCount = $derived(Math.max(1, Math.ceil(projects.length / PER_PAGE)));
+  let pagedProjects = $derived(projects.slice(buildPage * PER_PAGE, buildPage * PER_PAGE + PER_PAGE));
+
+  // Disk breakdown → segmented usage bar
+  const SEG_COLORS = ['#e05540', '#22d3ee', '#4ade80', '#c084fc', '#eab308', '#6b6b80'];
 
   onMount(async () => {
     startPolling();
+    const autorun = sessionStorage.getItem('crush:autorun');
     const saved = localStorage.getItem(LAST_PROJECT);
-    if (saved) { projectPath = saved; detectStack(saved); }
-    await loadAll();
-    sample();
-    pollId = setInterval(async () => { await refreshLight(); sample(); }, 5000);
+    if (autorun) {
+      // Branch preview handed off from the project page: detect + run it here
+      // so the dashboard owns the run and shows its live preview + terminal.
+      sessionStorage.removeItem('crush:autorun');
+      projectPath = autorun;
+      await detectStack(autorun);
+      await loadAll();
+      runProject();
+    } else {
+      if (saved) { projectPath = saved; detectStack(saved); }
+      await loadAll();
+    }
+    pollId = setInterval(async () => { await refreshLight(); }, 5000);
   });
   onDestroy(() => { stopPolling(); if (pollId) clearInterval(pollId); });
-
-  function sample() {
-    hC = [...hC.slice(-23), runningCount];
-    hI = [...hI.slice(-23), $images.length];
-    hS = [...hS.slice(-23), $services.length];
-    hD = [...hD.slice(-23), sys?.disk_used_bytes ?? 0];
-  }
 
   async function refreshLight() {
     await Promise.allSettled([
       refreshServices(),
       refreshImages(),
       api.listBuildHistory(20).then(b => builds = b.slice().reverse()).catch(() => {}),
+      api.systemResources().then(r => res = r).catch(() => {}),
     ]);
   }
   async function loadAll() {
@@ -62,8 +104,11 @@
   }
 
   async function detectStack(path: string) {
-    detecting = true; project = null;
-    try { project = await api.detectProject(path); } catch (e) { console.error(e); } finally { detecting = false; }
+    detecting = true; project = null; git = null;
+    try {
+      project = await api.detectProject(path);
+      git = await api.gitInfo(path);
+    } catch (e) { console.error(e); } finally { detecting = false; }
   }
   async function openProject() {
     const p = await api.pickProjectDirectory();
@@ -71,15 +116,57 @@
   }
   async function runProject() {
     if (!projectPath) { await openProject(); return; }
-    try { activeRunId = await api.runProject(projectPath); } catch (e) { console.error(e); }
+    runStatus = 'running';
+    runPort = null;
+    runUrl = null;
+    buildLogBuf = []; runtimeLogBuf = [];
+    runStartMs = Date.now();
+    try {
+      activeRunId = await api.runProject(projectPath);
+      saveDeployment(); // initial 'running' record
+    } catch (e) { console.error(e); }
   }
-  async function stopAllServices() {
-    stoppingAll = true;
-    try { await Promise.allSettled($services.map(s => api.stopNativeService(s.name, s.project))); await refreshServices(); }
-    finally { stoppingAll = false; }
+  function stopRun() {
+    if (activeRunId) api.abortRun(activeRunId).catch(console.error);
+  }
+
+  function deployStatus(): 'running' | 'ready' | 'failed' {
+    return runStatus === 'running' ? 'running' : runStatus === 'failed' ? 'failed' : 'ready';
+  }
+  function saveDeployment() {
+    if (!activeRunId || !projectPath) return;
+    const name = project?.name ?? baseName(projectPath);
+    const ended = runStatus === 'running' ? null : Date.now();
+    api.saveDeployment({
+      id: activeRunId,
+      project: name,
+      project_path: projectPath,
+      created_ms: runStartMs,
+      ended_ms: ended,
+      duration_ms: ended ? ended - runStartMs : 0,
+      status: deployStatus(),
+      port: runPort,
+      runtime: project?.runtime ?? null,
+      framework: project?.framework ?? null,
+      build_log: buildLogBuf.join('\n'),
+      runtime_log: runtimeLogBuf.join('\n'),
+      has_screenshot: false,
+      branch: git?.branch ?? undefined,
+      commit_short: git?.head?.short ?? undefined,
+      commit_message: git?.head?.message ?? undefined,
+    }).catch(console.error);
+  }
+  function onRunStatus(s: 'running' | 'exited' | 'failed') {
+    runStatus = s;
+    saveDeployment();
+  }
+  function onRunLog(phase: 'build' | 'runtime', text: string) {
+    (phase === 'build' ? buildLogBuf : runtimeLogBuf).push(text);
   }
   function revealData() { if (sys) api.revealInExplorer(sys.data_dir).catch(() => {}); }
-  function closeTerminal() { activeRunId = null; }
+  function go(path: string) { goto(path); }
+  function goKey(e: KeyboardEvent, path: string) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goto(path); } }
+  function closeTerminal() { activeRunId = null; runPort = null; runStatus = 'running'; }
 
   function fmtSize(b: number): string {
     if (!b) return '0 B';
@@ -95,30 +182,46 @@
     return `${Math.floor(s / 86400)}d ago`;
   }
   function fmtMs(ms: number): string { return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(1)}s`; }
-  function fmtUptime(secs: number): string {
-    if (secs < 60) return `${secs}s`;
-    if (secs < 3600) return `${Math.floor(secs / 60)}m`;
-    return `${Math.floor(secs / 3600)}h ${Math.floor((secs % 3600) / 60)}m`;
-  }
   function baseName(p: string): string { return p.split(/[\\/]/).filter(Boolean).pop() ?? p; }
 </script>
 
 <div class="dashboard">
   <header class="hero">
     <div class="hero-left">
-      <svg class="logo" width="22" height="22" viewBox="0 0 32 32" aria-hidden="true"><path d="M16 3 L28 16 L16 29 L4 16 Z" fill="var(--color-crush-orange)"/></svg>
+      <img class="logo" src="/logo.png" alt="Crush" width="84" height="56" />
       <span class="wordmark">crush</span>
       {#if sys}<span class="ver-badge">v{sys.version}</span><span class="os-badge">{sys.os}/{sys.arch}</span>{/if}
     </div>
     <div class="hero-right">
       <span class="running-ind"><span class="rdot" class:live={runningCount > 0}></span>{runningCount} running</span>
       <button class="ghost-btn" onclick={loadAll} title="Refresh" class:spinning={refreshing}><Icon name="refresh" size={14} /></button>
-      <button class="run-btn" onclick={runProject}>crush <Icon name="play" size={12} fill /></button>
     </div>
   </header>
 
   {#if activeRunId}
-    <div class="animate-slide-up"><TerminalPane runId={activeRunId} onClose={closeTerminal} /></div>
+    <div class="run-stack animate-slide-up">
+      <RunOverview
+        status={runStatus}
+        port={runPort}
+        url={runUrl}
+        framework={project?.framework ?? null}
+        runtime={project?.runtime ?? null}
+        projectName={project?.name ?? (projectPath ? baseName(projectPath) : 'project')}
+        projectPath={projectPath ?? ''}
+        deploymentId={activeRunId}
+        branch={git?.branch ?? null}
+        commit_short={git?.head?.short ?? null}
+        onStop={stopRun}
+        onClose={closeTerminal}
+      />
+      <TerminalPane
+        runId={activeRunId}
+        onStatus={onRunStatus}
+        onPort={(p) => { runPort = p; saveDeployment(); }}
+        onUrl={(u) => { runUrl = u; }}
+        onLog={onRunLog}
+      />
+    </div>
   {/if}
 
   <!-- Current project -->
@@ -132,19 +235,65 @@
         </div>
         <div class="proj-actions">
           <button class="ghost-btn sm" onclick={openProject}>Change</button>
-          <button class="btn-primary" onclick={runProject}>Run <Icon name="play" size={13} fill /></button>
+          <button
+            class="btn-primary"
+            class:fx-rainbow={fx.kind === 'turbo'}
+            class:fx-rainbow-soft={fx.kind === 'fullstack'}
+            class:fx-rainbow-faint={fx.kind === 'spa'}
+            onclick={runProject}
+          >Run <Icon name="play" size={13} fill /></button>
         </div>
       </div>
       {#if detecting}
         <div class="chips"><span class="chip skel">detecting stack…</span></div>
       {:else if project}
         <div class="chips">
-          <span class="chip accent">{project.runtime}{project.version ? ` ${project.version}` : ''}</span>
-          {#if project.framework}<span class="chip">{project.framework}</span>{/if}
+          <span class="chip accent"><TechIcon name={project.runtime} size={13} />{project.runtime}{project.version ? ` ${project.version}` : ''}</span>
+          {#if project.framework}<span class="chip"><TechIcon name={project.framework} size={13} />{project.framework}</span>{/if}
           <span class="chip">:{project.port}</span>
           {#if project.is_monorepo}<span class="chip">monorepo · {project.service_count} svc</span>{/if}
           {#if project.env_required.length}<span class="chip muted-chip">{project.env_required.length} env</span>{/if}
           <span class="chip muted-chip">{Math.round(project.confidence * 100)}% match</span>
+          {#if fx.kind === 'turbo'}<span class="chip fx-chip-rainbow">⚡ {fx.label}</span>
+          {:else if fx.kind === 'fullstack'}<span class="chip fx-chip-grad">✦ {fx.label}</span>
+          {:else if fx.kind === 'spa'}<span class="chip fx-chip-grad faint">○ {fx.label}</span>{/if}
+        </div>
+        {#if project.external_services && project.external_services.length > 0}
+          <div class="uses-row">
+            <span class="uses-label">Uses</span>
+            <div class="chips inline-chips">
+              {#each project.external_services as ext}
+                <span class="chip ext-chip" title={`${ext.source_var} detected`}>
+                  <TechIcon name={ext.name} size={13} />
+                  {ext.name}
+                </span>
+              {/each}
+            </div>
+          </div>
+        {/if}
+      {/if}
+      
+      {#if git && git.is_repo}
+        <div class="git-source mt-4">
+          <div class="git-source-header">
+            {#if git.parsed_github}
+              <button class="ghost-btn sm" onclick={() => api.openUrl(git?.remote_url || '')} title="Open GitHub">
+                <Icon name="github" size={13} fill /> {git.parsed_github.owner}/{git.parsed_github.repo}
+              </button>
+            {/if}
+            <div class="chip accent branch-chip"><Icon name="branch" size={13} /> {git.branch}</div>
+            <div class="chips">
+              {#if git.dirty_count > 0}<span class="chip">dirty: {git.dirty_count}</span>{/if}
+              {#if git.ahead && git.ahead > 0}<span class="chip">↑ {git.ahead}</span>{/if}
+              {#if git.behind && git.behind > 0}<span class="chip">↓ {git.behind}</span>{/if}
+            </div>
+          </div>
+          {#if git.head}
+            <div class="git-commit mt-2">
+              <span class="strong">{git.head.message}</span>
+              <span class="dim sm">— {git.head.author} · {git.head.committed_rel}</span>
+            </div>
+          {/if}
         </div>
       {/if}
     {:else}
@@ -152,45 +301,105 @@
     {/if}
   </div>
 
-  <!-- Stat cards with sparklines -->
-  <div class="stats">
-    <div class="crush-card stat">
-      <div class="stat-top"><div class="stat-icon"><Icon name="containers" size={16} /></div><span class="stat-label">Containers</span><span class="stat-value">{runningCount}</span></div>
-      <div class="stat-spark"><Sparkline data={hC} color="#e05540" height={38} /></div>
+  <!-- Summary cards: each shows a live count + a peek at the top items -->
+  <div class="stats stagger">
+    <div class="crush-card sumcard" role="button" tabindex="0" onclick={() => go('/containers')} onkeydown={(e) => goKey(e, '/containers')}>
+      <div class="sum-head">
+        <div class="stat-icon"><Icon name="containers" size={15} /></div>
+        <span class="stat-label">Containers</span>
+        <span class="sum-count">{runningCount}{#if $containers.length > runningCount}<span class="sum-tot">/{$containers.length}</span>{/if}</span>
+      </div>
+      <div class="sum-list">
+        {#each runningContainers.slice(0, 3) as c}
+          <div class="sum-row"><span class="sd live"></span><span class="sum-name">{c.name}</span><span class="sum-meta mono">{c.ports.length ? `:${c.ports[0].host_port}` : '—'}</span></div>
+        {:else}
+          <div class="sum-empty">No running containers</div>
+        {/each}
+        {#if runningContainers.length > 3}<div class="sum-more">+{runningContainers.length - 3} more</div>{/if}
+      </div>
     </div>
-    <div class="crush-card stat">
-      <div class="stat-top"><div class="stat-icon cyan"><Icon name="images" size={16} /></div><span class="stat-label">Images</span><span class="stat-value">{$images.length}</span></div>
-      <div class="stat-spark"><Sparkline data={hI} color="#22d3ee" height={38} /></div>
+
+    <div class="crush-card sumcard" role="button" tabindex="0" onclick={() => go('/images')} onkeydown={(e) => goKey(e, '/images')}>
+      <div class="sum-head">
+        <div class="stat-icon cyan"><Icon name="images" size={15} /></div>
+        <span class="stat-label">Images</span>
+        <span class="sum-count">{$images.length}</span>
+      </div>
+      <div class="sum-list">
+        {#each topImages as img}
+          <div class="sum-row"><TechIcon name={imgTech(img.tag)} size={14} /><span class="sum-name mono">{img.tag}</span><span class="sum-meta mono">{fmtSize(img.size_bytes)}</span></div>
+        {:else}
+          <div class="sum-empty">No images pulled</div>
+        {/each}
+        {#if $images.length > 3}<div class="sum-more">+{$images.length - 3} more</div>{/if}
+      </div>
     </div>
-    <div class="crush-card stat">
-      <div class="stat-top"><div class="stat-icon green"><Icon name="services" size={16} /></div><span class="stat-label">Services</span><span class="stat-value">{$services.length}</span></div>
-      <div class="stat-spark"><Sparkline data={hS} color="#4ade80" height={38} /></div>
+
+    <div class="crush-card sumcard" role="button" tabindex="0" onclick={() => go('/services')} onkeydown={(e) => goKey(e, '/services')}>
+      <div class="sum-head">
+        <div class="stat-icon green"><Icon name="services" size={15} /></div>
+        <span class="stat-label">Services</span>
+        <span class="sum-count">{$services.length}</span>
+      </div>
+      <div class="sum-list">
+        {#each $services.slice(0, 3) as svc}
+          <div class="sum-row"><TechIcon name={svc.kind || svc.name} size={14} /><span class="sum-name">{svc.name}</span><span class="sum-meta mono">:{svc.port}</span></div>
+        {:else}
+          <div class="sum-empty">No native services</div>
+        {/each}
+        {#if $services.length > 3}<div class="sum-more">+{$services.length - 3} more</div>{/if}
+      </div>
     </div>
-    <div class="crush-card stat">
-      <div class="stat-top"><div class="stat-icon purple"><Icon name="disk" size={16} /></div><span class="stat-label">Disk used</span><span class="stat-value sm">{sys ? fmtSize(sys.disk_used_bytes) : '—'}</span></div>
-      <div class="stat-spark"><Sparkline data={hD} color="#c084fc" height={38} /></div>
+  </div>
+
+  <div class="crush-card disk-card">
+    <div class="disk-head">
+      <div class="disk-title"><div class="stat-icon purple"><Icon name="disk" size={15} /></div><span class="stat-label">Disk used</span></div>
+      <span class="disk-total">{sys ? fmtSize(sys.disk_used_bytes) : '—'}</span>
     </div>
+    {#if sys && sys.disk_used_bytes > 0}
+      <div class="disk-bar">
+        {#each sys.disk_breakdown as seg, i}
+          <span class="disk-seg" style="width:{(seg.bytes / sys.disk_used_bytes) * 100}%; background:{SEG_COLORS[i % SEG_COLORS.length]}" title="{seg.label} · {fmtSize(seg.bytes)}"></span>
+        {/each}
+      </div>
+      <div class="disk-legend">
+        {#each sys.disk_breakdown as seg, i}
+          <span class="leg"><span class="leg-dot" style="background:{SEG_COLORS[i % SEG_COLORS.length]}"></span>{seg.label}<span class="leg-val">{fmtSize(seg.bytes)}</span></span>
+        {/each}
+      </div>
+    {:else}
+      <div class="disk-bar"><span class="disk-seg" style="width:100%; background:var(--color-crush-surface)"></span></div>
+      <p class="muted">No data stored yet.</p>
+    {/if}
   </div>
 
   <!-- Main (builds table) + side column -->
   <div class="grid-main">
     <div class="crush-card panel">
-      <div class="panel-head"><h2>Recent builds</h2><span class="count">{builds.length}</span></div>
-      {#if builds.length}
+      <div class="panel-head"><h2>Projects</h2><span class="count">{projects.length}</span></div>
+      {#if projects.length}
         <table class="tbl">
-          <thead><tr><th>Project</th><th>Stack</th><th class="r">Duration</th><th>Status</th><th class="r">When</th></tr></thead>
+          <thead><tr><th>Project</th><th>Stack</th><th class="r">Builds</th><th>Last build</th><th class="r">When</th></tr></thead>
           <tbody>
-            {#each builds as b}
-              <tr>
-                <td class="strong">{b.project_name}</td>
-                <td class="dim">{b.language}{b.framework && b.framework !== 'none' ? ` · ${b.framework}` : ''}</td>
-                <td class="r mono dim">{fmtMs(b.duration_ms)}</td>
-                <td><span class="tag" class:cached={b.was_cached} class:fail={!b.success}>{!b.success ? 'failed' : b.was_cached ? 'cached' : 'fresh'}</span></td>
-                <td class="r dim sm">{timeAgo(b.timestamp_ms)}</td>
+            {#each pagedProjects as p}
+              <tr class="clickable" role="button" tabindex="0" onclick={() => openProjectPage(p.project)} onkeydown={(e) => { if (e.key === 'Enter') openProjectPage(p.project); }}>
+                <td class="strong">{p.project}</td>
+                <td class="dim"><span class="stack-cell"><TechIcon name={p.framework && p.framework !== 'none' ? p.framework : p.language} size={13} />{p.language}{p.framework && p.framework !== 'none' ? ` · ${p.framework}` : ''}</span></td>
+                <td class="r mono dim">{p.count}</td>
+                <td><span class="tag" class:cached={p.latest.was_cached} class:fail={!p.latest.success}>{!p.latest.success ? 'failed' : p.latest.was_cached ? 'cached' : 'fresh'}</span> <span class="dim sm mono">{fmtMs(p.latest.duration_ms)}</span></td>
+                <td class="r dim sm">{timeAgo(p.latest.timestamp_ms)}</td>
               </tr>
             {/each}
           </tbody>
         </table>
+        {#if pageCount > 1}
+          <div class="pager">
+            <button class="ghost-btn xs" disabled={buildPage === 0} onclick={() => buildPage = Math.max(0, buildPage - 1)}>Prev</button>
+            <span class="pager-info">{buildPage + 1} / {pageCount}</span>
+            <button class="ghost-btn xs" disabled={buildPage >= pageCount - 1} onclick={() => buildPage = Math.min(pageCount - 1, buildPage + 1)}>Next</button>
+          </div>
+        {/if}
       {:else}
         <p class="muted">No builds yet — run a project to populate history.</p>
       {/if}
@@ -199,6 +408,18 @@
     <div class="side">
       <div class="crush-card panel">
         <div class="panel-head"><h2>System</h2></div>
+        {#if res}
+          <div class="usage">
+            <div class="usage-row">
+              <div class="usage-top"><span class="usage-k">CPU</span><span class="usage-v mono">{res.cpu_percent.toFixed(0)}%</span></div>
+              <div class="ubar"><span class="ufill cpu" style="width:{Math.min(100, res.cpu_percent)}%"></span></div>
+            </div>
+            <div class="usage-row">
+              <div class="usage-top"><span class="usage-k">Memory</span><span class="usage-v mono">{fmtSize(res.mem_used_bytes)} / {fmtSize(res.mem_total_bytes)}</span></div>
+              <div class="ubar"><span class="ufill mem" style="width:{res.mem_total_bytes ? Math.min(100, (res.mem_used_bytes / res.mem_total_bytes) * 100) : 0}%"></span></div>
+            </div>
+          </div>
+        {/if}
         <dl class="kv">
           <dt>Version</dt><dd class="mono">{sys?.version ?? '—'}</dd>
           <dt>Platform</dt><dd class="mono">{sys ? `${sys.os}/${sys.arch}` : '—'}</dd>
@@ -207,56 +428,17 @@
         </dl>
         {#if sys}<button class="ghost-btn sm full" onclick={revealData}><Icon name="folder" size={13} /> Open data dir</button>{/if}
       </div>
-
-      <div class="crush-card panel">
-        <div class="panel-head"><h2>Services</h2>{#if $services.length}<button class="ghost-btn xs" onclick={stopAllServices} disabled={stoppingAll}>{stoppingAll ? '…' : 'Stop all'}</button>{/if}</div>
-        {#if $services.length}
-          <div class="list">
-            {#each $services as svc}
-              <div class="srow">
-                <StatusBadge status="running" />
-                <span class="strong">{svc.name}</span>
-                <span class="dim sm">{svc.project}</span>
-                <span class="mono port">:{svc.port}</span>
-              </div>
-            {/each}
-          </div>
-        {:else}
-          <p class="muted">No native services running</p>
-        {/if}
-      </div>
     </div>
-  </div>
-
-  <!-- Containers table -->
-  <div class="crush-card panel">
-    <div class="panel-head"><h2>Containers</h2><span class="count">{$containers.length}</span></div>
-    {#if $containers.length}
-      <table class="tbl">
-        <thead><tr><th>Name</th><th>Image</th><th>Status</th><th class="r">Ports</th><th class="r">Uptime</th></tr></thead>
-        <tbody>
-          {#each $containers as c}
-            <tr>
-              <td class="strong">{c.name}</td>
-              <td class="dim mono sm">{c.image}</td>
-              <td><StatusBadge status={c.status} /></td>
-              <td class="r mono port">{c.ports.length ? c.ports.map(p => `:${p.host_port}`).join(' ') : '—'}</td>
-              <td class="r dim sm">{c.uptime_secs ? fmtUptime(c.uptime_secs) : '—'}</td>
-            </tr>
-          {/each}
-        </tbody>
-      </table>
-    {:else}
-      <p class="muted">No containers. Run a project to create one.</p>
-    {/if}
   </div>
 </div>
 
 <style>
   .dashboard { display: flex; flex-direction: column; gap: 14px; padding-bottom: 24px; }
+  .run-stack { display: flex; flex-direction: column; gap: 14px; }
 
   .hero { display: flex; align-items: center; justify-content: space-between; }
   .hero-left { display: flex; align-items: center; gap: 10px; }
+  .logo { display: block; height: 56px; width: auto; object-fit: contain; }
   .wordmark { font-family: var(--font-mono); font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
   .ver-badge { font-family: var(--font-mono); font-size: 11px; color: var(--color-crush-orange); border: 1px solid rgba(224,85,64,0.25); border-radius: 9999px; padding: 1px 8px; }
   .os-badge { font-family: var(--font-mono); font-size: 11px; color: var(--color-crush-text-muted); }
@@ -264,8 +446,6 @@
   .running-ind { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--color-crush-text-muted); }
   .rdot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-crush-muted); }
   .rdot.live { background: var(--color-crush-green); box-shadow: 0 0 6px rgba(74,222,128,0.5); }
-  .run-btn { display: inline-flex; align-items: center; gap: 6px; background: var(--color-crush-orange); color: white; border: none; border-radius: 0.75rem; padding: 7px 16px; font-size: 13px; cursor: pointer; font-family: var(--font-mono); transition: background 0.15s; }
-  .run-btn:hover { background: var(--color-crush-orange-light); }
   .ghost-btn { display: inline-flex; align-items: center; justify-content: center; gap: 6px; background: none; border: 1px solid var(--color-crush-border); color: var(--color-crush-text-muted); border-radius: 0.75rem; padding: 7px 10px; font-size: 13px; cursor: pointer; transition: color 0.15s, border-color 0.15s; }
   .ghost-btn:hover { color: var(--color-crush-text); border-color: var(--color-crush-muted); }
   .ghost-btn.sm { padding: 5px 12px; } .ghost-btn.xs { padding: 3px 10px; font-size: 12px; } .ghost-btn.full { width: 100%; margin-top: 10px; }
@@ -279,24 +459,67 @@
   .proj-name { font-size: 20px; font-weight: 600; margin-top: 2px; }
   .proj-path { font-family: var(--font-mono); font-size: 12px; color: var(--color-crush-muted); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .proj-actions { display: flex; gap: 8px; flex-shrink: 0; }
-  .btn-primary { display: inline-flex; align-items: center; gap: 6px; background: var(--color-crush-orange); color: white; border: none; border-radius: 0.75rem; padding: 7px 18px; font-size: 13px; cursor: pointer; transition: background 0.15s; }
-  .btn-primary:hover { background: var(--color-crush-orange-light); }
+  .btn-primary { display: inline-flex; align-items: center; gap: 6px; background: var(--color-crush-primary); color: var(--color-crush-on-primary); border: none; border-radius: 0.75rem; padding: 7px 18px; font-size: 13px; cursor: pointer; transition: background 0.15s; }
+  .btn-primary:hover { background: var(--color-crush-primary-hover); }
   .chips { display: flex; flex-wrap: wrap; gap: 8px; }
-  .chip { font-size: 12px; padding: 3px 10px; border-radius: 9999px; border: 1px solid var(--color-crush-border); color: var(--color-crush-text); background: rgba(255,255,255,0.02); }
-  .chip.accent { border-color: rgba(224,85,64,0.3); background: rgba(224,85,64,0.08); color: var(--color-crush-orange); font-weight: 500; }
+  .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 10px; border-radius: 9999px; border: 1px solid var(--color-crush-border); color: var(--color-crush-text); background: rgba(255,255,255,0.02); }
+  .chip :global(svg) { flex-shrink: 0; }
+  .chip.accent { border-color: rgba(255,255,255,0.22); background: rgba(255,255,255,0.06); color: var(--color-crush-text); font-weight: 500; }
   .chip.muted-chip, .chip.skel { color: var(--color-crush-text-muted); }
+  .chip.fx-chip-rainbow {
+    border-color: transparent; font-weight: 600; color: #0b0b0d;
+    background: linear-gradient(90deg, #ff2d55, #ff8a00, #ffe600, #36e27b, #00b3ff, #8a5cff);
+    background-size: 200% 100%; animation: fx-chip-slide 3s linear infinite;
+  }
+  @keyframes fx-chip-slide { to { background-position: 200% 0; } }
+  /* fullstack / spa — rainbow gradient *text*, faint border (understated) */
+  .chip.fx-chip-grad {
+    border-color: rgba(255,255,255,0.18); font-weight: 600;
+    background: rgba(255,255,255,0.03);
+    background-image: linear-gradient(90deg, #ff2d55, #ff8a00, #ffe600, #36e27b, #00b3ff, #8a5cff);
+    background-size: 200% 100%;
+    -webkit-background-clip: text; background-clip: text; color: transparent;
+    animation: fx-chip-slide 6s linear infinite;
+  }
+  .chip.fx-chip-grad.faint { opacity: 0.7; animation-duration: 9s; }
 
-  .stats { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; }
-  .stat { padding: 14px 16px 0; display: flex; flex-direction: column; overflow: hidden; }
-  .stat-top { display: flex; align-items: center; gap: 8px; }
-  .stat-icon { width: 30px; height: 30px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border-radius: 8px; background: rgba(224,85,64,0.12); color: var(--color-crush-orange); }
+  .stats { display: grid; grid-template-columns: repeat(3, 1fr); gap: 14px; align-items: start; }
+  .stat-icon { width: 30px; height: 30px; flex-shrink: 0; display: flex; align-items: center; justify-content: center; border-radius: 8px; background: rgba(255,255,255,0.08); color: var(--color-crush-text); }
   .stat-icon.cyan { background: rgba(34,211,238,0.12); color: #22d3ee; }
   .stat-icon.green { background: rgba(74,222,128,0.12); color: #4ade80; }
   .stat-icon.purple { background: rgba(192,132,252,0.12); color: #c084fc; }
   .stat-label { font-size: 11px; color: var(--color-crush-text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
-  .stat-value { margin-left: auto; font-size: 22px; font-weight: 700; line-height: 1; }
-  .stat-value.sm { font-size: 17px; }
-  .stat-spark { margin: 8px -16px 0; }
+
+  .sumcard { padding: 14px 16px; display: flex; flex-direction: column; gap: 10px; cursor: pointer; text-align: left; }
+  .sum-head { display: flex; align-items: center; gap: 10px; }
+  .sum-head .stat-label { flex: 1; }
+  .sum-count { font-size: 20px; font-weight: 700; line-height: 1; }
+  .sum-tot { font-size: 13px; font-weight: 500; color: var(--color-crush-text-muted); }
+  .sum-list { display: flex; flex-direction: column; gap: 2px; min-height: 66px; }
+  .sum-row { display: flex; align-items: center; gap: 8px; font-size: 12px; padding: 3px 0; }
+  .sum-row :global(svg) { flex-shrink: 0; opacity: 0.9; }
+  .sum-name { flex: 1; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .sum-meta { color: var(--color-crush-text-muted); flex-shrink: 0; }
+  .sd { width: 7px; height: 7px; border-radius: 50%; flex-shrink: 0; background: var(--color-crush-muted); }
+  .sd.live { background: var(--color-crush-green); box-shadow: 0 0 6px rgba(74,222,128,0.5); }
+  .sum-empty { font-size: 12px; color: var(--color-crush-text-muted); padding: 6px 0; }
+  .sum-more { font-size: 11px; color: var(--color-crush-muted); padding-top: 2px; }
+
+  .disk-card { padding: 16px 18px; display: flex; flex-direction: column; gap: 12px; }
+  .disk-head { display: flex; align-items: center; justify-content: space-between; }
+  .disk-title { display: flex; align-items: center; gap: 10px; }
+  .disk-total { font-size: 18px; font-weight: 700; font-family: var(--font-mono); }
+  .disk-bar { display: flex; width: 100%; height: 12px; border-radius: 6px; overflow: hidden; background: var(--color-crush-surface); }
+  .disk-seg { height: 100%; transition: width 0.4s ease; }
+  .disk-seg + .disk-seg { box-shadow: -1px 0 0 rgba(9,9,11,0.5); }
+  .disk-legend { display: flex; flex-wrap: wrap; gap: 8px 16px; }
+  .leg { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-crush-text-muted); }
+  .leg-dot { width: 8px; height: 8px; border-radius: 2px; flex-shrink: 0; }
+  .leg-val { color: var(--color-crush-text); font-family: var(--font-mono); font-size: 11px; }
+
+  .pager { display: flex; align-items: center; justify-content: center; gap: 12px; margin-top: 12px; }
+  .pager-info { font-size: 12px; color: var(--color-crush-text-muted); font-family: var(--font-mono); }
+  .ghost-btn.xs:disabled { opacity: 0.4; cursor: default; }
 
   .grid-main { display: grid; grid-template-columns: 2fr 1fr; gap: 14px; align-items: start; }
   .side { display: flex; flex-direction: column; gap: 14px; }
@@ -304,34 +527,51 @@
   .panel-head { display: flex; align-items: center; gap: 8px; margin-bottom: 12px; }
   .panel-head h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-crush-text-muted); margin: 0; }
   .count { font-size: 11px; color: var(--color-crush-muted); background: var(--color-crush-surface); border: 1px solid var(--color-crush-border); border-radius: 9999px; padding: 0 8px; line-height: 18px; }
-  .panel-head .ghost-btn { margin-left: auto; }
 
   .tbl { width: 100%; border-collapse: collapse; font-size: 13px; }
   .tbl th { text-align: left; font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-crush-text-muted); font-weight: 500; padding: 0 10px 8px; border-bottom: 1px solid var(--color-crush-border); }
   .tbl th.r, .tbl td.r { text-align: right; }
   .tbl td { padding: 9px 10px; border-bottom: 1px solid rgba(42,42,53,0.4); }
   .tbl tbody tr:last-child td { border-bottom: none; }
-  .tbl tbody tr:hover { background: rgba(224,85,64,0.03); }
+  .tbl tbody tr:hover { background: rgba(255,255,255,0.03); }
+  .tbl tbody tr.clickable { cursor: pointer; }
   .strong { font-weight: 500; }
   .dim { color: var(--color-crush-text-muted); }
   .sm { font-size: 12px; }
   .mono { font-family: var(--font-mono); }
-  .port { color: var(--color-crush-orange); }
+  .stack-cell { display: inline-flex; align-items: center; gap: 6px; }
+  .stack-cell :global(svg) { flex-shrink: 0; opacity: 0.85; }
 
-  .tag { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; padding: 1px 8px; border-radius: 9999px; background: rgba(224,85,64,0.1); color: var(--color-crush-orange); border: 1px solid rgba(224,85,64,0.2); }
+  .tag { font-size: 10px; text-transform: uppercase; letter-spacing: 0.05em; padding: 1px 8px; border-radius: 9999px; background: rgba(255,255,255,0.08); color: var(--color-crush-text); border: 1px solid rgba(255,255,255,0.18); }
   .tag.cached { background: rgba(74,222,128,0.1); color: var(--color-crush-green); border-color: rgba(74,222,128,0.2); }
   .tag.fail { background: rgba(239,68,68,0.1); color: var(--color-crush-red); border-color: rgba(239,68,68,0.2); }
+
+  .usage { display: flex; flex-direction: column; gap: 12px; margin-bottom: 14px; padding-bottom: 14px; border-bottom: 1px solid var(--color-crush-border); }
+  .usage-row { display: flex; flex-direction: column; gap: 6px; }
+  .usage-top { display: flex; align-items: center; justify-content: space-between; }
+  .usage-k { font-size: 11px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--color-crush-text-muted); }
+  .usage-v { font-size: 12px; }
+  .ubar { width: 100%; height: 6px; border-radius: 3px; background: var(--color-crush-surface); overflow: hidden; }
+  .ufill { display: block; height: 100%; border-radius: 3px; transition: width 0.4s ease; }
+  .ufill.cpu { background: #22d3ee; }
+  .ufill.mem { background: #c084fc; }
 
   .kv { display: grid; grid-template-columns: 70px 1fr; gap: 8px 10px; margin: 0; font-size: 12px; }
   .kv dt { color: var(--color-crush-text-muted); text-transform: uppercase; letter-spacing: 0.04em; font-size: 10px; align-self: center; }
   .kv dd { margin: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .kv .path { color: var(--color-crush-muted); }
 
-  .list { display: flex; flex-direction: column; }
-  .srow { display: flex; align-items: center; gap: 8px; padding: 8px 0; border-bottom: 1px solid rgba(42,42,53,0.4); font-size: 13px; }
-  .srow:last-child { border-bottom: none; }
-  .srow .dim { flex: 1; }
-  .srow .port { margin-left: auto; }
-
   .muted { color: var(--color-crush-text-muted); font-size: 13px; padding: 4px 0; }
+  
+  .mt-4 { margin-top: 16px; }
+  .mt-2 { margin-top: 8px; }
+  .git-source { padding-top: 16px; border-top: 1px solid var(--color-crush-border); }
+  .git-source-header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
+  .git-commit { display: flex; align-items: baseline; gap: 8px; }
+  .branch-chip { font-family: var(--font-mono); }
+
+  .uses-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--color-crush-border); }
+  .uses-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-crush-text-muted); font-weight: 600; flex-shrink: 0; }
+  .inline-chips { display: flex; flex-wrap: wrap; gap: 6px; }
+  .ext-chip { background: rgba(99,102,241,0.06) !important; border-color: rgba(99,102,241,0.18) !important; color: #a5b4fc !important; font-weight: 500; }
 </style>

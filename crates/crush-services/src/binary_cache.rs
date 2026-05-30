@@ -95,7 +95,11 @@ impl BinaryCache {
                     archive.unpack(&dest_dir_clone)?;
                 }
                 ArchiveType::Exe => {
-                    let exe_name = format!("{}.exe", service);
+                    let exe_name = if cfg!(target_os = "windows") {
+                        format!("{}.exe", service)
+                    } else {
+                        service.clone()
+                    };
                     let outpath = dest_dir_clone.join(exe_name);
                     fs::copy(&temp_file_path_clone, &outpath)?;
                 }

@@ -28,6 +28,7 @@ export interface NativeServiceSummary {
   connection_string: string | null;
   data_dir: string;
   started_at: number;
+  console_url: string | null;
 }
 
 export interface ImageSummary {
@@ -36,7 +37,22 @@ export interface ImageSummary {
   digest: string;
   size_bytes: number;
   layer_count: number;
-  created_at: string;
+  os: string;
+  arch: string;
+}
+
+export interface ImageDetail {
+  id: string;
+  tag: string;
+  digest: string;
+  size_bytes: number;
+  os: string;
+  arch: string;
+  entrypoint: string[];
+  cmd: string[];
+  env: string[];
+  layers: string[];
+  config_digest: string | null;
 }
 
 export interface BuildSummary {
@@ -57,6 +73,12 @@ export interface DiagnosisResult {
   fix: string | null;
 }
 
+export interface ExternalService {
+  name: string;
+  kind: string;
+  source_var: string;
+}
+
 export interface ProjectInfo {
   name: string;
   runtime: string;
@@ -67,6 +89,13 @@ export interface ProjectInfo {
   is_monorepo: boolean;
   env_required: string[];
   service_count: number;
+  stack_kind: string | null;
+  external_services?: ExternalService[];
+}
+
+export interface DiskSegment {
+  label: string;
+  bytes: number;
 }
 
 export interface SystemInfo {
@@ -75,6 +104,7 @@ export interface SystemInfo {
   arch: string;
   data_dir: string;
   disk_used_bytes: number;
+  disk_breakdown: DiskSegment[];
 }
 
 export interface LogLine {
@@ -149,6 +179,10 @@ export function listImages(): Promise<ImageSummary[]> {
   return invoke('list_images');
 }
 
+export function inspectImage(id: string): Promise<ImageDetail> {
+  return invoke('inspect_image', { id });
+}
+
 export function pullImage(reference: string): Promise<string> {
   return invoke('pull_image', { reference });
 }
@@ -171,6 +205,36 @@ export function subscribeLogs(containerId: string): Promise<void> {
 
 export function unsubscribeLogs(containerId: string): Promise<void> {
   return invoke('unsubscribe_logs', { containerId });
+}
+
+export function readServiceLog(project: string, name: string, maxLines?: number): Promise<string> {
+  return invoke('read_service_log', { project, name, maxLines });
+}
+
+// Service inspection (tables / connections / keys)
+export interface PgTable { schema: string; name: string; rows: number }
+export interface PgConn { pid: number; user: string; db: string; state: string; query: string }
+export interface PgInspect { version: string; current_db: string; databases: string[]; tables: PgTable[]; connections: PgConn[] }
+export interface RedisKey { key: string; kind: string; ttl: number }
+export interface RedisInspect { total: number; keys: RedisKey[] }
+
+export function inspectPostgres(port: number, user?: string, password?: string, database?: string): Promise<PgInspect> {
+  return invoke('inspect_postgres', { port, user, password, database });
+}
+export function inspectRedis(port: number, password?: string): Promise<RedisInspect> {
+  return invoke('inspect_redis', { port, password });
+}
+export interface MongoColl { name: string; count: number }
+export interface MongoDb { name: string; collections: MongoColl[] }
+export interface MongoInspect { databases: MongoDb[] }
+export interface S3Bucket { name: string; objects: number; size: number }
+export interface MinioInspect { buckets: S3Bucket[] }
+
+export function inspectMongo(port: number): Promise<MongoInspect> {
+  return invoke('inspect_mongo', { port });
+}
+export function inspectMinio(port: number, user?: string, password?: string): Promise<MinioInspect> {
+  return invoke('inspect_minio', { port, user, password });
 }
 
 export function listBuildHistory(limit?: number): Promise<BuildSummary[]> {
@@ -201,6 +265,136 @@ export function systemInfo(): Promise<SystemInfo> {
   return invoke('system_info');
 }
 
+export interface ResourceUsage {
+  cpu_percent: number;
+  mem_used_bytes: number;
+  mem_total_bytes: number;
+}
+export function systemResources(): Promise<ResourceUsage> {
+  return invoke('system_resources');
+}
+
+// Deployments (persisted run history, Vercel-style)
+export interface DeploymentRecord {
+  id: string;
+  project: string;
+  project_path: string;
+  created_ms: number;
+  ended_ms: number | null;
+  duration_ms: number;
+  status: 'running' | 'ready' | 'failed';
+  port: number | null;
+  runtime: string | null;
+  framework: string | null;
+  build_log: string;
+  runtime_log: string;
+  has_screenshot: boolean;
+  branch?: string;
+  commit_short?: string;
+  commit_message?: string;
+}
+export interface DeploymentDetail extends DeploymentRecord {
+  screenshot: string | null;
+}
+
+export function saveDeployment(record: DeploymentRecord): Promise<void> {
+  return invoke('save_deployment', { record });
+}
+export function listDeployments(project: string): Promise<DeploymentRecord[]> {
+  return invoke('list_deployments', { project });
+}
+export function getDeployment(project: string, id: string): Promise<DeploymentDetail> {
+  return invoke('get_deployment', { project, id });
+}
+export function deleteDeployment(project: string, id: string): Promise<void> {
+  return invoke('delete_deployment', { project, id });
+}
+export function listAllDeployments(): Promise<DeploymentRecord[]> {
+  return invoke('list_all_deployments');
+}
+
+export interface EjectResult {
+  dockerfile: string;
+  compose: string;
+}
+export function ejectProject(path: string, force: boolean): Promise<EjectResult> {
+  return invoke('eject_project', { path, force });
+}
+export function capturePreview(project: string, id: string, x: number, y: number, w: number, h: number): Promise<string | null> {
+  return invoke('capture_preview', { project, id, x, y, w, h });
+}
+
+// Deploy (eject-to-provider + wrap official CLIs)
+export function writeProjectFile(path: string, filename: string, content: string): Promise<string> {
+  return invoke('write_project_file', { path, filename, content });
+}
+export function cliAvailable(program: string, probe: string): Promise<boolean> {
+  return invoke('cli_available', { program, probe });
+}
+export function runDeploy(path: string, program: string, args: string[], env: Record<string, string>): Promise<void> {
+  return invoke('run_deploy', { path, program, args, env });
+}
+export function runCapture(path: string, program: string, args: string[], env: Record<string, string>): Promise<string> {
+  return invoke('run_capture', { path, program, args, env });
+}
+export function openTerminal(path: string, command: string): Promise<void> {
+  return invoke('open_terminal', { path, command });
+}
+export function onDeployLine(cb: (e: { stream: string; line: string }) => void): Promise<UnlistenFn> {
+  return listen<{ stream: string; line: string }>('deploy-line', (e) => cb(e.payload));
+}
+export function onDeployExit(cb: (e: { code: number }) => void): Promise<UnlistenFn> {
+  return listen<{ code: number }>('deploy-exit', (e) => cb(e.payload));
+}
+
+// Git
+export interface GithubRepo {
+  owner: string;
+  repo: string;
+}
+export interface GitCommit {
+  short: string;
+  message: string;
+  author: string;
+  committed_rel: string;
+  committed_ms: number;
+}
+export interface GitInfo {
+  is_repo: boolean;
+  branch: string | null;
+  remote_url: string | null;
+  parsed_github: GithubRepo | null;
+  head: GitCommit | null;
+  dirty_count: number;
+  ahead: number | null;
+  behind: number | null;
+  upstream: string | null;
+}
+export interface BranchInfo {
+  name: string;
+  is_current: boolean;
+  is_remote: boolean;
+  short: string | null;
+  message: string | null;
+  author: string | null;
+  committed_rel: string | null;
+  committed_ms: number | null;
+}
+
+export function gitInfo(path: string): Promise<GitInfo> {
+  return invoke('git_info', { path });
+}
+export function gitBranches(path: string, fetch: boolean): Promise<BranchInfo[]> {
+  return invoke('git_branches', { path, fetch });
+}
+export function previewBranch(path: string, branch: string): Promise<string> {
+  return invoke('preview_branch', { path, branch });
+}
+export function removeWorktree(path: string, branch: string): Promise<void> {
+  return invoke('remove_worktree', { path, branch });
+}
+
+
 // Event listeners
 export function onRunEvent(runId: string, cb: (event: RunEvent) => void): Promise<UnlistenFn> {
   return listen<RunEvent>(`run-event::${runId}`, (e) => cb(e.payload));
@@ -217,3 +411,31 @@ export function onContainerStateChanged(cb: () => void): Promise<UnlistenFn> {
 export function onServiceStateChanged(cb: () => void): Promise<UnlistenFn> {
   return listen('service-state-changed', () => cb());
 }
+
+// Config / Settings
+export interface AppConfig {
+  ai_provider: string;
+  ai_api_key: string;
+  ai_model: string;
+  auto_diagnose: boolean;
+  default_provider: string;
+  default_region: string;
+  postgres_port: number;
+  redis_port: number;
+  mongo_port: number;
+  minio_port: number;
+  services_data_dir: string;
+  auto_stop_services: boolean;
+  reduce_motion: boolean;
+  accent_color: string;
+  check_for_updates: boolean;
+}
+
+export function getConfig(): Promise<AppConfig> {
+  return invoke('get_config');
+}
+
+export function setConfig(config: AppConfig): Promise<void> {
+  return invoke('set_config', { config });
+}
+

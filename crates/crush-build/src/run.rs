@@ -280,6 +280,28 @@ pub fn assign_to_job(child: &tokio::process::Child) {
 #[cfg(not(target_os = "windows"))]
 pub fn assign_to_job(_child: &tokio::process::Child) {}
 
+/// Kill a child process **and all its descendants**. A dev launcher
+/// (`npm run dev` → `node`/`vite`) spawns grandchildren that `Child::kill()`
+/// leaves orphaned still holding the port, so on Windows tear down the whole
+/// tree with `taskkill /T`.
+#[cfg(target_os = "windows")]
+async fn kill_tree(child: &mut tokio::process::Child) {
+    if let Some(pid) = child.id() {
+        let _ = tokio::process::Command::new("taskkill")
+            .args(["/F", "/T", "/PID", &pid.to_string()])
+            .output()
+            .await;
+    }
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
+#[cfg(not(target_os = "windows"))]
+async fn kill_tree(child: &mut tokio::process::Child) {
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+}
+
 // ── Process spawning ────────────────────────────────────────────────────
 
 /// Translate bash-style `$VAR` and `${VAR}` to cmd.exe-style `%VAR%`.
@@ -1437,7 +1459,7 @@ async fn run_project_inner(
             }
             // Cleanup (watch branch)
             if let Some(tx_p) = proxy_shutdown_tx { let _ = tx_p.send(()); }
-            for (_, mut c) in named_children { let _ = c.kill().await; }
+            for (_, mut c) in named_children { kill_tree(&mut c).await; }
             return Ok(());
         } else {
             // Block until any child exits OR abort
@@ -1462,7 +1484,7 @@ async fn run_project_inner(
             }
             // Cleanup (non-watch branch)
             if let Some(tx_p) = proxy_shutdown_tx { let _ = tx_p.send(()); }
-            for (_, _, mut c) in children { let _ = c.kill().await; }
+            for (_, _, mut c) in children { kill_tree(&mut c).await; }
             return Ok(());
         }
     }
@@ -1639,6 +1661,7 @@ async fn run_project_inner(
 
     // Port probe
     let mut port_ready = false;
+    let mut aborted = false;
     for _ in 0..100u32 {
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.is_ok() {
@@ -1646,7 +1669,15 @@ async fn run_project_inner(
             break;
         }
         if let Ok(Some(_)) = child.try_wait() { break; }
-        if abort_rx.try_recv().is_ok() { break; }
+        if abort_rx.try_recv().is_ok() { aborted = true; break; }
+    }
+
+    // Aborted during startup → kill the tree and bail (don't fall through to a
+    // blocking wait that would orphan the dev server).
+    if aborted {
+        kill_tree(&mut child).await;
+        let _ = tx.send(RunEvent::Exited { code: 130 }).await;
+        return Ok(());
     }
 
     if port_ready {
@@ -1677,10 +1708,18 @@ async fn run_project_inner(
         }).await;
     }
 
-    // Wait for exit
-    let status = child.wait().await
-        .map_err(|e| anyhow::anyhow!("Process wait error: {}", e))?;
-    let _ = tx.send(RunEvent::Exited { code: status.code().unwrap_or(-1) }).await;
+    // Wait for exit OR abort. On abort, kill the whole tree (npm → node/vite)
+    // so the dev server doesn't orphan and keep holding the port.
+    tokio::select! {
+        status = child.wait() => {
+            let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
+            let _ = tx.send(RunEvent::Exited { code }).await;
+        }
+        _ = &mut *abort_rx => {
+            kill_tree(&mut child).await;
+            let _ = tx.send(RunEvent::Exited { code: 130 }).await;
+        }
+    }
 
     Ok(())
 }

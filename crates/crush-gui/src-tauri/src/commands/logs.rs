@@ -73,6 +73,29 @@ pub async fn subscribe_logs(
     Ok(())
 }
 
+/// Read the tail of a native service's log file. Native services (Postgres,
+/// Redis, MongoDB, MinIO…) redirect stdout+stderr to
+/// `{data_dir}/services/logs/{project}/{name}.log` at spawn time, so we just
+/// read that file. Returns the last `max_lines` lines (default 800).
+#[tauri::command]
+pub async fn read_service_log(
+    project: String,
+    name: String,
+    max_lines: Option<usize>,
+    state: State<'_, AppState>,
+) -> Result<String, String> {
+    let path = state.data_dir
+        .join("services").join("logs").join(&project).join(format!("{}.log", name));
+    if !path.exists() {
+        return Ok(String::new());
+    }
+    let content = tokio::fs::read_to_string(&path).await.map_err(|e| e.to_string())?;
+    let cap = max_lines.unwrap_or(800);
+    let lines: Vec<&str> = content.lines().collect();
+    let start = lines.len().saturating_sub(cap);
+    Ok(lines[start..].join("\n"))
+}
+
 #[tauri::command]
 pub async fn unsubscribe_logs(container_id: String, state: State<'_, AppState>) -> Result<(), String> {
     let mut tailers = state.log_tailers.write().await;

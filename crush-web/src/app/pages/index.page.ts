@@ -47,7 +47,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
               hlmBadge
               variant="outline"
               class="border-crush-orange/50 bg-crush-orange/10 text-crush-orange hover:bg-crush-orange/20"
-              >v0.7.74</span
+              >v0.8.0</span
             >
             <span class="text-sm text-crush-textMuted">Lightweight Docker Desktop Alternative</span>
           </div>

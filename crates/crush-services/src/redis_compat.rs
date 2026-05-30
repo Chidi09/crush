@@ -207,6 +207,7 @@ impl ServiceDriver for RedisCompatDriver {
             port: config.port,
             data_dir: data_dir.to_path_buf(),
             kind: ServiceKind::RedisCompat,
+            console_port: None,
         })
     }
 

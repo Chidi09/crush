@@ -26,6 +26,23 @@ fn pid_alive(pid: u32) -> bool {
     pid != 0 && std::path::Path::new(&format!("/proc/{pid}")).exists()
 }
 
+/// Some services (notably Postgres via `pg_ctl`) daemonize, so Crush records a
+/// pid of 0. In that case — or if the process check fails — fall back to a quick
+/// TCP probe of the service port, which is the real "is it up?" signal.
+fn port_listening(port: u16) -> bool {
+    use std::net::{Ipv4Addr, SocketAddr, TcpStream};
+    if port == 0 { return false; }
+    let addr = SocketAddr::from((Ipv4Addr::LOCALHOST, port));
+    TcpStream::connect_timeout(&addr, std::time::Duration::from_millis(250)).is_ok()
+}
+
+fn is_service_alive(pid: u32, port: u16) -> bool {
+    if pid != 0 && pid_alive(pid) {
+        return true;
+    }
+    port_listening(port)
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct NativeServiceSummary {
     pub project: String,
@@ -36,6 +53,7 @@ pub struct NativeServiceSummary {
     pub connection_string: Option<String>,
     pub data_dir: String,
     pub started_at: u64,
+    pub console_url: Option<String>,
 }
 
 #[tauri::command]
@@ -53,13 +71,16 @@ pub async fn list_native_services(state: State<'_, AppState>) -> Result<Vec<Nati
                 use crush_services::load_native_state;
                 if let Some(state_data) = load_native_state(&services_dir.parent().unwrap_or(&services_dir), project) {
                     for svc in &state_data.services {
-                        if !pid_alive(svc.pid) { continue; }
+                        if !is_service_alive(svc.pid, svc.port) { continue; }
                         let kind = match svc.kind {
                             crush_services::ServiceKind::Postgres => "postgres",
                             crush_services::ServiceKind::RedisCompat => "redis-compat",
                             crush_services::ServiceKind::MySQL => "mysql",
+                            crush_services::ServiceKind::MongoDB => "mongodb",
+                            crush_services::ServiceKind::ObjectStore => "minio",
                         }.to_string();
                         let conn_str = connection_string_for(&kind, svc.port, project, &svc.name);
+                        let console_url = svc.console_port.map(|cp| format!("http://localhost:{}", cp));
                         result.push(NativeServiceSummary {
                             project: state_data.project.clone(),
                             name: svc.name.clone(),
@@ -69,6 +90,7 @@ pub async fn list_native_services(state: State<'_, AppState>) -> Result<Vec<Nati
                             connection_string: conn_str,
                             data_dir: svc.data_dir.to_string_lossy().to_string(),
                             started_at: state_data.started_at,
+                            console_url,
                         });
                     }
                 }
@@ -88,6 +110,8 @@ fn connection_string_for(kind: &str, port: u16, project: &str, _name: &str) -> O
             project.replace('-', "_"),
         )),
         "redis-compat" => Some(format!("redis://localhost:{}", port)),
+        "mongodb" => Some(format!("mongodb://localhost:{}", port)),
+        "minio" => Some(format!("http://localhost:{} (credentials: minioadmin/minioadmin)", port)),
         _ => None,
     }
 }
@@ -114,6 +138,8 @@ pub async fn get_connection_string(name: String, project: String, state: State<'
                     crush_services::ServiceKind::Postgres => "postgres",
                     crush_services::ServiceKind::RedisCompat => "redis-compat",
                     crush_services::ServiceKind::MySQL => "mysql",
+                    crush_services::ServiceKind::MongoDB => "mongodb",
+                    crush_services::ServiceKind::ObjectStore => "minio",
                 };
                 return Ok(connection_string_for(kind, svc.port, &project, &name));
             }

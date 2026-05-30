@@ -54,14 +54,16 @@ import { HlmBadgeDirective } from '../ui/badge';
 export default class ChangelogPage implements OnInit {
   releases = [
     {
-      version: 'v0.8.0-alpha',
-      date: 'In Development',
-      headline: 'Preparation series for the cross-platform Tauri desktop dashboard.',
+      version: 'v0.8.0',
+      date: '2026-05-29',
+      headline: 'Major v0.8.0 stable release featuring a beautiful Svelte/Tauri Desktop GUI, multi-cloud deployments, native MongoDB/MinIO services, and Git branch previews.',
       items: [
-        'Scaffolded Tauri 2 + SvelteKit desktop app GUI shell (<code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">crates/crush-gui/src-tauri</code>).',
-        'Implemented Tauri command bindings for native process lifecycle control, image stores, and system configurations.',
-        'Wired real backends including <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">crush-api</code> unix sockets, <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">crush-proto</code> OCI gateway, and <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">crush-tui</code> sparklines.',
-        'Created a high-fidelity brand assets generator to avoid <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">windres</code> resources compilation errors during Windows GUI builds.',
+        '<strong>Desktop GUI Dashboard</strong>: Fully interactive, Svelte 5 + Tauri desktop dashboard to manage local projects, control container states, and visualize CPU/memory resources.',
+        '<strong>AI Copilot Diagnostics</strong>: Secure integration with Claude to parse call stacks, inspect build logs, and suggest code corrections inside the GUI.',
+        '<strong>Multi-Cloud Deployments</strong>: Direct eject-to-Dockerfile and deployment integrations across 11 major cloud platforms (Railway, Fly, DO, AWS, GCP, Render, Vercel, Netlify, Hetzner, etc.).',
+        '<strong>Native MongoDB & MinIO Services</strong>: Run local native MongoDB databases and MinIO local S3 storage buckets directly on host processes with zero VM overhead.',
+        '<strong>Git Branch Previews</strong>: Spin up isolated, worktree-based git branch previews to test and review pull requests instantly without disrupting your main branch.',
+        'Fixed pre-req packaging bug where release workflow uploaded raw uncompressed binaries instead of packed <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">.tar.gz</code> and <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">.zip</code> archives.',
       ],
     },
     {

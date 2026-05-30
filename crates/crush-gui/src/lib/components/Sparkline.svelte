@@ -3,7 +3,7 @@
   // crisp stroke via non-scaling-stroke. Feed it a rolling number[].
   let {
     data = [],
-    color = 'var(--color-crush-orange)',
+    color = 'var(--color-crush-text)',
     height = 40
   }: { data?: number[]; color?: string; height?: number } = $props();
 

@@ -2,29 +2,24 @@
   import { page } from '$app/stores';
   import Icon from './Icon.svelte';
 
+  // Deployments-first IA: local runs are the daily driver; Containers is demoted
+  // to the bottom (rarely populated on Windows since runs are native).
   const links = [
     { href: '/dashboard', icon: 'dashboard', label: 'Dashboard' },
-    { href: '/containers', icon: 'containers', label: 'Containers' },
+    { href: '/deployments', icon: 'rocket', label: 'Deployments' },
     { href: '/services', icon: 'services', label: 'Services' },
     { href: '/images', icon: 'images', label: 'Images' },
     { href: '/logs', icon: 'logs', label: 'Logs' },
-    { href: '/build', icon: 'build', label: 'Build' },
   ];
 
   const bottomLinks = [
+    { href: '/containers', icon: 'containers', label: 'Containers' },
+    { href: '/docs', icon: 'docs', label: 'Docs' },
     { href: '/settings', icon: 'settings', label: 'Settings' },
   ];
 </script>
 
 <nav class="sidebar">
-  <div class="logo">
-    <svg class="logo-mark" width="22" height="22" viewBox="0 0 32 32" aria-hidden="true">
-      <path d="M16 3 L28 16 L16 29 L4 16 Z" fill="var(--color-crush-orange)" />
-    </svg>
-  </div>
-
-  <div class="divider"></div>
-
   <div class="nav-links">
     {#each links as link}
       <a
@@ -67,27 +62,11 @@
     display: flex;
     flex-direction: column;
     align-items: center;
-    padding: 8px 0;
+    padding: 12px 0;
     position: fixed;
     left: 0;
     top: 0;
     z-index: 50;
-  }
-
-  .logo {
-    padding: 8px 0;
-  }
-
-  .logo-mark {
-    font-size: 20px;
-    color: var(--color-crush-orange);
-  }
-
-  .divider {
-    width: 24px;
-    height: 1px;
-    background: var(--color-crush-border);
-    margin: 8px 0;
   }
 
   .nav-links {
@@ -117,9 +96,9 @@
   }
 
   .nav-item.active {
-    background: rgba(224, 85, 64, 0.1);
-    border-left: 2px solid var(--color-crush-orange);
-    color: var(--color-crush-orange);
+    background: rgba(255, 255, 255, 0.08);
+    border-left: 2px solid var(--color-crush-text);
+    color: var(--color-crush-text);
     border-radius: 0 8px 8px 0;
     width: 34px;
   }

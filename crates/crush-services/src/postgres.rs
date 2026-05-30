@@ -308,6 +308,7 @@ impl ServiceDriver for PostgresDriver {
             port: config.port,
             data_dir: data_dir.to_path_buf(),
             kind: ServiceKind::Postgres,
+            console_port: None,
         })
     }
 

@@ -26,7 +26,6 @@ pub async fn run_project(
         .map_err(|e| e.to_string())?;
 
     let run_id = handle.run_id;
-    let (abort_tx, mut abort_rx) = tokio::sync::oneshot::channel::<()>();
     let mut events = handle.events;
     let app_handle = window.app_handle().clone();
     let emit_window = window.clone();
@@ -34,27 +33,15 @@ pub async fn run_project(
     // Save abort handle
     {
         let mut runs = state.runs.write().await;
-        runs.insert(run_id, RunProcess { abort: abort_tx });
+        runs.insert(run_id, RunProcess { abort: handle.abort });
     }
 
     // Spawn event forwarder
     tokio::spawn(async move {
-        use tokio::select;
-        loop {
-            select! {
-                Some(event) = events.recv() => {
-                    // RunEvent is internally tagged (#[serde(tag = "kind")]), so the
-                    // frontend listens on one channel and switches on payload.kind.
-                    let _ = emit_window.emit(&format!("run-event::{}", run_id), &event);
-                    if matches!(event, crush_build::run::RunEvent::Exited { .. }) {
-                        break;
-                    }
-                }
-                _ = &mut abort_rx => {
-                    let _ = emit_window.emit(&format!("run-event::{}", run_id), serde_json::json!({ "kind": "exited", "code": 130 }));
-                    break;
-                }
-                else => break,
+        while let Some(event) = events.recv().await {
+            let _ = emit_window.emit(&format!("run-event::{}", run_id), &event);
+            if matches!(event, crush_build::run::RunEvent::Exited { .. }) {
+                break;
             }
         }
         // Cleanup

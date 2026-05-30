@@ -546,7 +546,7 @@ struct HealthArgs {
 
 #[derive(Args, Debug)]
 pub struct DeployArgs {
-    #[arg(long, help = "Override the provider from Crushfile (hetzner, ssh, aws, gcp, digitalocean, fly)")]
+    #[arg(long, help = "Override the provider from Crushfile (hetzner, ssh, aws, gcp, digitalocean, fly, railway)")]
     provider: Option<String>,
     #[arg(long, help = "Stream deployment logs after deploy completes")]
     logs: bool,
@@ -4534,6 +4534,8 @@ async fn main() -> anyhow::Result<()> {
                                     #[cfg(not(target_os = "windows"))]
                                     { "native    " }
                                 }
+                                crush_services::ServiceKind::MongoDB => "mongodb    ",
+                                crush_services::ServiceKind::ObjectStore => "minio      ",
                                 crush_services::ServiceKind::MySQL => "native     ",
                             };
                             let uptime = std::time::SystemTime::now()
@@ -4631,13 +4633,14 @@ async fn main() -> anyhow::Result<()> {
                             use std::io::Write;
                             let _ = std::io::stdout().flush();
 
-                            let stop_res = if s.kind == crush_services::ServiceKind::Postgres {
-                                let driver = crush_services::PostgresDriver::new(cache_dir.clone());
-                                driver.stop(s).await
-                            } else {
-                                let driver = crush_services::RedisCompatDriver::new(cache_dir.clone());
-                                driver.stop(s).await
+                            let driver: Box<dyn crush_services::ServiceDriver> = match s.kind {
+                                crush_services::ServiceKind::Postgres => Box::new(crush_services::PostgresDriver::new(cache_dir.clone())),
+                                crush_services::ServiceKind::RedisCompat => Box::new(crush_services::RedisCompatDriver::new(cache_dir.clone())),
+                                crush_services::ServiceKind::MongoDB => Box::new(crush_services::MongoDriver::new(cache_dir.clone())),
+                                crush_services::ServiceKind::ObjectStore => Box::new(crush_services::MinioDriver::new(cache_dir.clone())),
+                                crush_services::ServiceKind::MySQL => panic!("MySQL driver not implemented"),
                             };
+                            let stop_res = driver.stop(s).await;
 
                             match stop_res {
                                 Ok(_) => println!("done"),
@@ -4678,10 +4681,12 @@ async fn main() -> anyhow::Result<()> {
                             if let Some(ref n) = name {
                                 if &s.name != n { continue; }
                             }
-                            let driver: Box<dyn crush_services::ServiceDriver> = if s.kind == crush_services::ServiceKind::Postgres {
-                                Box::new(crush_services::PostgresDriver::new(cache_dir.clone()))
-                            } else {
-                                Box::new(crush_services::RedisCompatDriver::new(cache_dir.clone()))
+                            let driver: Box<dyn crush_services::ServiceDriver> = match s.kind {
+                                crush_services::ServiceKind::Postgres => Box::new(crush_services::PostgresDriver::new(cache_dir.clone())),
+                                crush_services::ServiceKind::RedisCompat => Box::new(crush_services::RedisCompatDriver::new(cache_dir.clone())),
+                                crush_services::ServiceKind::MongoDB => Box::new(crush_services::MongoDriver::new(cache_dir.clone())),
+                                crush_services::ServiceKind::ObjectStore => Box::new(crush_services::MinioDriver::new(cache_dir.clone())),
+                                crush_services::ServiceKind::MySQL => panic!("MySQL driver not implemented"),
                             };
                             let _ = driver.stop(s).await;
                         }
@@ -4710,7 +4715,13 @@ async fn main() -> anyhow::Result<()> {
                                 let _ = std::io::stdout().flush();
                                 match start_dep_service_smart(dep, &project_name, &data_dir).await {
                                     Ok(StartedService::Native(r)) => {
-                                        let note = if r.kind == crush_services::ServiceKind::Postgres { "[native]" } else { "[garnet]" };
+                                        let note = match r.kind {
+                                            crush_services::ServiceKind::Postgres => "[native]",
+                                            crush_services::ServiceKind::RedisCompat => "[garnet]",
+                                            crush_services::ServiceKind::MongoDB => "[mongodb]",
+                                            crush_services::ServiceKind::ObjectStore => "[minio]",
+                                            crush_services::ServiceKind::MySQL => "[mysql]",
+                                        };
                                         println!("ok  {}", note);
                                     }
                                     Ok(StartedService::Container(c)) => println!("ok  [container]"),
@@ -4820,8 +4831,13 @@ fn build_provider(
                 .ok_or_else(|| anyhow::anyhow!("Missing [deploy.fly] section"))?;
             Ok(Box::new(crush_deploy::FlyProvider::new(f)))
         }
+        "railway" => {
+            let r = config.railway.as_ref()
+                .ok_or_else(|| anyhow::anyhow!("Missing [deploy.railway] section"))?;
+            Ok(Box::new(crush_deploy::RailwayProvider::new(r)))
+        }
         other => Err(anyhow::anyhow!(
-            "Unknown provider '{}'. Options: hetzner, ssh, aws, gcp, digitalocean, fly", other
+            "Unknown provider '{}'. Options: hetzner, ssh, aws, gcp, digitalocean, fly, railway", other
         )),
     }
 }

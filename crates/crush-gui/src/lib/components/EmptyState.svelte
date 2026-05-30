@@ -53,8 +53,8 @@
   }
 
   .action-btn {
-    background: var(--color-crush-orange);
-    color: white;
+    background: var(--color-crush-primary);
+    color: var(--color-crush-on-primary);
     border: none;
     border-radius: 8px;
     padding: 8px 20px;
@@ -64,6 +64,6 @@
   }
 
   .action-btn:hover {
-    background: var(--color-crush-orange-light);
+    background: var(--color-crush-primary-hover);
   }
 </style>

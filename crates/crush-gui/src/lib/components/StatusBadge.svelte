@@ -26,9 +26,9 @@
   }
 
   .running {
-    background: rgba(74, 222, 128, 0.1);
-    color: #4ade80;
-    border: 1px solid rgba(74, 222, 128, 0.2);
+    background: rgba(16, 185, 129, 0.1);
+    color: #10b981;
+    border: 1px solid rgba(16, 185, 129, 0.2);
   }
 
   .exited {
@@ -50,14 +50,14 @@
   }
 
   .dot-running {
-    background: #4ade80;
-    box-shadow: 0 0 6px rgba(74, 222, 128, 0.5);
+    background: #10b981;
+    box-shadow: 0 0 6px rgba(16, 185, 129, 0.5);
     animation: pulse 2s ease-in-out infinite;
   }
 
   @keyframes pulse {
-    0%, 100% { box-shadow: 0 0 0 0 rgba(74, 222, 128, 0.5); }
-    50% { box-shadow: 0 0 0 4px rgba(74, 222, 128, 0); }
+    0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.5); }
+    50% { box-shadow: 0 0 0 4px rgba(16, 185, 129, 0); }
   }
 
   .dot-exited {

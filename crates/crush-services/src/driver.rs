@@ -26,10 +26,12 @@ pub struct RunningService {
     pub port: u16,
     pub data_dir: PathBuf,
     pub kind: ServiceKind,
+    #[serde(default)]
+    pub console_port: Option<u16>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
-pub enum ServiceKind { Postgres, RedisCompat, MySQL }
+pub enum ServiceKind { Postgres, RedisCompat, MySQL, MongoDB, ObjectStore }
 
 #[async_trait]
 pub trait ServiceDriver: Send + Sync {

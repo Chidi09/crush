@@ -86,13 +86,13 @@
   .build-duration { font-size: 12px; color: var(--color-crush-text-muted); font-family: var(--font-mono); }
   .build-type { font-size: 11px; }
   .build-type.cached { color: var(--color-crush-muted); }
-  .build-type.fresh { color: var(--color-crush-orange); }
+  .build-type.fresh { color: var(--color-crush-text); }
 
   .build-meta { font-size: 12px; color: var(--color-crush-text-muted); margin-bottom: 8px; }
 
   .build-bar { height: 6px; background: var(--color-crush-border); border-radius: 3px; overflow: hidden; margin-bottom: 8px; }
   .bar-cached { background: var(--color-crush-border); }
-  .bar-fresh { background: var(--color-crush-orange); }
+  .bar-fresh { background: var(--color-crush-text); }
   .bar-fill { height: 100%; border-radius: 3px; transition: width 0.3s; }
 
   .build-footer { display: flex; justify-content: space-between; font-size: 12px; color: var(--color-crush-text-muted); }

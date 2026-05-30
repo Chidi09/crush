@@ -34,6 +34,31 @@ const GROUPS: DocGroup[] = [
     ],
   },
   {
+    title: 'Advanced Features',
+    links: [
+      {
+        path: '/docs/deploy',
+        label: 'Cloud Deployments',
+        icon: 'M13 10V3L4 14h7v7l9-11h-7z',
+      },
+      {
+        path: '/docs/services',
+        label: 'Native Services',
+        icon: 'M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10z M12 6v6h6',
+      },
+      {
+        path: '/docs/gui',
+        label: 'GUI Dashboard',
+        icon: 'M4 5a1 1 0 011-1h14a1 1 0 011 1v12a1 1 0 01-1 1H5a1 1 0 01-1-1V5z M4 13h16',
+      },
+      {
+        path: '/docs/branch-previews',
+        label: 'Branch Previews',
+        icon: 'M18 10a3 3 0 11-3-3 3 3 0 013 3z M6 10a3 3 0 11-3-3 3 3 0 013 3z M12 10a3 3 0 11-3-3 3 3 0 013 3z',
+      },
+    ],
+  },
+  {
     title: 'Reference',
     links: [
       {

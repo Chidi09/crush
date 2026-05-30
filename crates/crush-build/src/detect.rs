@@ -73,6 +73,13 @@ pub struct Detection {
     /// (have a package.json / Cargo.toml / etc). Empty otherwise.
     #[serde(default)]
     pub generic_subdir_hint: Vec<String>,
+    /// High-level classification for UI treatment / messaging:
+    /// "turbo" | "fullstack" | "spa" | "backend" | "" (unknown).
+    /// Computed authoritatively here so the GUI doesn't re-guess.
+    #[serde(default)]
+    pub stack_kind: String,
+    #[serde(default)]
+    pub external_services: Vec<crate::env::ExternalService>,
 }
 
 struct Signals {
@@ -122,6 +129,7 @@ impl CrushSpecDetector {
         best.env_required = env.required;
         best.env_optional = env.optional;
         best.env_secrets = env.secrets;
+        best.external_services = crate::env::scan_external_services(root);
 
         let services = crate::multiservice::MultiServiceDetector::detect(root);
         if !services.is_empty() {
@@ -139,7 +147,71 @@ impl CrushSpecDetector {
             .to_string();
 
         best.base_image = Self::resolve_base_image(&best);
+        best.stack_kind = Self::classify(&best, root);
         best
+    }
+
+    /// Authoritative high-level classification used by the GUI for the
+    /// stack-aware Run-button glow + "optimising for …" messaging.
+    /// Returns "turbo" | "fullstack" | "spa" | "backend" | "".
+    fn classify(d: &Detection, root: &Path) -> String {
+        let f = d.framework_name.as_str();
+
+        // Monorepo orchestrators take precedence — the whole repo is "turbo".
+        let has_orchestrator = root.join("turbo.json").exists()
+            || root.join("nx.json").exists()
+            || root.join("lerna.json").exists();
+        if matches!(f, "Turborepo" | "Nx" | "Lerna" | "Monorepo")
+            || (d.is_monorepo && has_orchestrator)
+        {
+            return "turbo".into();
+        }
+
+        match f {
+            // SSR / meta-frameworks
+            "Next.js" | "Nuxt" | "SvelteKit" | "Remix" | "SolidStart" | "Qwik" | "AnalogJS" => "fullstack".into(),
+            // Astro ships static by default; only server/hybrid output is fullstack.
+            "Astro" => match Self::astro_output(root) {
+                "server" | "hybrid" => "fullstack".into(),
+                _ => "spa".into(),
+            },
+            // Client-only apps
+            "React" | "Vue" | "Preact" | "Solid" | "Angular" | "Vite" | "Svelte" => "spa".into(),
+            // Backends — no glow for now, but tagged for future messaging.
+            "Express" | "Fastify" | "NestJS" | "Hono" | "Elysia" | "tRPC"
+            | "FastAPI" | "Flask" | "Django" | "Tornado" | "aiohttp" | "Starlette" | "Litestar"
+            | "Actix-web" | "Axum" | "Rocket" | "Warp" | "Tide"
+            | "Gin" | "Echo" | "Fiber" | "Chi" | "gRPC"
+            | "Spring Boot" | "Spring" | "Quarkus" | "Micronaut"
+            | "Laravel" | "Symfony" | "Slim" | "CodeIgniter" | "CakePHP"
+            | "Rails" | "Sinatra" | "Hanami" | "Grape" | "Phoenix" | "Vapor"
+            | "ASP.NET Core" | ".NET" => "backend".into(),
+            _ => String::new(),
+        }
+    }
+
+    /// Astro's render target from its config: "server" / "hybrid" / "static".
+    /// Defaults to "static" (Astro's default) when unspecified.
+    fn astro_output(root: &Path) -> &'static str {
+        for cfg in ["astro.config.mjs", "astro.config.ts", "astro.config.js", "astro.config.cjs"] {
+            if let Ok(c) = fs::read_to_string(root.join(cfg)) {
+                let compact: String = c.chars().filter(|ch| !ch.is_whitespace()).collect();
+                if compact.contains("output:'server'") || compact.contains("output:\"server\"") {
+                    return "server";
+                }
+                if compact.contains("output:'hybrid'") || compact.contains("output:\"hybrid\"") {
+                    return "hybrid";
+                }
+                // An SSR adapter implies a server target even without `output:`.
+                if c.contains("@astrojs/node") || c.contains("@astrojs/vercel")
+                    || c.contains("@astrojs/netlify") || c.contains("@astrojs/cloudflare")
+                {
+                    return "server";
+                }
+                return "static";
+            }
+        }
+        "static"
     }
 
     fn resolve_base_image(d: &Detection) -> String {
@@ -339,6 +411,8 @@ impl CrushSpecDetector {
             dockerfile_found: None,
             base_image: String::new(),
             generic_subdir_hint: vec![],
+            stack_kind: String::new(),
+            external_services: vec![],
         })
     }
 
@@ -384,6 +458,16 @@ impl CrushSpecDetector {
         if has_file("vite.config.ts") || has_file("vite.config.js") { s.add("Vite", 5.0); }
         if script_contains("dev", "fastify") || script_contains("start", "fastify") { s.add("Fastify", 4.0); }
         if script_contains("dev", "svelte-kit") { s.add("SvelteKit", 4.0); }
+
+        // SPA view libraries. Weighted to beat a bare Vite signal (5.0) so a
+        // plain React/Vue/Solid app reports its library, while every SSR
+        // meta-framework above (8–10) still wins — they all depend on these.
+        if dep_set.contains("react") || dep_set.contains("react-dom") { s.add("React", 6.0); }
+        if dep_set.contains("react-scripts") { s.add("React", 4.0); } // Create React App
+        if dep_set.contains("vue") && !dep_set.contains("nuxt") { s.add("Vue", 6.0); }
+        if dep_set.contains("@vue/cli-service") { s.add("Vue", 4.0); }
+        if dep_set.contains("preact") { s.add("Preact", 6.0); }
+        if dep_set.contains("solid-js") && !dep_set.contains("@solidjs/start") { s.add("Solid", 6.0); }
 
         match s.winner() {
             Some((framework, score)) if score >= 4.0 => {
@@ -1380,6 +1464,8 @@ impl Default for Detection {
             dockerfile_found: None,
             base_image: "ubuntu:22.04".to_string(),
             generic_subdir_hint: vec![],
+            stack_kind: String::new(),
+            external_services: vec![],
         }
     }
 }

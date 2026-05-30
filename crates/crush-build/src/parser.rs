@@ -31,6 +31,7 @@ pub struct CrushfileDeploy {
     pub gcp: Option<DeployGcp>,
     pub digitalocean: Option<DeployDigitalOcean>,
     pub fly: Option<DeployFly>,
+    pub railway: Option<DeployRailway>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -83,6 +84,15 @@ pub struct DeployFly {
     pub app_name: Option<String>,
     pub region: Option<String>,
     pub vm_size: Option<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DeployRailway {
+    pub api_token: String,
+    pub project: Option<String>,
+    pub service: Option<String>,
+    pub environment: Option<String>,
+    pub region: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]

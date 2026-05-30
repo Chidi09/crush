@@ -704,6 +704,8 @@ pub fn native_driver_for(image: &str) -> Option<&'static str> {
         // can fall back to container backend with CRUSH_PGVECTOR_DOCKER=1.
         "postgres" | "pgvector" | "timescale" => Some("postgres"),
         n if n.starts_with("redis") || n.starts_with("valkey") || n.starts_with("keydb") || n.starts_with("garnet") => Some("redis"),
+        "mongo" | "mongodb" => Some("mongodb"),
+        n if n.starts_with("minio") => Some("minio"),
         _ => None,
     }
 }
@@ -719,9 +721,9 @@ pub async fn start_dep_service_smart(
         fs::create_dir_all(&svc_data_dir).ok();
 
         let host_port = dep.ports.iter().next().map(|(hp, _)| *hp).unwrap_or(0);
-        let password = dep.env.iter().find(|(k, _)| k == "POSTGRES_PASSWORD" || k == "REDIS_PASSWORD").map(|(_, v)| v.clone());
-        let database = dep.env.iter().find(|(k, _)| k == "POSTGRES_DB").map(|(_, v)| v.clone());
-        let user = dep.env.iter().find(|(k, _)| k == "POSTGRES_USER").map(|(_, v)| v.clone());
+        let password = dep.env.iter().find(|(k, _)| k == "POSTGRES_PASSWORD" || k == "REDIS_PASSWORD" || k == "MONGO_INITDB_ROOT_PASSWORD" || k == "MINIO_ROOT_PASSWORD" || k == "MINIO_SECRET_KEY").map(|(_, v)| v.clone());
+        let database = dep.env.iter().find(|(k, _)| k == "POSTGRES_DB" || k == "MONGO_INITDB_DATABASE").map(|(_, v)| v.clone());
+        let user = dep.env.iter().find(|(k, _)| k == "POSTGRES_USER" || k == "MONGO_INITDB_ROOT_USERNAME" || k == "MINIO_ROOT_USER" || k == "MINIO_ACCESS_KEY").map(|(_, v)| v.clone());
 
         let log_dir = data_dir.join("services").join("logs").join(project_name);
         let _ = fs::create_dir_all(&log_dir);
@@ -729,7 +731,13 @@ pub async fn start_dep_service_smart(
 
         let config = crush_services::ServiceConfig {
             port: if host_port > 0 { host_port } else {
-                if driver_name == "postgres" { 5432 } else { 6379 }
+                match driver_name {
+                    "postgres" => 5432,
+                    "redis" => 6379,
+                    "mongodb" => 27017,
+                    "minio" => 9000,
+                    _ => 8080,
+                }
             },
             user,
             password,
@@ -746,6 +754,16 @@ pub async fn start_dep_service_smart(
             return Ok(StartedService::Native(running));
         } else if driver_name == "redis" {
             let driver = crush_services::RedisCompatDriver::new(cache_dir.clone());
+            driver.ensure_ready(&svc_data_dir, &cache_dir).await?;
+            let running = driver.start(&config, &svc_data_dir).await?;
+            return Ok(StartedService::Native(running));
+        } else if driver_name == "mongodb" {
+            let driver = crush_services::MongoDriver::new(cache_dir.clone());
+            driver.ensure_ready(&svc_data_dir, &cache_dir).await?;
+            let running = driver.start(&config, &svc_data_dir).await?;
+            return Ok(StartedService::Native(running));
+        } else if driver_name == "minio" {
+            let driver = crush_services::MinioDriver::new(cache_dir.clone());
             driver.ensure_ready(&svc_data_dir, &cache_dir).await?;
             let running = driver.start(&config, &svc_data_dir).await?;
             return Ok(StartedService::Native(running));

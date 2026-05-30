@@ -18,19 +18,24 @@ jobs:
         include:
           - target: x86_64-unknown-linux-gnu
             os: ubuntu-latest
-            artifact_name: crush-linux-amd64
+            artifact_name: crush-linux-x86_64
+            archive_name: crush-linux-x86_64.tar.gz
           - target: aarch64-unknown-linux-gnu
             os: ubuntu-latest
-            artifact_name: crush-linux-arm64
+            artifact_name: crush-linux-aarch64
+            archive_name: crush-linux-aarch64.tar.gz
           - target: x86_64-pc-windows-msvc
             os: windows-latest
-            artifact_name: crush-windows-amd64.exe
+            artifact_name: crush-windows-x86_64
+            archive_name: crush-windows-x86_64.zip
           - target: x86_64-apple-darwin
             os: macos-latest
-            artifact_name: crush-macos-amd64
+            artifact_name: crush-macos-x86_64
+            archive_name: crush-macos-x86_64.tar.gz
           - target: aarch64-apple-darwin
             os: macos-latest
-            artifact_name: crush-macos-arm64
+            artifact_name: crush-macos-aarch64
+            archive_name: crush-macos-aarch64.tar.gz
 
     steps:
       - name: Checkout Repository
@@ -49,17 +54,25 @@ jobs:
         run: |
           mkdir -p dist
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp target/${{ matrix.target }}/release/crush-cli.exe dist/${{ matrix.artifact_name }}
+            mkdir -p temp
+            cp target/${{ matrix.target }}/release/crush-cli.exe temp/crush.exe
+            cd temp
+            7z a ../dist/${{ matrix.archive_name }} crush.exe
+            cd ..
+            rm -rf temp
           else
-            cp target/${{ matrix.target }}/release/crush-cli dist/${{ matrix.artifact_name }}
-            chmod +x dist/${{ matrix.artifact_name }}
+            mkdir -p temp
+            cp target/${{ matrix.target }}/release/crush-cli temp/crush
+            chmod +x temp/crush
+            tar -czf dist/${{ matrix.archive_name }} -C temp crush
+            rm -rf temp
           fi
 
       - name: Upload Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: dist/${{ matrix.artifact_name }}
+          path: dist/${{ matrix.archive_name }}
 
   publish:
     name: Sign & Publish OCI Release
@@ -73,6 +86,7 @@ jobs:
         uses: actions/download-artifact@v4
         with:
           path: dist
+          merge-multiple: true
 
       - name: Install Cosign
         uses: sigstore/cosign-installer@v3.5.0
@@ -88,7 +102,7 @@ jobs:
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            dist/**/*
+            dist/*
           draft: false
           prerelease: false
         env:

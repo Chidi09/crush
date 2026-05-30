@@ -15,3 +15,6 @@ crush-web/package.json.tmp
 # OS
 .DS_Store
 Thumbs.db
+
+# session scratch
+_tauri_dev.log

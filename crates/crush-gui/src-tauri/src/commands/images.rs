@@ -11,24 +11,59 @@ pub struct ImageSummary {
     pub digest: String,
     pub size_bytes: u64,
     pub layer_count: usize,
-    pub created_at: String,
+    pub os: String,
+    pub arch: String,
+}
+
+/// Full image config — the data behind the inspect drawer (like `docker inspect`).
+#[derive(Debug, Clone, Serialize)]
+pub struct ImageDetail {
+    pub id: String,
+    pub tag: String,
+    pub digest: String,
+    pub size_bytes: u64,
+    pub os: String,
+    pub arch: String,
+    pub entrypoint: Vec<String>,
+    pub cmd: Vec<String>,
+    pub env: Vec<String>,
+    pub layers: Vec<String>,
+    pub config_digest: Option<String>,
 }
 
 #[tauri::command]
 pub async fn list_images(state: State<'_, AppState>) -> Result<Vec<ImageSummary>, String> {
     let images = state.store.database().list_images().await.map_err(|e| e.to_string())?;
-    let result = images.into_iter().map(|img| {
-        let short_id: String = img.id.chars().take(12).collect();
-        ImageSummary {
-            id: img.id,
-            tag: img.tag,
-            digest: img.digest,
-            size_bytes: img.size_bytes,
-            layer_count: img.layers.len(),
-            created_at: short_id,
-        }
+    let result = images.into_iter().map(|img| ImageSummary {
+        id: img.id,
+        tag: img.tag,
+        digest: img.digest,
+        size_bytes: img.size_bytes,
+        layer_count: img.layers.len(),
+        os: img.os,
+        arch: img.architecture,
     }).collect();
     Ok(result)
+}
+
+#[tauri::command]
+pub async fn inspect_image(id: String, state: State<'_, AppState>) -> Result<ImageDetail, String> {
+    let images = state.store.database().list_images().await.map_err(|e| e.to_string())?;
+    let img = images.into_iter().find(|i| i.id == id || i.digest == id)
+        .ok_or_else(|| format!("Image not found: {id}"))?;
+    Ok(ImageDetail {
+        id: img.id,
+        tag: img.tag,
+        digest: img.digest,
+        size_bytes: img.size_bytes,
+        os: img.os,
+        arch: img.architecture,
+        entrypoint: img.entrypoint,
+        cmd: img.cmd,
+        env: img.env,
+        layers: img.layers,
+        config_digest: img.config_digest,
+    })
 }
 
 #[tauri::command]
