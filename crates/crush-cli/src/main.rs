@@ -1722,6 +1722,238 @@ fn format_detection_line(stack: &crush_build::InferredStack) -> String {
     }
 }
 
+async fn run_internal(args: InternalRunArgs, data_dir: std::path::PathBuf) -> anyhow::Result<()> {
+            let container_dir = data_dir.join("containers").join(&args.id);
+            let container_json_path = container_dir.join("container.json");
+            let config_json_path = container_dir.join("config.json");
+            
+            if !container_json_path.exists() {
+                eprintln!("Container {} not found.", args.id);
+                std::process::exit(1);
+            }
+
+            let content = std::fs::read_to_string(&container_json_path)?;
+            let c: Container = serde_json::from_str(&content)?;
+
+            let config_content = std::fs::read_to_string(&config_json_path)?;
+            #[derive(serde::Deserialize)]
+            struct ContainerConfig {
+                cmd: Vec<String>,
+                env: Vec<String>,
+            }
+            let config: ContainerConfig = serde_json::from_str(&config_content)?;
+
+            let rootfs = container_dir.join("rootfs");
+            let mounter = VolumeMounter::new(data_dir.clone());
+
+            for mount in &c.mounts {
+                let host_path_str = mount.host_path.to_string_lossy();
+                let container_path_str = mount.container_path.to_string_lossy();
+                if let Err(e) = mounter.mount_bind(&c.id, &host_path_str, &container_path_str, &rootfs, mount.read_only).await {
+                    eprintln!("Error mounting {}: {}", host_path_str, e);
+                    let _ = mounter.unmount_all(&c.id).await;
+                    std::process::exit(1);
+                }
+            }
+
+            #[cfg(target_os = "linux")]
+            {
+                use std::time::Duration;
+
+                // 1. Resolve secrets (Vault / AWS / local DB)
+                let secrets_dir = data_dir.join("secrets").join(&c.id);
+                std::fs::create_dir_all(&secrets_dir).ok();
+                let secret_mgr = SecretManager::new(secrets_dir.clone());
+                let secret_mgr = if let (Ok(addr), Ok(tok)) = (std::env::var("VAULT_ADDR"), std::env::var("VAULT_TOKEN")) {
+                    secret_mgr.with_vault(addr, tok)
+                } else {
+                    secret_mgr
+                };
+
+                if std::env::var("VAULT_ADDR").is_ok() && std::env::var("VAULT_TOKEN").is_ok() {
+                    let spec = SecretSpec {
+                        id: "db-password".to_string(),
+                        source: SecretSource::Vault {
+                            path: "secret/data/db-password".to_string(),
+                            field: "value".to_string(),
+                            engine: VaultEngine::KvV2,
+                        },
+                        destination: SecretDestination::File {
+                            path: rootfs.join("run/secrets/db-password"),
+                            tmpfs: true,
+                        },
+                        mode: 0o400,
+                        uid: 0,
+                        gid: 0,
+                    };
+                    if let Ok(val) = secret_mgr.resolve(&spec).await {
+                        let _ = secret_mgr.mount(&spec, &val).await;
+                    }
+                }
+
+                // 2. Restart policy initialization
+                let r_policy = match c.restart_policy.as_deref().unwrap_or("no") {
+                    "always" => RestartPolicy::Always,
+                    "unless-stopped" => RestartPolicy::UnlessStopped,
+                    s if s.starts_with("on-failure") => {
+                        let max_retries = s.strip_prefix("on-failure:")
+                            .and_then(|r| r.parse::<u32>().ok());
+                        RestartPolicy::OnFailure { max_retries }
+                    }
+                    _ => RestartPolicy::No,
+                };
+                let mut restart_mgr = RestartManager::new(r_policy);
+
+                // 3. Health check task initialization
+                let mut health_handle = None;
+                if let Some(ref h_cmd) = c.health_cmd {
+                    let interval = c.health_interval.unwrap_or(30);
+                    let timeout = c.health_timeout.unwrap_or(30);
+                    let retries = c.health_retries.unwrap_or(3);
+                    let cmd_parts: Vec<String> = h_cmd.split_whitespace().map(|s| s.to_string()).collect();
+                    let h_config = HealthCheckConfig {
+                        check_type: HealthCheckType::Exec { command: cmd_parts },
+                        interval_secs: interval,
+                        timeout_secs: timeout,
+                        retries,
+                        start_period_secs: 0,
+                        start_interval_secs: 5,
+                    };
+                    let checker = Arc::new(HealthChecker::new(h_config));
+                    let checker_clone = checker.clone();
+                    let container_json_clone = container_json_path.clone();
+                    
+                    health_handle = Some(tokio::spawn(async move {
+                        loop {
+                            let status = checker_clone.check().await;
+                            if let Ok(content) = tokio::fs::read_to_string(&container_json_clone).await {
+                                if let Ok(mut c_upd) = serde_json::from_str::<Container>(&content) {
+                                    c_upd.health = Some(status);
+                                    if let Ok(serialized) = serde_json::to_string_pretty(&c_upd) {
+                                        let _ = tokio::fs::write(&container_json_clone, serialized).await;
+                                    }
+                                }
+                            }
+                            tokio::time::sleep(Duration::from_secs(interval)).await;
+                        }
+                    }));
+                }
+
+                // 4. OOM Monitor initialization
+                let mut oom_monitor = OomMonitor::new(&c.id, OomPolicy::Restart);
+
+                // 5. Supervisor Loop
+                let mut exit_code = 0;
+                loop {
+                    let rootfs_clone = rootfs.clone();
+                    let c_clone = c.clone();
+                    let cmd_clone = config.cmd.clone();
+                    let env_clone = config.env.clone();
+
+                    let exit_code_res = tokio::task::spawn_blocking(move || {
+                        run_container(&rootfs_clone, &cmd_clone, &env_clone, &c_clone)
+                    }).await;
+
+                    let current_exit = match exit_code_res {
+                        Ok(Ok(code)) => code,
+                        _ => -1,
+                    };
+
+                    if let Ok(OomEvent::OomKilled { .. }) = oom_monitor.poll().await {
+                        println!("[Supervisor] Container OOM killed!");
+                        exit_code = 137;
+                    } else {
+                        exit_code = current_exit;
+                    }
+
+                    let should_restart = restart_mgr.should_restart(exit_code, false);
+                    if should_restart {
+                        restart_mgr.record_attempt();
+                        let delay = restart_mgr.backoff_delay();
+                        println!("[Supervisor] Restarting container in {:?}", delay);
+                        
+                        if let Ok(content) = tokio::fs::read_to_string(&container_json_path).await {
+                            if let Ok(mut c_upd) = serde_json::from_str::<Container>(&content) {
+                                c_upd.restart_count = Some(restart_mgr.attempt());
+                                c_upd.status = ContainerStatus::Running;
+                                if let Ok(serialized) = serde_json::to_string_pretty(&c_upd) {
+                                    let _ = tokio::fs::write(&container_json_path, serialized).await;
+                                }
+                            }
+                        }
+                        tokio::time::sleep(delay).await;
+                    } else {
+                        break;
+                    }
+                }
+
+                if let Some(h) = health_handle {
+                    h.abort();
+                }
+
+                let _ = mounter.unmount_all(&c.id).await;
+
+                if let Ok(content) = tokio::fs::read_to_string(&container_json_path).await {
+                    if let Ok(mut c_upd) = serde_json::from_str::<Container>(&content) {
+                        c_upd.status = ContainerStatus::Stopped;
+                        c_upd.pid = None;
+                        if let Ok(serialized) = serde_json::to_string_pretty(&c_upd) {
+                            let _ = tokio::fs::write(&container_json_path, serialized).await;
+                        }
+                    }
+                }
+
+                if exit_code != 0 {
+                    std::process::exit(exit_code);
+                }
+            }
+            #[cfg(target_os = "windows")]
+            {
+                // Read container config
+                let rootfs = container_dir.join("rootfs");
+                let store = ImageStore::new(data_dir.join("images")).await?;
+
+                // Detect image OS from image tag stored in container.json
+                let image_os = store.database().get_image_by_tag(&c.image).await
+                    .ok()
+                    .flatten()
+                    .map(|img| img.os.to_lowercase())
+                    .unwrap_or_else(|| "linux".to_string());
+
+                let win_runtime = WindowsRuntime::new();
+
+                if image_os == "windows" {
+                    // Windows-native container: Job Objects path
+                    win_runtime.create(&c, &container_dir).await
+                        .map_err(|e| CrushError::Internal(anyhow::anyhow!("Windows create failed: {}", e)))?;
+                    win_runtime.start_with_config(&c.id, &config.cmd, &config.env, &rootfs).await
+                        .map_err(|e| CrushError::Internal(anyhow::anyhow!("Windows start failed: {}", e)))?;
+                } else {
+                    // Linux container: Firecracker microVM path
+                    let image_digest = store.database()
+                        .get_image_by_tag(&c.image).await
+                        .ok().flatten()
+                        .map(|img| img.digest.clone())
+                        .unwrap_or_else(|| c.image.clone());
+
+                    win_runtime.run_linux_container(
+                        &c.id, &rootfs, &config.cmd, &config.env, &c.ports,
+                        &image_digest,
+                    ).await
+                        .map_err(|e| CrushError::Internal(anyhow::anyhow!("Firecracker start failed: {}", e)))?;
+                }
+
+                let _ = mounter.unmount_all(&c.id).await;
+            }
+
+            #[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
+            {
+                eprintln!("Container execution requires Linux or Windows.");
+                let _ = mounter.unmount_all(&c.id).await;
+            }
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::fmt()
@@ -1746,9 +1978,18 @@ async fn main() -> anyhow::Result<()> {
     };
     job_object::init_with_limits(limits);
     let data_dir = dirs_or_default();
-    let store = ImageStore::new(data_dir.join("images")).await?;
 
     let command = cli.command.unwrap_or(Commands::Default);
+    // `internal-run` is spawned as a child of run/start/default while the parent still
+    // holds the image-store sled lock (sled is single-process). It works purely off the
+    // already-extracted rootfs, so dispatch it before opening the store to avoid a deadlock.
+    if matches!(&command, Commands::InternalRun(_)) {
+        let Commands::InternalRun(args) = command else { unreachable!() };
+        return run_internal(args, data_dir).await;
+    }
+
+    let store = ImageStore::new(data_dir.join("images")).await?;
+
     match command {
         Commands::Default => {
             let project_root = std::env::current_dir()?;
@@ -4123,235 +4364,7 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
         }
-        Commands::InternalRun(args) => {
-            let container_dir = data_dir.join("containers").join(&args.id);
-            let container_json_path = container_dir.join("container.json");
-            let config_json_path = container_dir.join("config.json");
-            
-            if !container_json_path.exists() {
-                eprintln!("Container {} not found.", args.id);
-                std::process::exit(1);
-            }
-
-            let content = std::fs::read_to_string(&container_json_path)?;
-            let c: Container = serde_json::from_str(&content)?;
-
-            let config_content = std::fs::read_to_string(&config_json_path)?;
-            #[derive(serde::Deserialize)]
-            struct ContainerConfig {
-                cmd: Vec<String>,
-                env: Vec<String>,
-            }
-            let config: ContainerConfig = serde_json::from_str(&config_content)?;
-
-            let rootfs = container_dir.join("rootfs");
-            let mounter = VolumeMounter::new(data_dir.clone());
-
-            for mount in &c.mounts {
-                let host_path_str = mount.host_path.to_string_lossy();
-                let container_path_str = mount.container_path.to_string_lossy();
-                if let Err(e) = mounter.mount_bind(&c.id, &host_path_str, &container_path_str, &rootfs, mount.read_only).await {
-                    eprintln!("Error mounting {}: {}", host_path_str, e);
-                    let _ = mounter.unmount_all(&c.id).await;
-                    std::process::exit(1);
-                }
-            }
-
-            #[cfg(target_os = "linux")]
-            {
-                use std::time::Duration;
-
-                // 1. Resolve secrets (Vault / AWS / local DB)
-                let secrets_dir = data_dir.join("secrets").join(&c.id);
-                std::fs::create_dir_all(&secrets_dir).ok();
-                let secret_mgr = SecretManager::new(secrets_dir.clone());
-                let secret_mgr = if let (Ok(addr), Ok(tok)) = (std::env::var("VAULT_ADDR"), std::env::var("VAULT_TOKEN")) {
-                    secret_mgr.with_vault(addr, tok)
-                } else {
-                    secret_mgr
-                };
-
-                if std::env::var("VAULT_ADDR").is_ok() && std::env::var("VAULT_TOKEN").is_ok() {
-                    let spec = SecretSpec {
-                        id: "db-password".to_string(),
-                        source: SecretSource::Vault {
-                            path: "secret/data/db-password".to_string(),
-                            field: "value".to_string(),
-                            engine: VaultEngine::KvV2,
-                        },
-                        destination: SecretDestination::File {
-                            path: rootfs.join("run/secrets/db-password"),
-                            tmpfs: true,
-                        },
-                        mode: 0o400,
-                        uid: 0,
-                        gid: 0,
-                    };
-                    if let Ok(val) = secret_mgr.resolve(&spec).await {
-                        let _ = secret_mgr.mount(&spec, &val).await;
-                    }
-                }
-
-                // 2. Restart policy initialization
-                let r_policy = match c.restart_policy.as_deref().unwrap_or("no") {
-                    "always" => RestartPolicy::Always,
-                    "unless-stopped" => RestartPolicy::UnlessStopped,
-                    s if s.starts_with("on-failure") => {
-                        let max_retries = s.strip_prefix("on-failure:")
-                            .and_then(|r| r.parse::<u32>().ok());
-                        RestartPolicy::OnFailure { max_retries }
-                    }
-                    _ => RestartPolicy::No,
-                };
-                let mut restart_mgr = RestartManager::new(r_policy);
-
-                // 3. Health check task initialization
-                let mut health_handle = None;
-                if let Some(ref h_cmd) = c.health_cmd {
-                    let interval = c.health_interval.unwrap_or(30);
-                    let timeout = c.health_timeout.unwrap_or(30);
-                    let retries = c.health_retries.unwrap_or(3);
-                    let cmd_parts: Vec<String> = h_cmd.split_whitespace().map(|s| s.to_string()).collect();
-                    let h_config = HealthCheckConfig {
-                        check_type: HealthCheckType::Exec { command: cmd_parts },
-                        interval_secs: interval,
-                        timeout_secs: timeout,
-                        retries,
-                        start_period_secs: 0,
-                        start_interval_secs: 5,
-                    };
-                    let checker = Arc::new(HealthChecker::new(h_config));
-                    let checker_clone = checker.clone();
-                    let container_json_clone = container_json_path.clone();
-                    
-                    health_handle = Some(tokio::spawn(async move {
-                        loop {
-                            let status = checker_clone.check().await;
-                            if let Ok(content) = tokio::fs::read_to_string(&container_json_clone).await {
-                                if let Ok(mut c_upd) = serde_json::from_str::<Container>(&content) {
-                                    c_upd.health = Some(status);
-                                    if let Ok(serialized) = serde_json::to_string_pretty(&c_upd) {
-                                        let _ = tokio::fs::write(&container_json_clone, serialized).await;
-                                    }
-                                }
-                            }
-                            tokio::time::sleep(Duration::from_secs(interval)).await;
-                        }
-                    }));
-                }
-
-                // 4. OOM Monitor initialization
-                let mut oom_monitor = OomMonitor::new(&c.id, OomPolicy::Restart);
-
-                // 5. Supervisor Loop
-                let mut exit_code = 0;
-                loop {
-                    let rootfs_clone = rootfs.clone();
-                    let c_clone = c.clone();
-                    let cmd_clone = config.cmd.clone();
-                    let env_clone = config.env.clone();
-
-                    let exit_code_res = tokio::task::spawn_blocking(move || {
-                        run_container(&rootfs_clone, &cmd_clone, &env_clone, &c_clone)
-                    }).await;
-
-                    let current_exit = match exit_code_res {
-                        Ok(Ok(code)) => code,
-                        _ => -1,
-                    };
-
-                    if let Ok(OomEvent::OomKilled { .. }) = oom_monitor.poll().await {
-                        println!("[Supervisor] Container OOM killed!");
-                        exit_code = 137;
-                    } else {
-                        exit_code = current_exit;
-                    }
-
-                    let should_restart = restart_mgr.should_restart(exit_code, false);
-                    if should_restart {
-                        restart_mgr.record_attempt();
-                        let delay = restart_mgr.backoff_delay();
-                        println!("[Supervisor] Restarting container in {:?}", delay);
-                        
-                        if let Ok(content) = tokio::fs::read_to_string(&container_json_path).await {
-                            if let Ok(mut c_upd) = serde_json::from_str::<Container>(&content) {
-                                c_upd.restart_count = Some(restart_mgr.attempt());
-                                c_upd.status = ContainerStatus::Running;
-                                if let Ok(serialized) = serde_json::to_string_pretty(&c_upd) {
-                                    let _ = tokio::fs::write(&container_json_path, serialized).await;
-                                }
-                            }
-                        }
-                        tokio::time::sleep(delay).await;
-                    } else {
-                        break;
-                    }
-                }
-
-                if let Some(h) = health_handle {
-                    h.abort();
-                }
-
-                let _ = mounter.unmount_all(&c.id).await;
-
-                if let Ok(content) = tokio::fs::read_to_string(&container_json_path).await {
-                    if let Ok(mut c_upd) = serde_json::from_str::<Container>(&content) {
-                        c_upd.status = ContainerStatus::Stopped;
-                        c_upd.pid = None;
-                        if let Ok(serialized) = serde_json::to_string_pretty(&c_upd) {
-                            let _ = tokio::fs::write(&container_json_path, serialized).await;
-                        }
-                    }
-                }
-
-                if exit_code != 0 {
-                    std::process::exit(exit_code);
-                }
-            }
-            #[cfg(target_os = "windows")]
-            {
-                // Read container config
-                let rootfs = container_dir.join("rootfs");
-
-                // Detect image OS from image tag stored in container.json
-                let image_os = store.database().get_image_by_tag(&c.image).await
-                    .ok()
-                    .flatten()
-                    .map(|img| img.os.to_lowercase())
-                    .unwrap_or_else(|| "linux".to_string());
-
-                let win_runtime = WindowsRuntime::new();
-
-                if image_os == "windows" {
-                    // Windows-native container: Job Objects path
-                    win_runtime.create(&c, &container_dir).await
-                        .map_err(|e| CrushError::Internal(anyhow::anyhow!("Windows create failed: {}", e)))?;
-                    win_runtime.start_with_config(&c.id, &config.cmd, &config.env, &rootfs).await
-                        .map_err(|e| CrushError::Internal(anyhow::anyhow!("Windows start failed: {}", e)))?;
-                } else {
-                    // Linux container: Firecracker microVM path
-                    let image_digest = store.database()
-                        .get_image_by_tag(&c.image).await
-                        .ok().flatten()
-                        .map(|img| img.digest.clone())
-                        .unwrap_or_else(|| c.image.clone());
-
-                    win_runtime.run_linux_container(
-                        &c.id, &rootfs, &config.cmd, &config.env, &c.ports,
-                        &image_digest,
-                    ).await
-                        .map_err(|e| CrushError::Internal(anyhow::anyhow!("Firecracker start failed: {}", e)))?;
-                }
-
-                let _ = mounter.unmount_all(&c.id).await;
-            }
-
-            #[cfg(all(not(target_os = "linux"), not(target_os = "windows")))]
-            {
-                eprintln!("Container execution requires Linux or Windows.");
-                let _ = mounter.unmount_all(&c.id).await;
-            }
-        }
+        Commands::InternalRun(_) => unreachable!("internal-run is dispatched before the image store is opened"),
         Commands::Deploy(args) => {
             use crush_deploy::DeploymentState;
             use crush_build::parser::CrushfileParser;

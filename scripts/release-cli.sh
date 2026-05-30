@@ -52,22 +52,16 @@ WIN_BIN="target/x86_64-pc-windows-gnu/release/${BIN_NAME}.exe"
 strip "$LINUX_BIN" 2>/dev/null || true
 x86_64-w64-mingw32-strip "$WIN_BIN" 2>/dev/null || true
 
-LINUX_ASSET="crush-${VERSION}-linux-x86_64.tar.gz"
-WIN_ASSET="crush-${VERSION}-windows-x86_64.zip"
+# Raw binaries — `crush update` downloads these bytes and writes them directly as
+# the executable, so the asset names must match the updater exactly:
+#   windows -> crush-<ver>-windows-x86_64.exe
+#   linux   -> crush-<ver>-linux-x86_64   (no extension)
+LINUX_ASSET="crush-${VERSION}-linux-x86_64"
+WIN_ASSET="crush-${VERSION}-windows-x86_64.exe"
 
-# Linux tarball with the binary renamed to `crush`
-tmp="$(mktemp -d)"
-cp "$LINUX_BIN" "$tmp/${SHIP_NAME}"
-tar -czf "$DIST/$LINUX_ASSET" -C "$tmp" "${SHIP_NAME}"
-# Windows zip with crush.exe (python — no `zip` on this host)
-cp "$WIN_BIN" "$tmp/${SHIP_NAME}.exe"
-python3 - "$DIST/$WIN_ASSET" "$tmp/${SHIP_NAME}.exe" <<'PY'
-import sys, zipfile, os
-out, src = sys.argv[1], sys.argv[2]
-with zipfile.ZipFile(out, "w", zipfile.ZIP_DEFLATED) as z:
-    z.write(src, os.path.basename(src))
-PY
-rm -rf "$tmp"
+cp "$LINUX_BIN" "$DIST/$LINUX_ASSET"
+cp "$WIN_BIN"   "$DIST/$WIN_ASSET"
+chmod +x "$DIST/$LINUX_ASSET"
 
 # Checksums
 ( cd "$DIST" && sha256sum "$LINUX_ASSET" "$WIN_ASSET" > "crush-${VERSION}-SHA256SUMS.txt" )
@@ -108,8 +102,15 @@ upload_asset() {
         | python3 -c 'import sys,json;d=json.load(sys.stdin);print("      ->",d.get("browser_download_url",d.get("message","?")))'
 }
 
-upload_asset "$DIST/$LINUX_ASSET" "application/gzip"
-upload_asset "$DIST/$WIN_ASSET"   "application/zip"
+# Remove any stale archive-named assets from earlier runs (the updater wants raw binaries).
+for stale in "crush-${VERSION}-linux-x86_64.tar.gz" "crush-${VERSION}-windows-x86_64.zip"; do
+    curl -s "${auth[@]}" "${API}/releases/${rel_id}/assets" \
+        | python3 -c "import sys,json;[print(a['id']) for a in json.load(sys.stdin) if a['name']=='$stale']" \
+        | while read -r aid; do [[ -n "$aid" ]] && { echo "    removing stale $stale"; curl -s "${auth[@]}" -X DELETE "${API}/releases/assets/${aid}" >/dev/null; }; done
+done
+
+upload_asset "$DIST/$LINUX_ASSET" "application/octet-stream"
+upload_asset "$DIST/$WIN_ASSET"   "application/octet-stream"
 upload_asset "$DIST/crush-${VERSION}-SHA256SUMS.txt" "text/plain"
 
 echo "==> Done: https://github.com/${REPO}/releases/tag/${TAG}"

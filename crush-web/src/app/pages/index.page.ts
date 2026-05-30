@@ -54,10 +54,13 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
           <h1
             class="text-4xl font-extrabold tracking-tight text-white sm:text-5xl lg:text-6xl text-balance"
           >
-            Run docker-compose on Windows <span class="gradient-text">without WSL2</span> or Docker Desktop
+            Run docker-compose on Windows <span class="gradient-text">without WSL2</span> or Docker
+            Desktop
           </h1>
           <p class="mt-6 text-lg leading-8 text-crush-textMuted max-w-2xl mx-auto">
-            No VMs, no daemons, no memory hogging. Crush auto-detects your stack and starts your development services (Postgres, Redis, pgvector) natively on Windows using Job Objects. Fast, lightweight, and ejects to standard Dockerfiles.
+            No VMs, no daemons, no memory hogging. Crush auto-detects your stack and starts your
+            development services (Postgres, Redis, pgvector) natively on Windows using Job Objects.
+            Fast, lightweight, and ejects to standard Dockerfiles.
           </p>
           <div class="mt-10 flex items-center justify-center gap-4 flex-wrap">
             <a
@@ -78,10 +81,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
               class="inline-flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm font-semibold text-white bg-crush-surface border border-crush-border hover:bg-crush-surface/80 hover:border-crush-orange/50 hover:text-white transition-colors duration-200 select-none outline-none shadow-lg shadow-crush-orange/5"
             >
               Download CLI (Windows)
-              <svg
-                viewBox="0 0 24 24"
-                class="h-4 w-4 fill-none stroke-current stroke-2"
-              >
+              <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-2">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                 <polyline points="7 10 12 15 17 10" />
                 <line x1="12" y1="15" x2="12" y2="3" />
@@ -168,9 +168,9 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
               <p
                 class="text-sm text-crush-textMuted leading-relaxed group-hover:text-crush-text transition-colors duration-300"
               >
-                Crush skips <code class="text-crush-orange/90">pnpm install</code> when
-                node_modules is fresh, image pack when sources match, build when artifacts are
-                newer. Warm runs are seconds; we don't pretend to make your framework faster.
+                Crush skips <code class="text-crush-orange/90">pnpm install</code> when node_modules
+                is fresh, image pack when sources match, build when artifacts are newer. Warm runs
+                are seconds; we don't pretend to make your framework faster.
               </p>
             </div>
 
@@ -239,8 +239,8 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
               >
                 Crush parses your <code class="text-crush-orange/90">compose.yml</code> /
                 <code class="text-crush-orange/90">application.yml</code> and starts Postgres,
-                Garnet (Redis-compat), MySQL natively — no containers. pgvector compiles
-                against your host PG on first use.
+                Garnet (Redis-compat), MySQL natively — no containers. pgvector compiles against
+                your host PG on first use.
               </p>
             </div>
 
@@ -267,7 +267,9 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
                   <span class="text-crush-text">vector ext</span>
                   <span class="text-crush-orange">● built</span>
                 </div>
-                <div class="flex items-center justify-between border-t border-crush-border/30 pt-1.5 mt-1.5">
+                <div
+                  class="flex items-center justify-between border-t border-crush-border/30 pt-1.5 mt-1.5"
+                >
                   <span class="text-crush-textMuted">from</span>
                   <span class="text-crush-textMuted">infra/docker-compose.yml</span>
                 </div>
@@ -535,7 +537,8 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
             Native performance, no VM required
           </h2>
           <p class="mt-4 text-lg text-crush-textMuted">
-            What's actually happening when you type <code class="text-crush-orange">crush</code> on Windows
+            What's actually happening when you type <code class="text-crush-orange">crush</code> on
+            Windows
           </p>
         </div>
 
@@ -622,7 +625,9 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
                   >NT Kernel</span
                 >
               </div>
-              <div class="text-[9px] text-emerald-400 pt-1">✓ no VM hop · ~30 MB idle (no daemon)</div>
+              <div class="text-[9px] text-emerald-400 pt-1">
+                ✓ no VM hop · ~30 MB idle (no daemon)
+              </div>
             </div>
             <div class="space-y-2 opacity-50">
               <div class="text-[10px] font-bold text-crush-textMuted uppercase tracking-wide mb-3">

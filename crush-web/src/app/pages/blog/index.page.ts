@@ -27,16 +27,21 @@ export interface PostAttributes {
 
       <div class="mx-auto max-w-4xl px-4 sm:px-6 relative">
         <header class="mb-16 text-center select-none">
-          <h1 class="text-4xl font-extrabold text-white tracking-tight sm:text-5xl lg:text-6xl mb-4">
+          <h1
+            class="text-4xl font-extrabold text-white tracking-tight sm:text-5xl lg:text-6xl mb-4"
+          >
             The <span class="gradient-text">Crush Blog</span>
           </h1>
           <p class="text-lg text-crush-textMuted max-w-2xl mx-auto text-balance">
-            Systems programming deep dives, dev tools insights, and release announcements for native Windows container-less workflows.
+            Systems programming deep dives, dev tools insights, and release announcements for native
+            Windows container-less workflows.
           </p>
         </header>
 
         @if (posts.length === 0) {
-          <div class="rounded-2xl border border-crush-border/50 bg-crush-surface/20 p-16 text-center backdrop-blur-sm">
+          <div
+            class="rounded-2xl border border-crush-border/50 bg-crush-surface/20 p-16 text-center backdrop-blur-sm"
+          >
             <p class="text-crush-textMuted mb-2">No posts published yet.</p>
             <p class="text-sm text-crush-muted">
               Check back soon for system design guides and launch logs.
@@ -66,7 +71,9 @@ export interface PostAttributes {
                       <span class="text-xs text-crush-muted">•</span>
                       <time class="text-xs text-crush-muted">{{ post.attributes.date }}</time>
                       <span class="text-xs text-crush-muted">•</span>
-                      <span class="text-xs text-crush-textMuted">{{ post.attributes.readingTime }}</span>
+                      <span class="text-xs text-crush-textMuted">{{
+                        post.attributes.readingTime
+                      }}</span>
                     </div>
 
                     <!-- Title -->
@@ -77,26 +84,40 @@ export interface PostAttributes {
                     </h2>
 
                     <!-- Excerpt -->
-                    <p class="text-sm sm:text-base text-crush-textMuted leading-relaxed mb-6 group-hover:text-crush-text transition-colors duration-200">
+                    <p
+                      class="text-sm sm:text-base text-crush-textMuted leading-relaxed mb-6 group-hover:text-crush-text transition-colors duration-200"
+                    >
                       {{ post.attributes.excerpt }}
                     </p>
                   </div>
 
                   <!-- Author block & Read more -->
-                  <div class="flex items-center justify-between border-t border-crush-border/30 pt-4 flex-wrap gap-4">
+                  <div
+                    class="flex items-center justify-between border-t border-crush-border/30 pt-4 flex-wrap gap-4"
+                  >
                     <div class="flex items-center gap-2.5">
-                      <div class="h-8 w-8 rounded-full border border-crush-border overflow-hidden bg-crush-surface flex items-center justify-center">
+                      <div
+                        class="h-8 w-8 rounded-full border border-crush-border overflow-hidden bg-crush-surface flex items-center justify-center"
+                      >
                         @if (post.attributes.authorImage) {
-                          <img [src]="post.attributes.authorImage" [alt]="post.attributes.author" class="h-full w-full object-cover" />
+                          <img
+                            [src]="post.attributes.authorImage"
+                            [alt]="post.attributes.author"
+                            class="h-full w-full object-cover"
+                          />
                         } @else {
                           <span class="text-xs font-bold text-crush-orange">C</span>
                         }
                       </div>
-                      <span class="text-xs font-medium text-white">{{ post.attributes.author }}</span>
+                      <span class="text-xs font-medium text-white">{{
+                        post.attributes.author
+                      }}</span>
                     </div>
 
                     <!-- Read Link -->
-                    <span class="inline-flex items-center gap-1 text-xs font-bold text-crush-orange group-hover:text-crush-orangeLight transition-colors duration-200 select-none">
+                    <span
+                      class="inline-flex items-center gap-1 text-xs font-bold text-crush-orange group-hover:text-crush-orangeLight transition-colors duration-200 select-none"
+                    >
                       Read Article
                       <svg
                         viewBox="0 0 24 24"

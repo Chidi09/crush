@@ -13,12 +13,15 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
         <article class="flex-1 min-w-0">
           <!-- Page Header -->
           <div class="border-b border-crush-border/30 pb-6 mb-10 select-none">
-            <span class="text-xs font-bold uppercase tracking-wider text-crush-orange">Feature</span>
+            <span class="text-xs font-bold uppercase tracking-wider text-crush-orange"
+              >Feature</span
+            >
             <h1 class="text-3xl font-extrabold text-white tracking-tight mt-1 mb-2">
               Native Services
             </h1>
             <p class="text-base text-crush-textMuted">
-              Run premium native services—Postgres, Redis, MongoDB, MinIO—directly on host processes without VM overhead.
+              Run premium native services—Postgres, Redis, MongoDB, MinIO—directly on host processes
+              without VM overhead.
             </p>
           </div>
 
@@ -26,7 +29,9 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
           <section class="mb-12">
             <h2 class="text-xl font-bold text-white mb-4">No VMs, No Memory Hogs</h2>
             <p class="text-sm text-crush-textMuted leading-relaxed">
-              Unlike Docker Desktop, which runs a heavy Linux VM (consuming 2-4 GB of RAM even idle), Crush spawns local database and queue processes directly on your host OS using sandboxed Job Objects. They boot in milliseconds and consume less than 30MB of RAM.
+              Unlike Docker Desktop, which runs a heavy Linux VM (consuming 2-4 GB of RAM even
+              idle), Crush spawns local database and queue processes directly on your host OS using
+              sandboxed Job Objects. They boot in milliseconds and consume less than 30MB of RAM.
             </p>
           </section>
 
@@ -37,33 +42,56 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
               <div class="p-4 rounded-xl border border-crush-border/30 bg-crush-surface/30">
                 <div class="flex items-center justify-between mb-2">
                   <h4 class="font-bold text-white">PostgreSQL & pgvector</h4>
-                  <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold font-mono">Port: 5432</span>
+                  <span
+                    class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold font-mono"
+                    >Port: 5432</span
+                  >
                 </div>
-                <p class="text-xs text-crush-textMuted">Natively loaded standard Postgres binaries complete with vector embedding storage capabilities for AI models.</p>
+                <p class="text-xs text-crush-textMuted">
+                  Natively loaded standard Postgres binaries complete with vector embedding storage
+                  capabilities for AI models.
+                </p>
               </div>
 
               <div class="p-4 rounded-xl border border-crush-border/30 bg-crush-surface/30">
                 <div class="flex items-center justify-between mb-2">
                   <h4 class="font-bold text-white">Redis Cache & Queue</h4>
-                  <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold font-mono">Port: 6379</span>
+                  <span
+                    class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold font-mono"
+                    >Port: 6379</span
+                  >
                 </div>
-                <p class="text-xs text-crush-textMuted">High-performance native Redis key-value cache store with disk-backed logging persistence.</p>
+                <p class="text-xs text-crush-textMuted">
+                  High-performance native Redis key-value cache store with disk-backed logging
+                  persistence.
+                </p>
               </div>
 
               <div class="p-4 rounded-xl border border-crush-border/30 bg-crush-surface/30">
                 <div class="flex items-center justify-between mb-2">
                   <h4 class="font-bold text-white">MongoDB</h4>
-                  <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold font-mono">Port: 27017</span>
+                  <span
+                    class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold font-mono"
+                    >Port: 27017</span
+                  >
                 </div>
-                <p class="text-xs text-crush-textMuted">NoSQL JSON document store for applications needing highly dynamic schema designs.</p>
+                <p class="text-xs text-crush-textMuted">
+                  NoSQL JSON document store for applications needing highly dynamic schema designs.
+                </p>
               </div>
 
               <div class="p-4 rounded-xl border border-crush-border/30 bg-crush-surface/30">
                 <div class="flex items-center justify-between mb-2">
                   <h4 class="font-bold text-white">MinIO (S3 Local Storage)</h4>
-                  <span class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold font-mono">Port: 9000</span>
+                  <span
+                    class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold font-mono"
+                    >Port: 9000</span
+                  >
                 </div>
-                <p class="text-xs text-crush-textMuted">Complete local Amazon S3 bucket alternative. Store files, images, and static assets locally with AWS sdk compatibility.</p>
+                <p class="text-xs text-crush-textMuted">
+                  Complete local Amazon S3 bucket alternative. Store files, images, and static
+                  assets locally with AWS sdk compatibility.
+                </p>
               </div>
             </div>
           </section>
@@ -72,7 +100,11 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
           <section class="mb-12">
             <h2 class="text-lg font-bold text-white mb-4">External Service Auto-Detection</h2>
             <p class="text-sm text-crush-textMuted leading-relaxed">
-              Crush is smart. During project startup, it auto-detects environment keys for third-party platforms like <strong>Supabase</strong>, <strong>Upstash</strong>, <strong>Firebase</strong>, <strong>Clerk</strong>, and <strong>Auth0</strong>. If present, it bypasses spinning up a duplicate local instance and seamlessly connects your runtime engine.
+              Crush is smart. During project startup, it auto-detects environment keys for
+              third-party platforms like <strong>Supabase</strong>, <strong>Upstash</strong>,
+              <strong>Firebase</strong>, <strong>Clerk</strong>, and <strong>Auth0</strong>. If
+              present, it bypasses spinning up a duplicate local instance and seamlessly connects
+              your runtime engine.
             </p>
           </section>
         </article>
@@ -81,13 +113,17 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
   `,
 })
 export class ServicesPageComponent implements OnInit {
-  constructor(private title: Title, private meta: Meta) {}
+  constructor(
+    private title: Title,
+    private meta: Meta
+  ) {}
 
   ngOnInit() {
     this.title.setTitle('Native Services - Crush Docs');
     this.meta.updateTag({
       name: 'description',
-      content: 'Run high-fidelity native services (Postgres, Redis, MongoDB, MinIO S3) with zero VM memory overhead.',
+      content:
+        'Run high-fidelity native services (Postgres, Redis, MongoDB, MinIO S3) with zero VM memory overhead.',
     });
   }
 }

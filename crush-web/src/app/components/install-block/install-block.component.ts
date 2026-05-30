@@ -155,18 +155,28 @@ const METHODS: InstallMethod[] = [
         class="rounded-xl border border-crush-border/30 bg-crush-surface/10 p-5 flex flex-col sm:flex-row items-center justify-between gap-4 transition-all duration-300 hover:border-crush-orange/20"
       >
         <div class="flex items-start gap-4">
-          <div class="h-10 w-10 flex items-center justify-center rounded-lg bg-crush-orange/10 text-crush-orange shrink-0">
-            <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" class="h-5 w-5">
-              <rect x="3" y="3" width="7" height="9" rx="1"/>
-              <rect x="14" y="3" width="7" height="5" rx="1"/>
-              <rect x="14" y="12" width="7" height="9" rx="1"/>
-              <rect x="3" y="16" width="7" height="5" rx="1"/>
+          <div
+            class="h-10 w-10 flex items-center justify-center rounded-lg bg-crush-orange/10 text-crush-orange shrink-0"
+          >
+            <svg
+              viewBox="0 0 24 24"
+              fill="none"
+              stroke="currentColor"
+              stroke-width="2"
+              class="h-5 w-5"
+            >
+              <rect x="3" y="3" width="7" height="9" rx="1" />
+              <rect x="14" y="3" width="7" height="5" rx="1" />
+              <rect x="14" y="12" width="7" height="9" rx="1" />
+              <rect x="3" y="16" width="7" height="5" rx="1" />
             </svg>
           </div>
           <div>
             <h4 class="text-sm font-semibold text-white">Looking for the Desktop GUI Dashboard?</h4>
             <p class="text-xs text-crush-textMuted mt-1 leading-relaxed">
-              Crush features a stunning, offline-first desktop GUI to monitor native containers, view real-time log streams, and auto-diagnose errors using Claude. Standard installer bundles are arriving in v1.0; until then, launch natively from source.
+              Crush features a stunning, offline-first desktop GUI to monitor native containers,
+              view real-time log streams, and auto-diagnose errors using Claude. Standard installer
+              bundles are arriving in v1.0; until then, launch natively from source.
             </p>
           </div>
         </div>
