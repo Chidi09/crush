@@ -1,9 +1,14 @@
 <script lang="ts">
   import '../app.css';
+  import { onMount } from 'svelte';
   import { page } from '$app/stores';
   import Sidebar from '$lib/components/Sidebar.svelte';
   import Toaster from '$lib/components/Toaster.svelte';
+  import { installNativeGuard } from '$lib/native-guard';
   let { children } = $props();
+
+  // Suppress browser-isms (reload / context menu / devtools) in production.
+  onMount(installNativeGuard);
 </script>
 
 <div class="app-shell">

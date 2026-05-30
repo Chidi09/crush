@@ -71,7 +71,9 @@ if (-not $SkipBuild) {
     pnpm build;   if ($LASTEXITCODE -ne 0) { throw "frontend build failed" }
     Pop-Location
     Push-Location $RepoPath
-    cargo build --release -p crush-gui
+    # --features custom-protocol is REQUIRED: without it Tauri builds in dev mode
+    # and the webview loads http://localhost:1420 instead of the embedded assets.
+    cargo build --release -p crush-gui --features custom-protocol
     if ($LASTEXITCODE -ne 0) { throw "GUI build failed" }
     Pop-Location
 }
