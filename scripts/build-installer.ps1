@@ -113,7 +113,6 @@ $outExe = Join-Path $distDir "Crush-Setup-$Version.exe"
 
 $args = @(
     "/V3",
-    "/X!addplugindir `"$pluginDir`"",
     "/DVERSION=$Version",
     "/DCLI_EXE=$cliExe",
     "/DGUI_EXE=$guiExe",

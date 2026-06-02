@@ -5,7 +5,8 @@
 ; .exe, so both binaries ship in one installer. Built by scripts/build-installer.ps1.
 ;
 ; PATH editing uses the EnVar plugin (https://nsis.sourceforge.io/EnVar_plug-in) —
-; the build script drops EnVar.dll into a local plugin dir and passes !addplugindir.
+; the build script fetches EnVar.dll into dist/_installer/EnVar/; the !addplugindir
+; directive below loads it relative to this file, avoiding space-in-path issues.
 ;
 ; Overridable defines (passed by the build script via makensis /D...):
 ;   VERSION   product version                         (default 0.0.0)
@@ -20,6 +21,10 @@
 !ifndef OUTFILE
   !define OUTFILE "Crush-Setup-${VERSION}.exe"
 !endif
+
+; EnVar plugin path resolved relative to this .nsi file — avoids space-in-path
+; quoting issues when passed via makensis command-line arguments.
+!addplugindir /x86-unicode "${__FILEDIR__}\..\dist\_installer\EnVar\Plugins\x86-unicode"
 
 Unicode true
 Name "Crush ${VERSION}"
@@ -42,7 +47,7 @@ SetCompressor /SOLID lzma
 !insertmacro MUI_PAGE_DIRECTORY
 !insertmacro MUI_PAGE_INSTFILES
 !ifdef GUI_EXE
-  !define MUI_FINISHPAGE_RUN "$INSTDIR\Crush.exe"
+  !define MUI_FINISHPAGE_RUN "$INSTDIR\crush-desktop.exe"
   !define MUI_FINISHPAGE_RUN_TEXT "Launch Crush desktop"
 !endif
 !insertmacro MUI_PAGE_FINISH
@@ -67,7 +72,7 @@ SectionEnd
 !ifdef GUI_EXE
 Section "Crush Desktop (GUI)" SecGUI
   SetOutPath "$INSTDIR"
-  File "/oname=Crush.exe" "${GUI_EXE}"
+  File "/oname=crush-desktop.exe" "${GUI_EXE}"
 
   ; Ensure the Edge WebView2 runtime is present (the GUI needs it).
   !ifdef WV2_BOOT
@@ -87,8 +92,8 @@ Section "Crush Desktop (GUI)" SecGUI
   !endif
 
   CreateDirectory "$SMPROGRAMS\Crush"
-  CreateShortCut "$SMPROGRAMS\Crush\Crush.lnk" "$INSTDIR\Crush.exe"
-  CreateShortCut "$DESKTOP\Crush.lnk" "$INSTDIR\Crush.exe"
+  CreateShortCut "$SMPROGRAMS\Crush\Crush.lnk" "$INSTDIR\crush-desktop.exe"
+  CreateShortCut "$DESKTOP\Crush.lnk" "$INSTDIR\crush-desktop.exe"
 SectionEnd
 !endif
 
@@ -128,7 +133,7 @@ Section "Uninstall"
   Pop $0
 
   Delete "$INSTDIR\crush.exe"
-  Delete "$INSTDIR\Crush.exe"
+  Delete "$INSTDIR\crush-desktop.exe"
   Delete "$INSTDIR\uninstall.exe"
   Delete "$SMPROGRAMS\Crush\Crush.lnk"
   RMDir  "$SMPROGRAMS\Crush"
