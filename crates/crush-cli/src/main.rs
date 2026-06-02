@@ -3004,8 +3004,10 @@ async fn main() -> anyhow::Result<()> {
         }
         Commands::Logs(args) => {
             info!("Streaming logs for container: {} (follow: {})", args.id, args.follow);
+            // Load all containers so the TUI's navigation still works.
             let containers_dir = data_dir.join("containers");
-            let mut found = false;
+            let mut all_containers: Vec<Container> = Vec::new();
+            let mut target_dir: Option<PathBuf> = None;
             if containers_dir.exists() {
                 let mut entries = tokio::fs::read_dir(&containers_dir).await?;
                 while let Some(entry) = entries.next_entry().await? {
@@ -3014,76 +3016,67 @@ async fn main() -> anyhow::Result<()> {
                         if let Ok(content) = tokio::fs::read_to_string(&json_path).await {
                             if let Ok(c) = serde_json::from_str::<Container>(&content) {
                                 if c.id == args.id || c.name == args.id {
-                                    found = true;
-                                    let stdout_path = entry.path().join("stdout.log");
-                                    let stderr_path = entry.path().join("stderr.log");
-                                    
-                                    if stdout_path.exists() {
-                                        if let Ok(logs) = tokio::fs::read_to_string(&stdout_path).await {
-                                            print!("{}", logs);
-                                        }
-                                    }
-                                    if stderr_path.exists() {
-                                        if let Ok(logs) = tokio::fs::read_to_string(&stderr_path).await {
-                                            eprint!("{}", logs);
-                                        }
-                                    }
-                                    
-                                    if args.follow {
-                                        let mut stdout_offset = if stdout_path.exists() {
-                                            tokio::fs::metadata(&stdout_path).await.map(|m| m.len()).unwrap_or(0)
-                                        } else { 0 };
-                                        let mut stderr_offset = if stderr_path.exists() {
-                                            tokio::fs::metadata(&stderr_path).await.map(|m| m.len()).unwrap_or(0)
-                                        } else { 0 };
-                                        
-                                        loop {
-                                            tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
-                                            if stdout_path.exists() {
-                                                if let Ok(mut f) = tokio::fs::File::open(&stdout_path).await {
-                                                    use tokio::io::{AsyncReadExt, AsyncSeekExt};
-                                                    let len = f.seek(std::io::SeekFrom::End(0)).await.ok().unwrap_or(0);
-                                                    if len > stdout_offset {
-                                                        let _ = f.seek(std::io::SeekFrom::Start(stdout_offset)).await;
-                                                        let mut buf = Vec::new();
-                                                        let _ = f.read_to_end(&mut buf).await;
-                                                        if !buf.is_empty() {
-                                                            print!("{}", String::from_utf8_lossy(&buf));
-                                                            use std::io::Write;
-                                                            let _ = std::io::stdout().flush();
-                                                            stdout_offset += buf.len() as u64;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                            if stderr_path.exists() {
-                                                if let Ok(mut f) = tokio::fs::File::open(&stderr_path).await {
-                                                    use tokio::io::{AsyncReadExt, AsyncSeekExt};
-                                                    let len = f.seek(std::io::SeekFrom::End(0)).await.ok().unwrap_or(0);
-                                                    if len > stderr_offset {
-                                                        let _ = f.seek(std::io::SeekFrom::Start(stderr_offset)).await;
-                                                        let mut buf = Vec::new();
-                                                        let _ = f.read_to_end(&mut buf).await;
-                                                        if !buf.is_empty() {
-                                                            eprint!("{}", String::from_utf8_lossy(&buf));
-                                                            use std::io::Write;
-                                                            let _ = std::io::stderr().flush();
-                                                            stderr_offset += buf.len() as u64;
-                                                        }
-                                                    }
-                                                }
-                                            }
-                                        }
-                                    }
-                                    break;
+                                    target_dir = Some(entry.path());
                                 }
+                                all_containers.push(c);
                             }
                         }
                     }
                 }
             }
-            if !found {
+
+            if target_dir.is_none() {
                 eprintln!("Container {} not found", args.id);
+            } else if !cli.no_interactive && atty::is(atty::Stream::Stdout) {
+                // Interactive terminal: open TUI Logs tab pinned to this container.
+                let tui = TuiApp::new(1, data_dir.clone());
+                tui.run_logs(all_containers, &args.id)?;
+            } else {
+                // Piped / non-interactive: raw text, try both log file conventions.
+                let dir = target_dir.unwrap();
+                let mut printed = false;
+                for (out_name, err_name) in &[
+                    ("crush-run.log", "crush-run.err"),
+                    ("stdout.log",    "stderr.log"),
+                ] {
+                    let out_path = dir.join(out_name);
+                    let err_path = dir.join(err_name);
+                    if out_path.exists() || err_path.exists() {
+                        if let Ok(s) = tokio::fs::read_to_string(&out_path).await { print!("{}", s); }
+                        if let Ok(s) = tokio::fs::read_to_string(&err_path).await  { eprint!("{}", s); }
+                        printed = true;
+                        if args.follow {
+                            let mut out_off = tokio::fs::metadata(&out_path).await.map(|m| m.len()).unwrap_or(0);
+                            let mut err_off = tokio::fs::metadata(&err_path).await.map(|m| m.len()).unwrap_or(0);
+                            loop {
+                                tokio::time::sleep(tokio::time::Duration::from_millis(200)).await;
+                                for (path, offset) in [(&out_path, &mut out_off), (&err_path, &mut err_off)] {
+                                    if path.exists() {
+                                        if let Ok(mut f) = tokio::fs::File::open(path).await {
+                                            use tokio::io::{AsyncReadExt, AsyncSeekExt};
+                                            let len = f.seek(std::io::SeekFrom::End(0)).await.unwrap_or(0);
+                                            if len > *offset {
+                                                let _ = f.seek(std::io::SeekFrom::Start(*offset)).await;
+                                                let mut buf = Vec::new();
+                                                let _ = f.read_to_end(&mut buf).await;
+                                                if !buf.is_empty() {
+                                                    use std::io::Write;
+                                                    print!("{}", String::from_utf8_lossy(&buf));
+                                                    let _ = std::io::stdout().flush();
+                                                    *offset += buf.len() as u64;
+                                                }
+                                            }
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                        break;
+                    }
+                }
+                if !printed {
+                    eprintln!("No logs found for container {}", args.id);
+                }
             }
         }
         Commands::Debug(args) => {
@@ -3145,29 +3138,61 @@ async fn main() -> anyhow::Result<()> {
                     None,
                     project_root.as_deref(),
                 ).await?;
-                println!("\n=== AI Debug Diagnosis for container {} ===", args.id);
+                // Format the diagnosis into two pane strings.
+                let mut source_pane = stderr.lines().take(40)
+                    .enumerate()
+                    .map(|(i, l)| format!("{:>3}: {}", i + 1, l))
+                    .collect::<Vec<_>>()
+                    .join("\n");
                 if let Some(ref trace) = full.trace {
-                    println!("  Language:  {}", trace.language);
-                    println!("  Exception: {}", trace.exception_type);
-                    println!("  Message:   {}", trace.message);
-                    println!("  File:      {}:{}", trace.file, trace.line);
-                    println!("  Frames:    {}", trace.stack_frames.len());
+                    source_pane = format!(
+                        "Language:  {}\nException: {}\nMessage:   {}\nFile:      {}:{}\nFrames:    {}\n\n{}",
+                        trace.language, trace.exception_type, trace.message,
+                        trace.file, trace.line, trace.stack_frames.len(),
+                        source_pane
+                    );
                 }
+
+                let mut diag_pane = String::new();
                 if let Some(ref diag) = full.diagnosis {
-                    println!("\n  Root cause:  {}", diag.root_cause);
-                    println!("  Fix:         {}", diag.fix_description);
-                    println!("  Confidence:  {:.2}", diag.confidence);
-                                    if let Some(ref patch) = diag.proposed_patch {
-                        println!("  Patch:\n{}", patch);
+                    diag_pane.push_str(&format!("Root cause:\n  {}\n\nFix:\n  {}\n\nConfidence: {:.0}%\n",
+                        diag.root_cause, diag.fix_description, diag.confidence * 100.0));
+                    if let Some(ref patch) = diag.proposed_patch {
+                        diag_pane.push_str(&format!("\nSuggested patch:\n{}\n", patch));
                     }
                 }
                 for be in &full.build_errors {
-                    println!("  Build error [{:?}]: {} at {}:{}", be.kind, be.message,
+                    diag_pane.push_str(&format!("\nBuild error [{:?}]:\n  {} at {}:{}\n",
+                        be.kind, be.message,
                         be.file.as_deref().unwrap_or("<unknown>"),
-                        be.line.unwrap_or(0));
+                        be.line.unwrap_or(0)));
                 }
-                if full.trace.is_none() && full.diagnosis.is_none() && full.build_errors.is_empty() {
-                    println!("  No structured error found. Raw stderr:\n{}", stderr);
+                if diag_pane.is_empty() {
+                    diag_pane = "No structured diagnosis. See left pane for raw stderr.".to_string();
+                }
+
+                if !cli.no_interactive && atty::is(atty::Stream::Stdout) {
+                    // Load all containers for TUI navigation, then open Debug tab.
+                    let mut all_containers: Vec<Container> = Vec::new();
+                    let cdir = data_dir.join("containers");
+                    if cdir.exists() {
+                        if let Ok(mut entries) = tokio::fs::read_dir(&cdir).await {
+                            while let Some(e) = entries.next_entry().await.ok().flatten() {
+                                let jp = e.path().join("container.json");
+                                if let Ok(c) = tokio::fs::read_to_string(&jp).await
+                                    .and_then(|s| serde_json::from_str::<Container>(&s).map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e)))
+                                {
+                                    all_containers.push(c);
+                                }
+                            }
+                        }
+                    }
+                    let tui = TuiApp::new(1, data_dir.clone());
+                    tui.run_debug(all_containers, &args.id, source_pane, diag_pane)?;
+                } else {
+                    // Non-interactive: plain text output.
+                    println!("\n=== AI Debug Diagnosis for container {} ===\n", args.id);
+                    println!("{}\n\n---\n\n{}", source_pane, diag_pane);
                 }
             }
         }

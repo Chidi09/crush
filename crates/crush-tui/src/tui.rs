@@ -286,15 +286,29 @@ struct App {
     compose_services: Vec<ComposeService>,
     compose_logs: Vec<String>,
 
-    // Debug view state
-    debug_source: String,
-    debug_fix: String,
+    // Debug view state: (source snippet, AI diagnosis text).
+    // None = no container selected or diagnosis not yet run.
+    debug_info: Option<(String, String)>,
+
+    // When opened via `crush logs <id>`, this pins the initial selection.
+    pinned_container_id: Option<String>,
 }
 
 impl App {
-    fn new(containers: Vec<Container>, initial_tab: usize, data_dir: std::path::PathBuf) -> Self {
+    fn new(
+        containers: Vec<Container>,
+        initial_tab: usize,
+        data_dir: std::path::PathBuf,
+        debug_info: Option<(String, String)>,
+        pinned_container_id: Option<String>,
+    ) -> Self {
         let mut table_state = TableState::default();
-        if !containers.is_empty() { table_state.select(Some(0)); }
+        // If a specific container is pinned (e.g. `crush logs <id>`), select it;
+        // otherwise default to the first row.
+        let initial_selection = pinned_container_id.as_deref()
+            .and_then(|id| containers.iter().position(|c| c.id == id || c.name == id))
+            .or_else(|| if !containers.is_empty() { Some(0) } else { None });
+        table_state.select(initial_selection);
 
         let mut cpu_history: HashMap<String, VecDeque<f32>> = HashMap::new();
         let mut mem_history: HashMap<String, VecDeque<f32>> = HashMap::new();
@@ -318,24 +332,6 @@ impl App {
             Vec::new()
         };
 
-        let debug_source = r#"40: let database_url = std::env::var("DATABASE_URL")
-41:     .expect("DATABASE_URL is not set!");
->>> 42: let pool = PgPool::connect(&database_url)
-43:     .await
-44:     .map_err(|e| Error::Database(e))?;"#.to_string();
-
-        let debug_fix = r#"Root Cause:
-  The environment variable "DATABASE_URL" was not supplied, or PgPool attempted
-  to connect to an offline postgres container.
-
-AI Diagnosis Suggested Fix:
-  1. Add DATABASE_URL to your environment variables inside Crushfile.
-  2. Ensure the db service container is running prior to starting the web container.
-  
-Suggested Patch:
-  crush env set DATABASE_URL="postgres://postgres:secret@localhost:5432/crush"
-  Confidence: 98%"#.to_string();
-
         Self {
             containers,
             cpu_history,
@@ -356,8 +352,8 @@ Suggested Patch:
             active_search_match: 0,
             compose_services,
             compose_logs,
-            debug_source,
-            debug_fix,
+            debug_info,
+            pinned_container_id,
         }
     }
 
@@ -514,27 +510,30 @@ Suggested Patch:
     }
 
     fn get_streaming_logs(&self, container_id: &str) -> Vec<String> {
-        let container_dir = self.data_dir.join("containers").join(container_id);
-        let log_path = container_dir.join("crush-run.log");
-        let err_path = container_dir.join("crush-run.err");
+        let dir = self.data_dir.join("containers").join(container_id);
         let mut lines = Vec::new();
-        if let Ok(content) = std::fs::read_to_string(&log_path) {
-            for line in content.lines() {
-                lines.push(format!("[info] {}", line));
+        // Try both naming conventions: crush-run.* (stateless engine) and
+        // stdout/stderr.log (older path). Non-empty file wins.
+        for (stdout_name, stderr_name) in &[
+            ("crush-run.log", "crush-run.err"),
+            ("stdout.log",    "stderr.log"),
+        ] {
+            let out = dir.join(stdout_name);
+            let err = dir.join(stderr_name);
+            let mut batch = Vec::new();
+            if let Ok(c) = std::fs::read_to_string(&out) {
+                for l in c.lines() { batch.push(format!("[out] {}", l)); }
             }
-        }
-        if let Ok(content) = std::fs::read_to_string(&err_path) {
-            for line in content.lines() {
-                lines.push(format!("[error] {}", line));
+            if let Ok(c) = std::fs::read_to_string(&err) {
+                for l in c.lines() { batch.push(format!("[err] {}", l)); }
+            }
+            if !batch.is_empty() {
+                lines = batch;
+                break;
             }
         }
         if lines.is_empty() {
-            vec![
-                "[info] Starting express backend on :3000...".to_string(),
-                "[info] Connected to redis successfully".to_string(),
-                "[info] GET /api/v1/health 200 OK - 4ms".to_string(),
-                "[info] GET /api/v1/users 200 OK - 12ms".to_string(),
-            ]
+            vec!["  (no logs yet — container may still be starting)".to_string()]
         } else {
             lines
         }
@@ -559,7 +558,7 @@ fn render_header(f: &mut Frame, area: Rect, app: &mut App) {
         Span::raw("  "),
         Span::styled("CRUSH", Style::default().fg(Color::White).add_modifier(Modifier::BOLD)),
         Span::raw("  "),
-        Span::styled("v0.1.0", Style::default().fg(DIM)),
+        Span::styled(concat!("v", env!("CARGO_PKG_VERSION")), Style::default().fg(DIM)),
         Span::raw("  "),
         Span::styled("container runtime", Style::default().fg(DIM).add_modifier(Modifier::ITALIC)),
     ]))
@@ -930,12 +929,20 @@ fn render_debug(f: &mut Frame, area: Rect, app: &mut App) {
         .constraints([Constraint::Percentage(50), Constraint::Percentage(50)])
         .split(area);
 
-    let left = Paragraph::new(app.debug_source.clone())
+    let (source_text, diag_text) = match &app.debug_info {
+        Some((src, diag)) => (src.as_str(), diag.as_str()),
+        None => (
+            "  No container selected.\n  Navigate to Containers tab, select one, then press d.",
+            "  Run `crush debug <id>` to load an AI diagnosis for a container.",
+        ),
+    };
+
+    let left = Paragraph::new(source_text)
         .style(Style::default().fg(Color::White))
-        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(BORDER)).title(" source pane "));
+        .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(BORDER)).title(" stderr / crash log "));
     f.render_widget(left, chunks[0]);
 
-    let right = Paragraph::new(app.debug_fix.clone())
+    let right = Paragraph::new(diag_text)
         .style(Style::default().fg(CYAN))
         .block(Block::default().borders(Borders::ALL).border_style(Style::default().fg(BORDER_HOT)).title(" AI diagnosis & proposed patch "));
     f.render_widget(right, chunks[1]);
@@ -1053,11 +1060,42 @@ impl TuiApp {
     }
 
     pub fn run_ps(&self, containers: Vec<Container>) -> io::Result<()> {
-        run_interactive(App::new(containers, 0, self.data_dir.clone()))
+        run_interactive(App::new(containers, 0, self.data_dir.clone(), None, None))
     }
 
     pub fn run_stats(&self, containers: Vec<Container>) -> io::Result<()> {
-        run_interactive(App::new(containers, 1, self.data_dir.clone()))
+        run_interactive(App::new(containers, 1, self.data_dir.clone(), None, None))
+    }
+
+    /// Open the TUI pre-focused on the Logs tab for a specific container.
+    /// Passes through all containers so the user can still navigate away.
+    pub fn run_logs(&self, containers: Vec<Container>, focused_id: &str) -> io::Result<()> {
+        run_interactive(App::new(
+            containers,
+            3,
+            self.data_dir.clone(),
+            None,
+            Some(focused_id.to_string()),
+        ))
+    }
+
+    /// Open the TUI pre-focused on the Debug tab, pre-loaded with real diagnosis
+    /// text produced by `crush debug`. `stderr_snippet` is the raw log/crash text;
+    /// `diagnosis` is the formatted AI output (or offline pattern match).
+    pub fn run_debug(
+        &self,
+        containers: Vec<Container>,
+        focused_id: &str,
+        stderr_snippet: String,
+        diagnosis: String,
+    ) -> io::Result<()> {
+        run_interactive(App::new(
+            containers,
+            4,
+            self.data_dir.clone(),
+            Some((stderr_snippet, diagnosis)),
+            Some(focused_id.to_string()),
+        ))
     }
 
     // Non-interactive fallback for piped / non-TTY output
