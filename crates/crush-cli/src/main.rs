@@ -3056,17 +3056,36 @@ async fn main() -> anyhow::Result<()> {
                 }
             }
             if let Some(ref cdir) = container_dir_found {
-                let stderr_path = cdir.join("stderr.log");
-                if stderr_path.exists() {
-                    stderr_content = tokio::fs::read_to_string(&stderr_path).await.ok();
+                // Try the common log sinks in order; the stateless runtime writes
+                // crush-run.err / crush-run.log, while older paths used stderr.log.
+                for candidate in ["stderr.log", "crush-run.err", "crush-run.log"] {
+                    let p = cdir.join(candidate);
+                    if p.exists() {
+                        if let Ok(c) = tokio::fs::read_to_string(&p).await {
+                            if !c.trim().is_empty() {
+                                stderr_content = Some(c);
+                                break;
+                            }
+                        }
+                    }
                 }
             }
             let stderr = stderr_content.as_deref().unwrap_or("");
             if stderr.is_empty() {
                 println!("No stderr log found for container {}. Nothing to diagnose.", args.id);
             } else {
-                let api_key = std::env::var("ANTHROPIC_API_KEY").ok();
-                let mut engine = AiEngine::new(api_key, data_dir.clone());
+                // Resolve the AI key: explicit config.json override (ai_api_key)
+                // takes precedence, else the environment (Gemini preferred, then
+                // Anthropic). End users bring their own key.
+                let cfg_key = std::fs::read_to_string(data_dir.join("config.json")).ok()
+                    .and_then(|c| serde_json::from_str::<serde_json::Value>(&c).ok())
+                    .and_then(|j| j.get("ai_api_key").and_then(|v| v.as_str()).map(|s| s.to_string()))
+                    .filter(|s| !s.trim().is_empty());
+                let engine = AiEngine::new(cfg_key, data_dir.clone());
+                match engine.active_provider() {
+                    Some(p) => println!("AI provider: {}", p),
+                    None => println!("AI provider: offline patterns only (set GEMINI_API_KEY for full AI diagnosis)"),
+                }
                 let project_root = std::env::current_dir().ok();
                 let full = engine.diagnose_stderr(
                     stderr,

@@ -1,6 +1,8 @@
 pub mod parsers;
+pub mod parsers_ext;
 pub mod source;
 pub mod ai_client;
+pub mod provider;
 pub mod offline;
 pub mod history;
 
@@ -10,6 +12,7 @@ use anyhow::Result;
 pub use parsers::{StackTrace, ParsedFrame, BuildError, BuildErrorKind};
 pub use source::SourceContext;
 pub use ai_client::DiagnosisResult;
+pub use provider::{LlmClient, Provider};
 pub use history::ErrorHistory;
 
 #[derive(Debug, Clone)]
@@ -29,6 +32,22 @@ pub struct AiEngine {
 impl AiEngine {
     pub fn new(api_key: Option<String>, data_dir: PathBuf) -> Self {
         Self { api_key, data_dir }
+    }
+
+    /// Resolve the LLM client this engine will use: an explicit `api_key`
+    /// override (provider inferred from key shape) takes precedence, otherwise
+    /// the environment is consulted (Gemini preferred, then Anthropic).
+    pub fn resolve_client(&self) -> Option<LlmClient> {
+        match self.api_key.as_ref().filter(|k| !k.trim().is_empty()) {
+            Some(key) => Some(LlmClient::from_key(key.clone())),
+            None => LlmClient::from_env(),
+        }
+    }
+
+    /// Human-readable "provider (model)" label, or `None` when no key is set
+    /// (offline pattern diagnosis only).
+    pub fn active_provider(&self) -> Option<String> {
+        self.resolve_client().map(|c| c.label())
     }
 
     pub async fn diagnose_stderr(
@@ -61,20 +80,20 @@ impl AiEngine {
         let mut diagnosis = offline.match_stderr(stderr);
 
         if diagnosis.is_none() {
-            if let Some(ref key) = self.api_key {
-                let client = ai_client::AiClient::new(key.clone());
+            // Resolve a provider: an explicit key (from GUI config) is honoured
+            // via key-shape inference; otherwise fall back to the environment
+            // (Gemini preferred, then Anthropic). Users bring their own key.
+            if let Some(client) = self.resolve_client() {
                 let error_json = if let Some(ref t) = trace {
                     serde_json::to_string(t).unwrap_or_else(|_| stderr.to_string())
                 } else {
                     stderr.to_string()
                 };
                 let source_str = source_context.as_ref().map(|ctx| ctx.format());
-                let req = ai_client::DiagnosisRequest {
-                    error_json,
-                    source_context: source_str,
-                    project_summary: None,
-                };
-                if let Ok(res) = client.diagnose(req).await {
+                if let Ok(res) = client
+                    .diagnose_error(&error_json, source_str.as_deref(), None)
+                    .await
+                {
                     diagnosis = Some(res);
                 }
             }

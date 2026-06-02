@@ -39,6 +39,16 @@ static SECRET_PATTERNS: &[(&str, &str, &str, bool)] = &[
                       "HTTP Basic Auth credentials in URL", false),
     ("hex_key",       r"[0-9a-f]{64}",
                       "Possible hex-encoded key", true),
+
+    // ── Crush / olpdf / variantrade proprietary tokens ───────────────────────
+    // Exact-format DFA matches (prefix + fixed charset + length) — far lower
+    // false-positive rate than generic entropy scanning on these shapes.
+    ("crush_api_key",     r"\bcrush_sk_[A-Za-z0-9]{31}\b",
+                          "Crush API key (internal)", false),
+    ("olpdf_auth_token",  r"\bolpdf_auth_[a-f0-9]{21}\b",
+                          "olpdf auth token (internal)", false),
+    ("variantrade_token", r"\bvrt_live_[A-Za-z0-9\-_]{39}",
+                          "variantrade live token (internal)", false),
 ];
 
 static SENSITIVE_VAR_NAMES: &[&str] = &[

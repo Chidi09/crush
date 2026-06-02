@@ -26,6 +26,8 @@ pub enum BuildErrorKind {
     Rust,
     Python,
     Go,
+    Cpp,
+    CSharp,
     Generic,
 }
 
@@ -40,8 +42,31 @@ pub struct BuildError {
 }
 
 pub fn detect_language(stderr: &str) -> &str {
+    // Order matters: check the most distinctive markers first. Deno is checked
+    // before Node (it contains `node:`/`ext:` markers that would match Node).
     if stderr.contains("Traceback (most recent call last)") {
         "Python"
+    } else if stderr.contains("received signal SIG")
+        || stderr.contains("AddressSanitizer:")
+        || stderr.contains("(gdb)")
+    {
+        "Cpp"
+    } else if stderr.contains("Unhandled exception.")
+        || stderr.contains("--- End of inner exception stack trace ---")
+    {
+        "DotNet"
+    } else if stderr.contains("error: Uncaught")
+        && (stderr.contains("file:///")
+            || stderr.contains("ext:deno")
+            || stderr.contains("deno:runtime"))
+    {
+        "Deno"
+    } else if stderr.contains("Stack trace:") && stderr.contains("#0 ")
+        || stderr.contains("Fatal error: Uncaught")
+    {
+        "PHP"
+    } else if stderr.contains(".rb:") && (stderr.contains(":in '") || stderr.contains(":in `")) {
+        "Ruby"
     } else if stderr.contains("at Object.<anonymous>") || stderr.contains("at ") && (stderr.contains("node:") || stderr.contains("js")) {
         "Node"
     } else if stderr.contains("thread 'main' panicked") || stderr.contains("stack backtrace:") {
@@ -382,12 +407,18 @@ pub fn parse_java(stderr: &str) -> Option<StackTrace> {
 }
 
 pub fn parse(stderr: &str) -> Option<StackTrace> {
+    use crate::parsers_ext;
     match detect_language(stderr) {
         "Node" => parse_nodejs(stderr),
         "Python" => parse_python(stderr),
         "Rust" => parse_rust_panic(stderr),
         "Go" => parse_go(stderr),
         "Java" => parse_java(stderr),
+        "Ruby" => parsers_ext::parse_ruby(stderr),
+        "PHP" => parsers_ext::parse_php(stderr),
+        "DotNet" => parsers_ext::parse_dotnet(stderr),
+        "Deno" => parsers_ext::parse_deno(stderr),
+        "Cpp" => parsers_ext::parse_cpp(stderr),
         _ => None,
     }
 }
@@ -398,6 +429,10 @@ pub fn parse_build_errors(stderr: &str) -> Vec<BuildError> {
 
     // Parse TypeScript compilation errors (tsc): "src/file.ts(10,15): error TS2304: Cannot find name 'x'."
     let re_ts = Regex::new(r"(?P<file>[^(]+)\((?P<line>\d+),(?P<col>\d+)\):\s*error\s+(?P<code>TS\d+):\s*(?P<msg>.+)").ok().unwrap();
+    // Parse C# MSBuild errors: "src\API\Program.cs(42,18): error CS1002: ; expected [Api.csproj]"
+    let re_cs = Regex::new(r"(?P<file>[^(]+)\((?P<line>\d+),(?P<col>\d+)\):\s*error\s+(?P<code>CS\d+):\s*(?P<msg>.+?)(?:\s*\[(?P<proj>[^\]]+)\])?$").ok().unwrap();
+    // Parse GCC/Clang diagnostics: "src/binding.cpp:173:9: error: 'nullptr' was not declared" (col optional)
+    let re_gcc = Regex::new(r"^(?P<file>[^:\n]+):(?P<line>\d+):(?:(?P<col>\d+):)?\s+(?:fatal\s+)?(?P<sev>error|warning|note):\s+(?P<msg>.+)$").ok().unwrap();
     // Parse Go build errors: "./main.go:10:15: undefined: x"
     let re_go = Regex::new(r"(?P<file>[^:]+):(?P<line>\d+):(?P<col>\d+):\s*(?P<msg>.+)").ok().unwrap();
 
@@ -411,6 +446,27 @@ pub fn parse_build_errors(stderr: &str) -> Vec<BuildError> {
                 column: caps.name("col").and_then(|m| m.as_str().parse().ok()),
                 code: caps.name("code").map(|m| m.as_str().to_string()),
             });
+        } else if let Some(caps) = re_cs.captures(line) {
+            errors.push(BuildError {
+                kind: BuildErrorKind::CSharp,
+                message: caps.name("msg").map(|m| m.as_str().trim().to_string()).unwrap_or_default(),
+                file: caps.name("file").map(|m| m.as_str().trim().to_string()),
+                line: caps.name("line").and_then(|m| m.as_str().parse().ok()),
+                column: caps.name("col").and_then(|m| m.as_str().parse().ok()),
+                code: caps.name("code").map(|m| m.as_str().to_string()),
+            });
+        } else if let Some(caps) = re_gcc.captures(line) {
+            // Only record hard errors, not warnings/notes (keeps the signal clean).
+            if caps.name("sev").map(|m| m.as_str()) == Some("error") {
+                errors.push(BuildError {
+                    kind: BuildErrorKind::Cpp,
+                    message: caps.name("msg").map(|m| m.as_str().to_string()).unwrap_or_default(),
+                    file: caps.name("file").map(|m| m.as_str().trim().to_string()),
+                    line: caps.name("line").and_then(|m| m.as_str().parse().ok()),
+                    column: caps.name("col").and_then(|m| m.as_str().parse().ok()),
+                    code: None,
+                });
+            }
         } else if let Some(caps) = re_go.captures(line) {
             errors.push(BuildError {
                 kind: BuildErrorKind::Go,
