@@ -993,6 +993,8 @@ fn generate_dockerfile(stack: &crush_build::InferredStack) -> String {
             s.push_str("CMD [\"/app\"]\n");
         }
         "rust" => {
+            // Docker images are always Linux — strip .exe from Windows-detected paths.
+            let bin_path = stack.entry_point.trim_end_matches(".exe");
             s.push_str("FROM rust:alpine AS build\n");
             s.push_str("WORKDIR /src\n");
             s.push_str("RUN apk add --no-cache musl-dev\n");
@@ -1000,7 +1002,7 @@ fn generate_dockerfile(stack: &crush_build::InferredStack) -> String {
             s.push_str("RUN cargo build --release\n\n");
             s.push_str("FROM alpine:3.20\n");
             s.push_str("RUN apk add --no-cache ca-certificates\n");
-            s.push_str(&format!("COPY --from=build /src/{} /app\n", stack.entry_point));
+            s.push_str(&format!("COPY --from=build /src/{} /app\n", bin_path));
             s.push_str(&format!("ENV PORT={}\nEXPOSE {}\nCMD [\"/app\"]\n", port, port));
         }
         "java" => {
@@ -1033,6 +1035,11 @@ fn generate_dockerfile(stack: &crush_build::InferredStack) -> String {
                 port, port, stack.entry_point.replace('"', "\\\"")));
         }
         "dotnet" => {
+            // entry_point = "dotnet out/AssemblyName.dll" — extract just the filename.
+            let dll = stack.entry_point
+                .split('/').last()
+                .filter(|s| s.ends_with(".dll"))
+                .unwrap_or("app.dll");
             s.push_str("FROM mcr.microsoft.com/dotnet/sdk:8.0 AS build\n");
             s.push_str("WORKDIR /src\n");
             s.push_str("COPY . .\n");
@@ -1040,7 +1047,7 @@ fn generate_dockerfile(stack: &crush_build::InferredStack) -> String {
             s.push_str("FROM mcr.microsoft.com/dotnet/aspnet:8.0\n");
             s.push_str("WORKDIR /app\n");
             s.push_str("COPY --from=build /out .\n");
-            s.push_str(&format!("ENV ASPNETCORE_URLS=http://+:{}\nEXPOSE {}\nENTRYPOINT [\"dotnet\",\"app.dll\"]\n", port, port));
+            s.push_str(&format!("ENV ASPNETCORE_URLS=http://+:{}\nEXPOSE {}\nENTRYPOINT [\"dotnet\",\"{}\"]\n", port, port, dll));
         }
         "elixir" => {
             s.push_str("FROM elixir:1.17-alpine AS build\n");
@@ -1054,6 +1061,52 @@ fn generate_dockerfile(stack: &crush_build::InferredStack) -> String {
             s.push_str("RUN apk add --no-cache libstdc++ openssl ncurses\n");
             s.push_str("COPY --from=build /src/_build/prod/rel /app\n");
             s.push_str(&format!("ENV PORT={}\nEXPOSE {}\nCMD [\"/app/bin/server\",\"start\"]\n", port, port));
+        }
+        "deno" => {
+            let entry = stack.entry_point.replace('"', "\\\"");
+            s.push_str(&format!("FROM {} AS build\n", base));
+            s.push_str("WORKDIR /app\n");
+            s.push_str("COPY deno.json deno.jsonc* deno.lock* ./\n");
+            s.push_str("COPY . .\n");
+            // Cache dependencies at build time so the runtime image starts fast.
+            s.push_str(&format!("RUN deno cache {}\n\n", entry));
+            s.push_str(&format!("FROM {}\n", base));
+            s.push_str("WORKDIR /app\n");
+            s.push_str("COPY --from=build /app .\n");
+            s.push_str(&format!("ENV PORT={}\n", port));
+            s.push_str(&format!("EXPOSE {}\n", port));
+            s.push_str(&format!(
+                "CMD [\"deno\",\"run\",\"--allow-net\",\"--allow-env\",\"--allow-read\",\"{}\"]\n",
+                entry
+            ));
+        }
+        "bun" => {
+            let entry = stack.entry_point.replace('"', "\\\"");
+            s.push_str(&format!("FROM {} AS deps\n", base));
+            s.push_str("WORKDIR /app\n");
+            s.push_str("COPY package.json bun.lockb* ./\n");
+            s.push_str("RUN bun install --frozen-lockfile\n\n");
+            s.push_str(&format!("FROM {}\n", base));
+            s.push_str("WORKDIR /app\n");
+            s.push_str("COPY --from=deps /app/node_modules ./node_modules\n");
+            s.push_str("COPY . .\n");
+            s.push_str(&format!("ENV PORT={}\n", port));
+            s.push_str(&format!("EXPOSE {}\n", port));
+            s.push_str(&format!("CMD [\"bun\",\"run\",\"{}\"]\n", entry));
+        }
+        "swift" => {
+            // entry_point = ".build/release/app" — binary name is the last segment.
+            let bin_name = stack.entry_point.split('/').last().unwrap_or("app");
+            s.push_str(&format!("FROM {} AS build\n", base));
+            s.push_str("WORKDIR /src\n");
+            s.push_str("COPY . .\n");
+            s.push_str("RUN swift build -c release\n\n");
+            // Swift runtime is large; copy only the binary into a slim Ubuntu image.
+            s.push_str("FROM ubuntu:22.04\n");
+            s.push_str("RUN apt-get update && apt-get install -y --no-install-recommends \\\n");
+            s.push_str("    libicu-dev libcurl4 libxml2 && rm -rf /var/lib/apt/lists/*\n");
+            s.push_str(&format!("COPY --from=build /src/.build/release/{} /app\n", bin_name));
+            s.push_str(&format!("ENV PORT={}\nEXPOSE {}\nCMD [\"/app\"]\n", port, port));
         }
         _ => {
             s.push_str(&format!("FROM {}\n", base));

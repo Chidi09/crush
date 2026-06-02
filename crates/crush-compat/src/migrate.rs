@@ -8,8 +8,6 @@ pub struct MigrationReport {
     pub stage_count: usize,
     pub instruction_count: usize,
     pub merged_run_count: usize,
-    pub original_size_estimate_mb: u64,
-    pub optimized_size_estimate_mb: u64,
     pub suggestions: Vec<String>,
     pub warnings: Vec<String>,
 }
@@ -82,83 +80,94 @@ impl DockerfileMigrator {
             stage_count: dockerfile.stages.len(),
             instruction_count: ins_count,
             merged_run_count: run_commands.len(),
-            original_size_estimate_mb: 500,
-            optimized_size_estimate_mb: 300,
             suggestions,
             warnings,
         })
     }
 
     pub fn generate_crushfile(&self, dockerfile: &crate::dockerfile::Dockerfile) -> Result<String> {
-        let mut output = String::new();
-        output.push_str("# Crushfile — migrated from Dockerfile\n");
-        output.push_str("# Optimized for crush build system\n\n");
+        // Walk all stages to collect the key fields the Crushfile format needs.
+        let mut base_image = String::new();
+        let mut build_cmds: Vec<String> = Vec::new();
+        let mut entry = String::new();
+        let mut port: u16 = 0;
+        let mut env_vars: Vec<(String, String)> = Vec::new();
+        let mut env_comments: Vec<String> = Vec::new();
 
-        for (i, stage) in dockerfile.stages.iter().enumerate() {
-            let stage_name = stage.name.clone().unwrap_or_else(|| {
-                if i == 0 { "build".to_string() } else { format!("stage_{}", i) }
-            });
-
-            output.push_str(&format!("[[stages]]\nname = \"{}\"\n", stage_name));
-
-            if let Some(ref base) = stage.base_image {
-                output.push_str(&format!("image = \"{}\"\ntype = \"base\"\n\n", base));
+        for stage in &dockerfile.stages {
+            if let Some(ref img) = stage.base_image {
+                base_image = img.clone();
             }
-
             for ins in &stage.instructions {
                 match ins {
-                    DockerInstruction::From { .. } => {}
-                    DockerInstruction::Run { command, .. } => {
-                        output.push_str(&format!("[[stages]]\ntype = \"run\"\ncommand = \"\"\"{}\n\"\"\"\n\n", command));
-                    }
-                    DockerInstruction::Copy { src, dest, from, .. } => {
-                        if let Some(f) = from {
-                            output.push_str(&format!("[[stages]]\ntype = \"copy\"\nfrom = \"{}\"\nrule = \"{} {}\"\n\n", f, src, dest));
-                        } else {
-                            output.push_str(&format!("[[stages]]\ntype = \"copy\"\nrule = \"{} {}\"\n\n", src, dest));
+                    DockerInstruction::Run { command, .. } => build_cmds.push(command.clone()),
+                    DockerInstruction::Expose { ports } => {
+                        if port == 0 {
+                            port = ports.first()
+                                .and_then(|p| p.split('/').next())
+                                .and_then(|p| p.parse().ok())
+                                .unwrap_or(0);
                         }
                     }
                     DockerInstruction::Env { pairs } => {
                         for (k, v) in pairs {
-                            output.push_str(&format!("[[stages]]\ntype = \"config\"\nname = \"env\"\nkey = \"{}\"\nvalue = \"{}\"\n\n", k, v));
+                            if v.is_empty() {
+                                env_comments.push(k.clone());
+                            } else {
+                                env_vars.push((k.clone(), v.clone()));
+                            }
                         }
-                    }
-                    DockerInstruction::Expose { ports } => {
-                        output.push_str(&format!("[[stages]]\ntype = \"config\"\nname = \"expose\"\nports = [{}]\n\n",
-                            ports.iter().map(|p| format!("\"{}\"", p)).collect::<Vec<_>>().join(", ")));
-                    }
-                    DockerInstruction::Workdir { path } => {
-                        output.push_str(&format!("[[stages]]\ntype = \"config\"\nname = \"workdir\"\nvalue = \"{}\"\n\n", path));
-                    }
-                    DockerInstruction::User { user } => {
-                        output.push_str(&format!("[[stages]]\ntype = \"config\"\nname = \"user\"\nvalue = \"{}\"\n\n", user));
                     }
                     DockerInstruction::Entrypoint { args, .. } => {
-                        output.push_str(&format!("[[stages]]\ntype = \"config\"\nname = \"entrypoint\"\nvalue = {}\n\n",
-                            serde_json::to_string(args).unwrap_or_default()));
-                    }
-                    DockerInstruction::Cmd { args, .. } => {
-                        output.push_str(&format!("[[stages]]\ntype = \"config\"\nname = \"cmd\"\nvalue = {}\n\n",
-                            serde_json::to_string(args).unwrap_or_default()));
-                    }
-                    DockerInstruction::Label { labels } => {
-                        for (k, v) in labels {
-                            output.push_str(&format!("[[stages]]\ntype = \"config\"\nname = \"label\"\nkey = \"{}\"\nvalue = \"{}\"\n\n", k, v));
+                        if entry.is_empty() {
+                            entry = args.join(" ");
                         }
                     }
-                    DockerInstruction::Volume { paths } => {
-                        output.push_str(&format!("[[stages]]\ntype = \"config\"\nname = \"volume\"\npaths = [{}]\n\n",
-                            paths.iter().map(|p| format!("\"{}\"", p)).collect::<Vec<_>>().join(", ")));
-                    }
-                    DockerInstruction::Healthcheck { cmd, .. } => {
-                        output.push_str(&format!("[[stages]]\ntype = \"config\"\nname = \"healthcheck\"\nvalue = {}\n\n",
-                            serde_json::to_string(cmd).unwrap_or_default()));
+                    DockerInstruction::Cmd { args, .. } => {
+                        if entry.is_empty() {
+                            entry = args.join(" ");
+                        }
                     }
                     _ => {}
                 }
             }
         }
 
-        Ok(output)
+        if port == 0 { port = 3000; }
+        let build_command = build_cmds.join(" && ");
+
+        // Guess a project name from the base image (e.g. "node:20-alpine" → "node").
+        let project_type = base_image.split(':').next()
+            .and_then(|s| s.split('/').last())
+            .unwrap_or("docker")
+            .to_string();
+
+        let mut out = String::new();
+        out.push_str("# Crushfile — migrated from Dockerfile by `crush migrate`\n");
+        out.push_str("# Review all inferred values before deploying.\n\n");
+
+        out.push_str("[project]\n");
+        out.push_str(&format!("type = \"{}\"  # inferred from base image\n\n", project_type));
+
+        out.push_str("[build]\n");
+        if !build_command.is_empty() {
+            out.push_str(&format!("command = \"{}\"\n", build_command.replace('"', "\\\"")));
+        }
+        if !entry.is_empty() {
+            out.push_str(&format!("entry = \"{}\"\n", entry.replace('"', "\\\"")));
+        }
+        out.push_str(&format!("port = {}\n", port));
+
+        if !env_vars.is_empty() || !env_comments.is_empty() {
+            out.push_str("\n[env]\n");
+            for (k, v) in &env_vars {
+                out.push_str(&format!("{} = \"{}\"\n", k, v.replace('"', "\\\"")));
+            }
+            for k in &env_comments {
+                out.push_str(&format!("# {} = \"\"\n", k));
+            }
+        }
+
+        Ok(out)
     }
 }
