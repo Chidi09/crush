@@ -1,4 +1,3 @@
-use chrono::Utc;
 use serde::Serialize;
 use crush_types::{Result, CrushError};
 

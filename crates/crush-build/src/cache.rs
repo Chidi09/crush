@@ -64,7 +64,7 @@ impl BuildCache {
         Ok(format!("sha256:{}", hex::encode(hasher.finalize())))
     }
 
-    pub fn source_tree_hash(root: &Path, ignore_file: &Path) -> Result<String> {
+    pub fn source_tree_hash(root: &Path) -> Result<String> {
         let mut hasher = Sha256::new();
         let mut paths: Vec<PathBuf> = Vec::new();
 

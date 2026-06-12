@@ -1,4 +1,4 @@
-use std::path::{Path, PathBuf};
+use std::path::Path;
 use std::collections::HashMap;
 use serde::{Serialize, Deserialize};
 use crush_types::{Result, CrushError};

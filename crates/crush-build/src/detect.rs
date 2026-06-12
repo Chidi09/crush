@@ -4,6 +4,19 @@ use serde::{Serialize, Deserialize};
 use regex::Regex;
 use crate::version::VersionResolver;
 use crate::env::EnvDetector;
+use crush_compat::{DockerfileParserV2, DockerInstruction, ComposeParser};
+
+#[derive(Debug, Default, Clone)]
+pub struct DockerfileHints {
+    pub base_image: Option<String>,
+    pub port: Option<u16>,
+    pub entry_point: Option<String>,
+    pub env_required: Vec<String>,
+    pub env_optional: Vec<String>,
+    pub env_secrets: Vec<String>,
+    pub runtime_type: Option<RuntimeType>,
+    pub runtime_version: Option<String>,
+}
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub enum RuntimeType {
@@ -45,6 +58,16 @@ pub struct SubService {
     pub build_command: String,
     #[serde(default)]
     pub dev_install_command: String,
+    #[serde(default)]
+    pub env_required: Vec<String>,
+    #[serde(default)]
+    pub env_optional: Vec<String>,
+    #[serde(default)]
+    pub env_secrets: Vec<String>,
+    #[serde(default)]
+    pub original_port: u16,
+    #[serde(default)]
+    pub depends_on: Vec<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -91,15 +114,312 @@ impl Signals {
     }
 }
 
-pub struct CrushSpecDetector;
+pub struct CrushSpecDetector {
+    pub skip_multiservice: bool,
+}
 
 impl CrushSpecDetector {
-    pub fn new() -> Self { Self }
+    pub fn new() -> Self { Self { skip_multiservice: false } }
+    pub fn sub() -> Self { Self { skip_multiservice: true } }
 
     pub fn detect(&self, root: &PathBuf) -> Detection {
         if !root.exists() {
             return self.fallback(root);
         }
+
+        // 1. Crushfile
+        let crushfile_path = root.join("Crushfile");
+        if crushfile_path.exists() {
+            if let Ok(cf) = crate::parser::CrushfileParser::parse(&crushfile_path) {
+                let project_name = cf.project.as_ref().and_then(|p| p.name.clone()).unwrap_or_else(|| {
+                    root.file_name().unwrap_or_default().to_string_lossy().to_string()
+                });
+                let runtime_str = cf.project.as_ref().and_then(|p| p.runtime.clone()).unwrap_or_default();
+                let runtime_type = match runtime_str.to_lowercase().as_str() {
+                    "node" => RuntimeType::Node,
+                    "typescript" | "ts" => RuntimeType::TypeScript,
+                    "python" | "py" => RuntimeType::Python,
+                    "rust" | "rs" => RuntimeType::Rust,
+                    "go" => RuntimeType::Go,
+                    "java" => RuntimeType::Java,
+                    "dotnet" => RuntimeType::DotNet,
+                    "ruby" => RuntimeType::Ruby,
+                    "php" => RuntimeType::Php,
+                    "elixir" => RuntimeType::Elixir,
+                    "swift" => RuntimeType::Swift,
+                    "deno" => RuntimeType::Deno,
+                    "bun" => RuntimeType::Bun,
+                    _ => RuntimeType::Generic,
+                };
+                let build_command = cf.build.as_ref().and_then(|b| b.command.clone()).unwrap_or_default();
+                let entry_point = cf.build.as_ref().and_then(|b| b.entry.clone()).unwrap_or_default();
+                let port = cf.build.as_ref().and_then(|b| b.port).unwrap_or(8080);
+                let base_image = cf.build.as_ref().and_then(|b| b.base.clone()).unwrap_or_else(|| "ubuntu:22.04".to_string());
+
+                let mut env_required = Vec::new();
+                let mut env_optional = Vec::new();
+                let mut env_secrets = Vec::new();
+                if let Some(ref sec_list) = cf.secrets {
+                    for s in sec_list {
+                        env_secrets.push(s.id.clone());
+                    }
+                }
+                if let Some(ref env_map) = cf.env {
+                    for (k, v) in env_map {
+                        if v.is_empty() {
+                            env_required.push(k.clone());
+                        } else {
+                            env_optional.push(k.clone());
+                        }
+                    }
+                }
+
+                return Detection {
+                    project_name,
+                    runtime_type,
+                    runtime_version: "latest".to_string(),
+                    framework_name: cf.project.as_ref().and_then(|p| p.project_type.clone()).unwrap_or_default(),
+                    framework_detected: true,
+                    build_command,
+                    entry_point,
+                    dev_entry_point: String::new(),
+                    dev_install_command: String::new(),
+                    port,
+                    confidence: 1.0,
+                    env_required,
+                    env_optional,
+                    env_secrets,
+                    is_monorepo: false,
+                    services: Vec::new(),
+                    dockerfile_found: None,
+                    base_image,
+                    generic_subdir_hint: Vec::new(),
+                };
+            }
+        }
+
+        // 2. Compose file
+        if !self.skip_multiservice {
+            if let Some(compose_path) = Self::find_compose_file(root) {
+                if let Ok(content) = std::fs::read_to_string(&compose_path) {
+                    let interpolated = Self::interpolate_env(&content);
+                    let parser = ComposeParser::new();
+                    if let Ok(compose) = parser.parse(&interpolated, &compose_path) {
+                        let mut sub_services = Vec::new();
+                        if let Some(ref services_map) = compose.services {
+                            for (name, svc) in services_map {
+                                // Handle profiles
+                                if let Some(ref profiles) = svc.profiles {
+                                    let active_profiles_str = std::env::var("COMPOSE_PROFILES").unwrap_or_default();
+                                    let active_profiles: Vec<&str> = active_profiles_str.split(',').map(|s| s.trim()).collect();
+                                    let matches_active = profiles.iter().any(|p| active_profiles.contains(&p.as_str()));
+                                    if !matches_active {
+                                        continue;
+                                    }
+                                }
+
+                                let build_ctx = if let Some(ref build_val) = svc.build {
+                                    if let Some(ctx_str) = build_val.as_str() {
+                                        Some(ctx_str.to_string())
+                                    } else if let Some(map) = build_val.as_object() {
+                                        map.get("context").and_then(|c| c.as_str()).map(|s| s.to_string())
+                                    } else {
+                                        None
+                                    }
+                                } else {
+                                    None
+                                };
+
+                                if let Some(ctx) = build_ctx {
+                                    let service_path = root.join(&ctx);
+                                    if service_path.is_dir() {
+                                        let sub_detector = CrushSpecDetector::sub();
+                                        let det = sub_detector.detect(&service_path);
+
+                                        let mut port = det.port;
+                                        if let Some(ref ports_list) = svc.ports {
+                                            for p_str in ports_list {
+                                                if let Some((hp, _)) = Self::parse_compose_port_pair(p_str) {
+                                                    port = hp;
+                                                    break;
+                                                }
+                                            }
+                                        }
+
+                                        let mut env_required = det.env_required.clone();
+                                        let mut env_optional = det.env_optional.clone();
+                                        let mut env_secrets = det.env_secrets.clone();
+
+                                        if let Some(ref env_val) = svc.environment {
+                                            if let Some(map) = env_val.as_object() {
+                                                for (k, v) in map {
+                                                    let is_empty = v.as_str().map(|s| s.is_empty()).unwrap_or(true);
+                                                    let upper = k.to_uppercase();
+                                                    let is_secret = upper.contains("SECRET")
+                                                        || upper.contains("PASSWORD")
+                                                        || upper.contains("TOKEN")
+                                                        || upper.contains("KEY")
+                                                        || upper.contains("PASS");
+                                                    if is_secret {
+                                                        if !env_secrets.contains(k) { env_secrets.push(k.clone()); }
+                                                    } else if is_empty {
+                                                        if !env_required.contains(k) { env_required.push(k.clone()); }
+                                                    } else {
+                                                        if !env_optional.contains(k) { env_optional.push(k.clone()); }
+                                                    }
+                                                }
+                                            } else if let Some(arr) = env_val.as_array() {
+                                                for item in arr {
+                                                    if let Some(s) = item.as_str() {
+                                                        if let Some((k, v)) = s.split_once('=') {
+                                                            let k = k.trim().to_string();
+                                                            let v = v.trim().to_string();
+                                                            let upper = k.to_uppercase();
+                                                            let is_secret = upper.contains("SECRET")
+                                                                || upper.contains("PASSWORD")
+                                                                || upper.contains("TOKEN")
+                                                                || upper.contains("KEY")
+                                                                || upper.contains("PASS");
+                                                            if is_secret {
+                                                                if !env_secrets.contains(&k) { env_secrets.push(k); }
+                                                            } else if v.is_empty() {
+                                                                if !env_required.contains(&k) { env_required.push(k); }
+                                                            } else {
+                                                                if !env_optional.contains(&k) { env_optional.push(k); }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        if let Some(ref env_files) = svc.env_file {
+                                            for ef in env_files {
+                                                let ef_path = service_path.join(ef);
+                                                if ef_path.exists() {
+                                                    if let Ok(ef_content) = std::fs::read_to_string(&ef_path) {
+                                                        for line in ef_content.lines() {
+                                                            let line = line.trim().trim_start_matches("export ").trim_start();
+                                                            if line.is_empty() || line.starts_with('#') { continue; }
+                                                            if let Some((k, v)) = line.split_once('=') {
+                                                                let k = k.trim().to_string();
+                                                                let v = v.trim().to_string();
+                                                                let upper = k.to_uppercase();
+                                                                let is_secret = upper.contains("SECRET")
+                                                                    || upper.contains("PASSWORD")
+                                                                    || upper.contains("TOKEN")
+                                                                    || upper.contains("KEY")
+                                                                    || upper.contains("PASS");
+                                                                if is_secret {
+                                                                    if !env_secrets.contains(&k) { env_secrets.push(k); }
+                                                                } else if v.is_empty() {
+                                                                    if !env_required.contains(&k) { env_required.push(k); }
+                                                                } else {
+                                                                    if !env_optional.contains(&k) { env_optional.push(k); }
+                                                                }
+                                                            }
+                                                        }
+                                                    }
+                                                }
+                                            }
+                                        }
+
+                                        let mut depends_on = Vec::new();
+                                        if let Some(ref dep_val) = svc.depends_on {
+                                            if let Some(arr) = dep_val.as_array() {
+                                                for v in arr {
+                                                    if let Some(s) = v.as_str() { depends_on.push(s.to_string()); }
+                                                }
+                                            } else if let Some(obj) = dep_val.as_object() {
+                                                for k in obj.keys() { depends_on.push(k.clone()); }
+                                            } else if let Some(s) = dep_val.as_str() {
+                                                depends_on.push(s.to_string());
+                                            }
+                                        }
+
+                                        let mut entry_point = det.entry_point.clone();
+                                        if let Some(ref ep_val) = svc.entrypoint {
+                                            if let Some(s) = ep_val.as_str() {
+                                                entry_point = s.to_string();
+                                            } else if let Some(arr) = ep_val.as_array() {
+                                                entry_point = arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<_>>().join(" ");
+                                            }
+                                        } else if let Some(ref cmd_val) = svc.command {
+                                            if let Some(s) = cmd_val.as_str() {
+                                                entry_point = s.to_string();
+                                            } else if let Some(arr) = cmd_val.as_array() {
+                                                entry_point = arr.iter().filter_map(|v| v.as_str().map(|s| s.to_string())).collect::<Vec<_>>().join(" ");
+                                            }
+                                        }
+
+                                        sub_services.push(SubService {
+                                            name: name.clone(),
+                                            path: service_path.to_string_lossy().to_string(),
+                                            runtime_type: det.runtime_type.as_str().to_string(),
+                                            port,
+                                            entry_point,
+                                            dev_entry_point: det.dev_entry_point.clone(),
+                                            build_command: det.build_command.clone(),
+                                            dev_install_command: det.dev_install_command.clone(),
+                                            env_required,
+                                            env_optional,
+                                            env_secrets,
+                                            original_port: port,
+                                            depends_on,
+                                        });
+                                    }
+                                }
+                            }
+                        }
+
+                        if !sub_services.is_empty() {
+                            let mut env_required = Vec::new();
+                            let mut env_optional = Vec::new();
+                            let mut env_secrets = Vec::new();
+                            for sub in &sub_services {
+                                for r in &sub.env_required {
+                                    if !env_required.contains(r) { env_required.push(r.clone()); }
+                                }
+                                for o in &sub.env_optional {
+                                    if !env_optional.contains(o) { env_optional.push(o.clone()); }
+                                }
+                                for s in &sub.env_secrets {
+                                    if !env_secrets.contains(s) { env_secrets.push(s.clone()); }
+                                }
+                            }
+
+                            let project_name = root.file_name().unwrap_or_default().to_string_lossy().to_string();
+
+                            return Detection {
+                                project_name,
+                                runtime_type: RuntimeType::Generic,
+                                runtime_version: "latest".to_string(),
+                                framework_name: "compose".to_string(),
+                                framework_detected: true,
+                                build_command: String::new(),
+                                entry_point: String::new(),
+                                dev_entry_point: String::new(),
+                                dev_install_command: String::new(),
+                                port: 8080,
+                                confidence: 1.0,
+                                env_required,
+                                env_optional,
+                                env_secrets,
+                                is_monorepo: true,
+                                services: sub_services,
+                                dockerfile_found: None,
+                                base_image: "ubuntu:22.04".to_string(),
+                                generic_subdir_hint: Vec::new(),
+                            };
+                        }
+                    }
+                }
+            }
+        }
+
+        // 3. User Dockerfile & heuristics
+        let dockerfile_path = Self::find_dockerfile(root).map(|rel| root.join(rel));
+        let dockerfile_hints = dockerfile_path.as_ref().and_then(|p| Self::extract_dockerfile_hints(p));
 
         let mut detections: Vec<Detection> = Vec::new();
 
@@ -114,24 +434,92 @@ impl CrushSpecDetector {
         if let Some(d) = self.try_elixir(root) { detections.push(d); }
         if let Some(d) = self.try_swift(root) { detections.push(d); }
 
-        let mut best = detections.into_iter()
-            .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap_or(std::cmp::Ordering::Equal))
-            .unwrap_or_else(|| self.fallback(root));
+        let mut best = if !detections.is_empty() {
+            detections.into_iter()
+                .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap_or(std::cmp::Ordering::Equal))
+                .unwrap()
+        } else if let Some(ref hints) = dockerfile_hints {
+            self.try_dockerfile(root, hints)
+        } else {
+            self.fallback(root)
+        };
 
-        let env = EnvDetector::scan(root);
-        best.env_required = env.required;
-        best.env_optional = env.optional;
-        best.env_secrets = env.secrets;
+        // Apply Dockerfile overrides if present
+        if let Some(ref hints) = dockerfile_hints {
+            if let Some(port) = hints.port {
+                best.port = port;
+            }
+            if let Some(ref ep) = hints.entry_point {
+                best.entry_point = ep.clone();
+            }
+            if let Some(ref bi) = hints.base_image {
+                best.base_image = bi.clone();
+            }
+            if let Some(ref rt) = hints.runtime_type {
+                best.runtime_type = rt.clone();
+            }
+            if let Some(ref rv) = hints.runtime_version {
+                best.runtime_version = rv.clone();
+            }
+            for req in &hints.env_required {
+                if !best.env_required.contains(req) && !best.env_optional.contains(req) && !best.env_secrets.contains(req) {
+                    best.env_required.push(req.clone());
+                }
+            }
+            for opt in &hints.env_optional {
+                if !best.env_required.contains(opt) && !best.env_optional.contains(opt) && !best.env_secrets.contains(opt) {
+                    best.env_optional.push(opt.clone());
+                }
+            }
+            for sec in &hints.env_secrets {
+                if !best.env_required.contains(sec) && !best.env_optional.contains(sec) && !best.env_secrets.contains(sec) {
+                    best.env_secrets.push(sec.clone());
+                }
+            }
+        }
 
-        let services = crate::multiservice::MultiServiceDetector::detect(root);
+        let services = if self.skip_multiservice {
+            Vec::new()
+        } else {
+            crate::multiservice::MultiServiceDetector::detect(root)
+        };
         if !services.is_empty() {
             best.is_monorepo = true;
             best.services = services;
         }
 
-        if root.join("Dockerfile").exists() {
-            best.dockerfile_found = Some("Dockerfile".to_string());
+        let mut env = if best.is_monorepo {
+            crate::env::EnvScanResult {
+                required: Vec::new(),
+                optional: Vec::new(),
+                secrets: Vec::new(),
+            }
+        } else {
+            EnvDetector::scan(root)
+        };
+
+        for service in &best.services {
+            for req in &service.env_required {
+                if !env.required.contains(req) && !env.optional.contains(req) && !env.secrets.contains(req) {
+                    env.required.push(req.clone());
+                }
+            }
+            for opt in &service.env_optional {
+                if !env.required.contains(opt) && !env.optional.contains(opt) && !env.secrets.contains(opt) {
+                    env.optional.push(opt.clone());
+                }
+            }
+            for sec in &service.env_secrets {
+                if !env.required.contains(sec) && !env.optional.contains(sec) && !env.secrets.contains(sec) {
+                    env.secrets.push(sec.clone());
+                }
+            }
         }
+        best.env_required = env.required;
+        best.env_optional = env.optional;
+        best.env_secrets = env.secrets;
+
+        best.dockerfile_found = Self::find_dockerfile(root);
 
         best.project_name = root.file_name()
             .unwrap_or_default()
@@ -140,6 +528,198 @@ impl CrushSpecDetector {
 
         best.base_image = Self::resolve_base_image(&best);
         best
+    }
+
+    fn find_compose_file(root: &Path) -> Option<PathBuf> {
+        let names = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
+        for n in &names {
+            let p = root.join(n);
+            if p.is_file() {
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    fn interpolate_env(content: &str) -> String {
+        let re = regex::Regex::new(r"\$\{([^}:]+)(?::-(.*?))?\}").unwrap();
+        re.replace_all(content, |caps: &regex::Captures| {
+            let var = &caps[1];
+            let default = caps.get(2).map(|m| m.as_str());
+            std::env::var(var).ok()
+                .or_else(|| default.map(|s| s.to_string()))
+                .unwrap_or_else(|| format!("${{{}}}", var))
+        }).to_string()
+    }
+
+    fn parse_compose_port_pair(s: &str) -> Option<(u16, u16)> {
+        let parts: Vec<&str> = s.split(':').collect();
+        if parts.len() == 1 {
+            let port = parts[0].parse::<u16>().ok()?;
+            Some((port, port))
+        } else if parts.len() == 2 {
+            let host_port = parts[0].parse::<u16>().ok()?;
+            let container_port = parts[1].parse::<u16>().ok()?;
+            Some((host_port, container_port))
+        } else if parts.len() == 3 {
+            let host_port = parts[1].parse::<u16>().ok()?;
+            let container_port = parts[2].parse::<u16>().ok()?;
+            Some((host_port, container_port))
+        } else {
+            None
+        }
+    }
+
+    fn parse_image_runtime(image: &str) -> (Option<RuntimeType>, Option<String>) {
+        let parts: Vec<&str> = image.split(':').collect();
+        let img_name = parts[0].split('/').last().unwrap_or(parts[0]).to_lowercase();
+        let tag = if parts.len() > 1 { Some(parts[1].split('@').next().unwrap_or(parts[1]).to_string()) } else { None };
+
+        let rt = if img_name.contains("node") { Some(RuntimeType::Node) }
+            else if img_name.contains("python") { Some(RuntimeType::Python) }
+            else if img_name.contains("rust") { Some(RuntimeType::Rust) }
+            else if img_name.contains("golang") || img_name == "go" { Some(RuntimeType::Go) }
+            else if img_name.contains("openjdk") || img_name.contains("temurin") || img_name.contains("corretto") { Some(RuntimeType::Java) }
+            else if img_name.contains("dotnet") || img_name.contains("aspnet") { Some(RuntimeType::DotNet) }
+            else if img_name.contains("ruby") { Some(RuntimeType::Ruby) }
+            else if img_name.contains("php") { Some(RuntimeType::Php) }
+            else if img_name.contains("elixir") { Some(RuntimeType::Elixir) }
+            else if img_name.contains("swift") { Some(RuntimeType::Swift) }
+            else if img_name.contains("bun") { Some(RuntimeType::Bun) }
+            else if img_name.contains("deno") { Some(RuntimeType::Deno) }
+            else { None };
+
+        let mut ver = None;
+        if let Some(ref t) = tag {
+            let ver_re = regex::Regex::new(r"^(\d+(?:\.\d+)*(?:\.\d+)*)").unwrap();
+            if let Some(caps) = ver_re.captures(t) {
+                ver = Some(caps[1].to_string());
+            }
+        }
+        (rt, ver)
+    }
+
+    fn extract_dockerfile_hints(path: &Path) -> Option<DockerfileHints> {
+        let parser = DockerfileParserV2::new();
+        let dockerfile = parser.parse_path(path).ok()?;
+        let mut hints = DockerfileHints::default();
+
+        for img in &dockerfile.base_images {
+            if let (Some(rt), Some(ver)) = Self::parse_image_runtime(img) {
+                hints.runtime_type = Some(rt);
+                hints.runtime_version = Some(ver);
+            }
+        }
+
+        if let Some(stage) = dockerfile.stages.last() {
+            if let Some(ref img) = stage.base_image {
+                hints.base_image = Some(img.clone());
+                if let (Some(rt), Some(ver)) = Self::parse_image_runtime(img) {
+                    hints.runtime_type = Some(rt);
+                    hints.runtime_version = Some(ver);
+                }
+            }
+
+            for instr in &stage.instructions {
+                match instr {
+                    DockerInstruction::Expose { ports } => {
+                        for p in ports {
+                            let clean_p = p.split('/').next().unwrap_or(p);
+                            if let Ok(parsed) = clean_p.trim().parse::<u16>() {
+                                hints.port = Some(parsed);
+                            }
+                        }
+                    }
+                    DockerInstruction::Env { pairs } => {
+                        for (k, v) in pairs {
+                            let upper = k.to_uppercase();
+                            let is_secret = upper.contains("SECRET")
+                                || upper.contains("PASSWORD")
+                                || upper.contains("TOKEN")
+                                || upper.contains("KEY")
+                                || upper.contains("PASS");
+                            if is_secret {
+                                if !hints.env_secrets.contains(k) {
+                                    hints.env_secrets.push(k.clone());
+                                }
+                            } else if v.is_empty() {
+                                if !hints.env_required.contains(k) {
+                                    hints.env_required.push(k.clone());
+                                }
+                            } else {
+                                if !hints.env_optional.contains(k) {
+                                    hints.env_optional.push(k.clone());
+                                }
+                            }
+                        }
+                    }
+                    DockerInstruction::Cmd { args, is_json } | DockerInstruction::Entrypoint { args, is_json } => {
+                        let val = if *is_json {
+                            args.join(" ")
+                        } else if args.len() >= 3 && args[0] == "/bin/sh" && args[1] == "-c" {
+                            args[2].clone()
+                        } else {
+                            args.join(" ")
+                        };
+                        if !val.is_empty() {
+                            hints.entry_point = Some(val);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Some(hints)
+    }
+
+    fn try_dockerfile(&self, root: &Path, hints: &DockerfileHints) -> Detection {
+        let rt = hints.runtime_type.clone().unwrap_or(RuntimeType::Generic);
+        let version = hints.runtime_version.clone().unwrap_or_else(|| "latest".to_string());
+        let port = hints.port.unwrap_or(8080);
+        let entry_point = hints.entry_point.clone().unwrap_or_default();
+        let base_image = hints.base_image.clone().unwrap_or_else(|| "ubuntu:22.04".to_string());
+
+        Detection {
+            project_name: root.file_name().unwrap_or_default().to_string_lossy().to_string(),
+            runtime_type: rt,
+            runtime_version: version,
+            framework_name: "dockerfile".to_string(),
+            framework_detected: true,
+            build_command: String::new(),
+            entry_point,
+            dev_entry_point: String::new(),
+            dev_install_command: String::new(),
+            port,
+            confidence: 1.0,
+            env_required: hints.env_required.clone(),
+            env_optional: hints.env_optional.clone(),
+            env_secrets: hints.env_secrets.clone(),
+            is_monorepo: false,
+            services: Vec::new(),
+            dockerfile_found: Self::find_dockerfile(root),
+            base_image,
+            generic_subdir_hint: Vec::new(),
+        }
+    }
+
+    /// Locate a user-authored Dockerfile. Checks the canonical name plus the
+    /// lowercase and Podman (`Containerfile`) variants, both at the root and
+    /// in the usual infra directories. Files generated by `crush eject`
+    /// (marked `# crush:eject` on line 1) are not the user's Dockerfile and
+    /// are skipped so detection doesn't report our own output back to us.
+    fn find_dockerfile(root: &Path) -> Option<String> {
+        let dirs = ["", "infra", "docker", ".docker", "deploy", "ops", "devops"];
+        let names = ["Dockerfile", "dockerfile", "Containerfile"];
+        for d in &dirs {
+            for n in &names {
+                let rel = if d.is_empty() { n.to_string() } else { format!("{}/{}", d, n) };
+                let p = root.join(d).join(n);
+                if p.is_file() && !Self::is_eject_generated(&p) {
+                    return Some(rel);
+                }
+            }
+        }
+        None
     }
 
     fn resolve_base_image(d: &Detection) -> String {
@@ -499,8 +1079,7 @@ impl CrushSpecDetector {
     /// usual locations. Dev-shape compose (`docker-compose.dev.yml`,
     /// `compose.dev.yaml`) and `Dockerfile.dev` are ignored.
     fn has_prod_docker_shape(root: &Path) -> bool {
-        let prod_dockerfile = root.join("Dockerfile");
-        if prod_dockerfile.exists() && !Self::is_eject_generated(&prod_dockerfile) { return true; }
+        if Self::find_dockerfile(root).is_some() { return true; }
 
         let dirs = [".", "infra", "docker", ".docker", "deploy", "ops", "devops"];
         let names = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
@@ -633,33 +1212,6 @@ impl CrushSpecDetector {
         let asgi_target = Self::detect_asgi_target(root)
             .unwrap_or_else(|| format!("{}:app", entry_file.trim_end_matches(".py")));
 
-        let entry = match framework {
-            "FastAPI" | "Starlette" => {
-                if has_uv {
-                    format!("{}uvicorn{} {} --host 0.0.0.0", venv_bin, exe_suffix, asgi_target)
-                } else {
-                    format!("uvicorn {} --host 0.0.0.0", asgi_target)
-                }
-            }
-            "Litestar" => {
-                let module = entry_file.trim_end_matches(".py");
-                if has_uv {
-                    format!("{}litestar{} --app {}:app run --host 0.0.0.0", venv_bin, exe_suffix, module)
-                } else {
-                    format!("litestar --app {}:app run --host 0.0.0.0", module)
-                }
-            }
-            "Django" => format!("{} manage.py runserver 0.0.0.0:{}", py, port),
-            "Flask" => {
-                let module = entry_file.trim_end_matches(".py");
-                if has_uv {
-                    format!("{}flask{} --app {} run --host=0.0.0.0 --port={}", venv_bin, exe_suffix, module, port)
-                } else {
-                    format!("flask --app {} run --host=0.0.0.0 --port={}", module, port)
-                }
-            }
-            _ => format!("{} {}", py, entry_file),
-        };
 
         let dev_install = build_cmd.clone();
         // Drop collectstatic for Django dev: runserver serves statics with
@@ -700,7 +1252,8 @@ impl CrushSpecDetector {
                 if cfg!(target_os = "windows") {
                     format!("{} manage.py runserver 0.0.0.0:$PORT", py)
                 } else {
-                    let project_dir_name = root.file_name().unwrap_or_default().to_string_lossy().to_string();
+                    let project_dir_name = Self::detect_django_project_name(root)
+                        .unwrap_or_else(|| root.file_name().unwrap_or_default().to_string_lossy().to_string());
                     format!("gunicorn {}.wsgi -b 0.0.0.0:$PORT", project_dir_name)
                 }
             }
@@ -755,21 +1308,37 @@ impl CrushSpecDetector {
         })
     }
 
-    fn read_pyproject_name(root: &Path) -> Option<String> {
-        let content = fs::read_to_string(root.join("pyproject.toml")).ok()?;
-        let val: serde_json::Value = toml::from_str(&content).ok()?;
-        val["project"]["name"].as_str().map(|s| s.to_string())
+    fn detect_django_project_name(root: &Path) -> Option<String> {
+        let manage_py = root.join("manage.py");
+        if let Ok(content) = fs::read_to_string(manage_py) {
+            let re = Regex::new(r#"DJANGO_SETTINGS_MODULE['"]\s*,\s*['"]([A-Za-z0-9_.]+)(?:\.settings)?['"]"#).ok()?;
+            if let Some(caps) = re.captures(&content) {
+                let full_module = &caps[1];
+                if let Some(first_part) = full_module.split('.').next() {
+                    return Some(first_part.to_string());
+                }
+            }
+        }
+        None
     }
 
     /// Greps entrypoint.sh / start.sh / Dockerfile for `uvicorn <module>:<app>`
     /// and returns the `module:app` string. Lets users define module paths
     /// (e.g. `src.core.main:app`) instead of trusting filename heuristics.
     fn detect_asgi_target(root: &Path) -> Option<String> {
-        let re = Regex::new(r"uvicorn\s+([A-Za-z0-9_.]+:[A-Za-z0-9_]+)").ok()?;
+        let app_re = Regex::new(r"\b([A-Za-z0-9_.]+):([A-Za-z0-9_]+)\b").ok()?;
         for candidate in &["entrypoint.sh", "start.sh", "run.sh", "Dockerfile"] {
             if let Ok(content) = fs::read_to_string(root.join(candidate)) {
-                if let Some(caps) = re.captures(&content) {
-                    return Some(caps[1].to_string());
+                for line in content.lines() {
+                    let lower = line.to_lowercase();
+                    if lower.contains("uvicorn") || lower.contains("gunicorn") {
+                        for caps in app_re.captures_iter(line) {
+                            let val = &caps[2];
+                            if !val.chars().all(|c| c.is_ascii_digit()) {
+                                return Some(format!("{}:{}", &caps[1], val));
+                            }
+                        }
+                    }
                 }
             }
         }
@@ -806,7 +1375,7 @@ impl CrushSpecDetector {
             .and_then(|b| b["name"].as_str())
             .unwrap_or(bin_name);
 
-        let framework = Self::detect_rust_framework(&content, root);
+        let framework = Self::detect_rust_framework(&json, root);
         let framework_detected = !framework.is_empty();
         let port = if framework.contains("Actix") { 8080 }
         else if framework.contains("Axum") { 3000 }
@@ -965,7 +1534,7 @@ impl CrushSpecDetector {
             runtime_type: RuntimeType::Java,
             runtime_version: version,
             framework_name: framework.to_string(),
-            framework_detected: true,
+            framework_detected: framework != "Java (Maven)" && framework != "Java (Gradle)",
             build_command: build_cmd,
             entry_point: entry_prod,
             dev_entry_point: dev_entry,
@@ -977,7 +1546,10 @@ impl CrushSpecDetector {
     }
 
     fn try_dotnet(&self, root: &Path) -> Option<Detection> {
-        let csproj = Self::find_file(root, ".csproj");
+        let mut csproj = Self::find_file(root, ".csproj");
+        if csproj.is_none() {
+            csproj = Self::find_file(&root.join("src"), ".csproj");
+        }
         let has_global = root.join("global.json").exists();
 
         if csproj.is_none() && !has_global { return None; }
@@ -1226,17 +1798,19 @@ impl CrushSpecDetector {
         hits
     }
 
-    fn detect_rust_framework(content: &str, root: &Path) -> String {
-        if content.contains("actix-web") { return "Actix-web".to_string(); }
-        if content.contains("axum") { return "Axum".to_string(); }
-        if content.contains("rocket") { return "Rocket".to_string(); }
-        if content.contains("warp") { return "Warp".to_string(); }
-        if content.contains("tide") { return "Tide".to_string(); }
+    fn detect_rust_framework(json: &serde_json::Value, root: &Path) -> String {
+        if let Some(deps) = json["dependencies"].as_object() {
+            if deps.contains_key("actix-web") { return "Actix-web".to_string(); }
+            if deps.contains_key("axum") { return "Axum".to_string(); }
+            if deps.contains_key("rocket") { return "Rocket".to_string(); }
+            if deps.contains_key("warp") { return "Warp".to_string(); }
+            if deps.contains_key("tide") { return "Tide".to_string(); }
+        }
         if root.join("src/main.rs").exists() {
             if let Ok(src) = fs::read_to_string(root.join("src/main.rs")) {
-                if src.contains("actix_web") { return "Actix-web".to_string(); }
-                if src.contains("axum") { return "Axum".to_string(); }
-                if src.contains("rocket") { return "Rocket".to_string(); }
+                if src.contains("use actix_web") || src.contains("extern crate actix_web") { return "Actix-web".to_string(); }
+                if src.contains("use axum") { return "Axum".to_string(); }
+                if src.contains("use rocket") || src.contains("extern crate rocket") { return "Rocket".to_string(); }
             }
         }
         String::new()
@@ -1355,6 +1929,57 @@ impl CrushSpecDetector {
             }
         }
         None
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn node_project(dir: &Path) {
+        fs::write(dir.join("package.json"), r#"{"name":"app","scripts":{"dev":"vite"}}"#).unwrap();
+    }
+
+    #[test]
+    fn finds_root_dockerfile() {
+        let dir = tempfile::TempDir::new().unwrap();
+        node_project(dir.path());
+        fs::write(dir.path().join("Dockerfile"), "FROM node:20\n").unwrap();
+        let d = CrushSpecDetector::new().detect(&dir.path().to_path_buf());
+        assert_eq!(d.dockerfile_found.as_deref(), Some("Dockerfile"));
+    }
+
+    #[test]
+    fn finds_dockerfile_in_docker_dir_and_containerfile() {
+        let dir = tempfile::TempDir::new().unwrap();
+        node_project(dir.path());
+        fs::create_dir(dir.path().join("docker")).unwrap();
+        fs::write(dir.path().join("docker/Dockerfile"), "FROM node:20\n").unwrap();
+        let d = CrushSpecDetector::new().detect(&dir.path().to_path_buf());
+        assert_eq!(d.dockerfile_found.as_deref(), Some("docker/Dockerfile"));
+
+        let dir2 = tempfile::TempDir::new().unwrap();
+        node_project(dir2.path());
+        fs::write(dir2.path().join("Containerfile"), "FROM node:20\n").unwrap();
+        let d2 = CrushSpecDetector::new().detect(&dir2.path().to_path_buf());
+        assert_eq!(d2.dockerfile_found.as_deref(), Some("Containerfile"));
+    }
+
+    #[test]
+    fn eject_generated_dockerfile_is_not_reported() {
+        let dir = tempfile::TempDir::new().unwrap();
+        node_project(dir.path());
+        fs::write(dir.path().join("Dockerfile"), "# crush:eject\nFROM node:20\n").unwrap();
+        let d = CrushSpecDetector::new().detect(&dir.path().to_path_buf());
+        assert_eq!(d.dockerfile_found, None, "crush's own eject output is not the user's Dockerfile");
+    }
+
+    #[test]
+    fn no_dockerfile_reports_none() {
+        let dir = tempfile::TempDir::new().unwrap();
+        node_project(dir.path());
+        let d = CrushSpecDetector::new().detect(&dir.path().to_path_buf());
+        assert_eq!(d.dockerfile_found, None);
     }
 }
 

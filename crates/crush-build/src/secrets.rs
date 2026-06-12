@@ -10,7 +10,6 @@ pub struct BuildSecrets {
 
 struct BuildSecret {
     value: Vec<u8>,
-    from_env: bool,
 }
 
 impl BuildSecrets {
@@ -41,7 +40,6 @@ impl BuildSecrets {
 
         self.secrets.insert(secret.id.clone(), BuildSecret {
             value,
-            from_env: secret.env.is_some(),
         });
         Ok(())
     }
@@ -53,7 +51,6 @@ impl BuildSecrets {
                 let val = &arg[eq + 1..];
                 self.secrets.insert(key.to_string(), BuildSecret {
                     value: val.as_bytes().to_vec(),
-                    from_env: false,
                 });
             }
         }
