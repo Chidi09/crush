@@ -15,3 +15,5 @@ crush-web/package.json.tmp
 # OS
 .DS_Store
 Thumbs.db
+crush-*.exe
+*.exe

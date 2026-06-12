@@ -22,9 +22,12 @@ members = [
     "crates/crush-services",
     "crates/crush-gui/src-tauri",
 ]
+# Built separately by crush-network's build script (needs the BPF target);
+# must not resolve as a member of this workspace.
+exclude = ["crates/crush-ebpf-progs"]
 
 [workspace.package]
-version = "0.7.74"
+version = "0.8.0"
 edition = "2021"
 authors = ["Crush Contributors"]
 license = "MIT OR Apache-2.0"

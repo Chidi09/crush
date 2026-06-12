@@ -67,7 +67,7 @@ pub fn parse_nodejs(stderr: &str) -> Option<StackTrace> {
         ("Error".to_string(), first_line.to_string())
     };
 
-    let re = Regex::new(r"at\s+(?P<fn>[^\s(]+)?\s*(?:\((?P<file>[^:]+):(?P<line>\d+):(?P<col>\d+)\)|(?P<file2>[^:]+):(?P<line2>\d+):(?P<col2>\d+))").ok()?;
+    let re = Regex::new(r"at\s+(?P<fn>[^\s(]+)?\s*(?:\((?P<file>.+?):(?P<line>\d+):(?P<col>\d+)\)|(?P<file2>[^\s]+?):(?P<line2>\d+):(?P<col2>\d+))").ok()?;
     let mut frames = Vec::new();
 
     for line in &lines {

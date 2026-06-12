@@ -15,7 +15,6 @@ serde_yaml = { workspace = true }
 anyhow = { workspace = true }
 async-trait = { workspace = true }
 crush-types = { workspace = true }
-crush-build = { workspace = true }
 crush-image = { workspace = true }
 toml = { workspace = true }
 regex = "1.10"
