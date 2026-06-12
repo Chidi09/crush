@@ -3927,16 +3927,32 @@ async fn main() -> anyhow::Result<()> {
             let current_exe = std::env::current_exe()?;
             #[cfg(target_os = "windows")]
             {
-                let old_path = current_exe.with_extension("old");
-                if old_path.exists() {
-                    let _ = std::fs::remove_file(&old_path);
-                }
-                std::fs::rename(&current_exe, &old_path)?;
-                if let Err(e) = tokio::fs::write(&current_exe, &bytes).await {
-                    let _ = std::fs::rename(&old_path, &current_exe);
-                    return Err(e.into());
-                }
-                let _ = std::fs::remove_file(&old_path);
+                // Windows won't let us write bytes directly to the running executable's
+                // path even after renaming it away (Access Denied, os error 5). Instead:
+                // 1. Download to %TEMP%\crush_update.exe
+                // 2. Spawn a detached batch file that waits ~2 s then moves it into place
+                let tmp_new = std::env::temp_dir().join("crush_update.exe");
+                tokio::fs::write(&tmp_new, &bytes).await?;
+
+                // Batch: sleep long enough for this process to exit, then swap.
+                let bat_path = std::env::temp_dir().join("crush_update.bat");
+                let target = current_exe.to_string_lossy().replace('/', "\\");
+                let src    = tmp_new.to_string_lossy().replace('/', "\\");
+                let bat = format!(
+                    "@echo off\r\n\
+                     ping 127.0.0.1 -n 3 >nul\r\n\
+                     move /y \"{src}\" \"{target}\" >nul\r\n\
+                     del \"%~f0\"\r\n",
+                );
+                std::fs::write(&bat_path, bat)?;
+
+                std::process::Command::new("cmd")
+                    .args(["/c", "start", "/b", &bat_path.to_string_lossy()])
+                    .spawn()?;
+
+                println!("Updated to v{}.", latest);
+                println!("Close this window — crush will be replaced in the background.");
+                return Ok(());
             }
             #[cfg(not(target_os = "windows"))]
             {
