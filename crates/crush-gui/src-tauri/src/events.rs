@@ -25,6 +25,10 @@ pub fn emit_log_line<R: Runtime>(emitter: &impl Emitter<R>, container_id: &str, 
     });
 }
 
+pub fn emit_log_replay<R: Runtime>(emitter: &impl Emitter<R>, container_id: &str, lines: Vec<LogLine>) {
+    let _ = emitter.emit(&format!("log-replay::{}", container_id), lines);
+}
+
 pub fn emit_pull_progress<R: Runtime>(emitter: &impl Emitter<R>, image: &str, layer: &str, current: u64, total: u64) {
     let _ = emitter.emit(&format!("pull-progress::{}", image), PullProgress {
         layer: layer.to_string(),

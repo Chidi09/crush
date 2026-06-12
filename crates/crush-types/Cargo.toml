@@ -15,3 +15,4 @@ thiserror = { workspace = true }
 anyhow = { workspace = true }
 oci-spec = { workspace = true }
 async-trait = { workspace = true }
+dirs = "5.0"

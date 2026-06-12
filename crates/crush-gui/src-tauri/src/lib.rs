@@ -16,11 +16,19 @@ pub fn run() {
         .setup(move |app| {
             // The setup closure does not run inside a Tokio runtime context, so
             // `Handle::current()` would panic. Use Tauri's managed async runtime.
-            let store = tauri::async_runtime::block_on(async {
-                crush_image::ImageStore::new(data_dir.join("images"))
-                    .await
-                    .expect("Failed to initialize image store")
-            });
+            let store = match tauri::async_runtime::block_on(async {
+                crush_image::ImageStore::new(data_dir.join("images")).await
+            }) {
+                Ok(s) => s,
+                Err(e) => {
+                    rfd::MessageDialog::new()
+                        .set_title("Crush Launch Error")
+                        .set_description(&format!("Failed to initialize data directory at {}\n\nError: {}", data_dir.display(), e))
+                        .set_level(rfd::MessageLevel::Error)
+                        .show();
+                    std::process::exit(1);
+                }
+            };
 
             let ai = crush_ai::AiEngine::new(None, data_dir.clone());
 

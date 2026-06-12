@@ -27,6 +27,7 @@
   let runPort = $state<number | null>(null);
   let runUrl = $state<string | null>(null);
   let refreshing = $state(false);
+  let devMode = $state(false);
 
   // per-run deployment record state
   let runStartMs = 0;
@@ -116,15 +117,16 @@
   }
   async function runProject() {
     if (!projectPath) { await openProject(); return; }
+    if (activeRunId) return;
     runStatus = 'running';
     runPort = null;
     runUrl = null;
     buildLogBuf = []; runtimeLogBuf = [];
     runStartMs = Date.now();
     try {
-      activeRunId = await api.runProject(projectPath);
-      saveDeployment(); // initial 'running' record
-    } catch (e) { console.error(e); }
+      activeRunId = await api.runProject(projectPath, devMode);
+      saveDeployment();
+    } catch (e) { console.error('run failed', e); }
   }
   function stopRun() {
     if (activeRunId) api.abortRun(activeRunId).catch(console.error);
@@ -235,6 +237,9 @@
         </div>
         <div class="proj-actions">
           <button class="ghost-btn sm" onclick={openProject}>Change</button>
+          <label style="font-size: 13px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--color-gray-400); margin-right: 8px;">
+            <input type="checkbox" bind:checked={devMode} /> Dev mode
+          </label>
           <button
             class="btn-primary"
             class:fx-rainbow={fx.kind === 'turbo'}

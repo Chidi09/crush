@@ -5,12 +5,13 @@ use uuid::Uuid;
 #[tauri::command]
 pub async fn run_project(
     project_path: String,
+    dev_mode: bool,
     window: Window,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
     let project_root = std::path::PathBuf::from(&project_path);
     let options = crush_build::run::RunOptions {
-        dev: false,
+        dev: dev_mode,
         rebuild: false,
         repack: false,
         no_proxy: false,
@@ -53,33 +54,14 @@ pub async fn run_project(
     Ok(run_id.to_string())
 }
 
-#[allow(dead_code)]
-fn event_name(event: &crush_build::run::RunEvent) -> &'static str {
-    match event {
-        crush_build::run::RunEvent::Detected { .. } => "detected",
-        crush_build::run::RunEvent::DepStarted { .. } => "dep-started",
-        crush_build::run::RunEvent::DepFailed { .. } => "dep-failed",
-        crush_build::run::RunEvent::ImageFresh { .. } => "image-fresh",
-        crush_build::run::RunEvent::ImagePacked { .. } => "image-packed",
-        crush_build::run::RunEvent::BuildStarted { .. } => "build-started",
-        crush_build::run::RunEvent::BuildOutput { .. } => "build-output",
-        crush_build::run::RunEvent::BuildFinished { .. } => "build-finished",
-        crush_build::run::RunEvent::Spawning { .. } => "spawning",
-        crush_build::run::RunEvent::AppOutput { .. } => "app-output",
-        crush_build::run::RunEvent::PortBound { .. } => "port-bound",
-        crush_build::run::RunEvent::Exited { .. } => "exited",
-        crush_build::run::RunEvent::Warning { .. } => "warning",
-        crush_build::run::RunEvent::WarmRun => "warm-run",
-        crush_build::run::RunEvent::DepsFresh => "deps-fresh",
-    }
-}
 
 #[tauri::command]
-pub async fn abort_run(run_id: String, state: State<'_, AppState>) -> Result<(), String> {
+pub async fn abort_run(run_id: String, window: Window, state: State<'_, AppState>) -> Result<(), String> {
     let uid = Uuid::parse_str(&run_id).map_err(|e| e.to_string())?;
     let mut runs = state.runs.write().await;
     if let Some(proc) = runs.remove(&uid) {
         let _ = proc.abort.send(());
+        let _ = window.emit(&format!("run-event::{}", run_id), serde_json::json!({ "kind": "aborted" }));
     }
     Ok(())
 }

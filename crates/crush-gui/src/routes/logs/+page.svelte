@@ -29,6 +29,7 @@
   let selectedContainerId = $state<string | null>(null);
   let logLines = $state<LogLine[]>([]);
   let unlistenLogs: (() => void) | null = null;
+  let unlistenReplay: (() => void) | null = null;
   let autoscroll = $state(true);
   let logEl: HTMLDivElement | undefined = $state();
 
@@ -60,7 +61,7 @@
   );
 
   onMount(() => { startPolling(); loadDeps(); refreshServices(); });
-  onDestroy(() => { stopPolling(); unlistenLogs?.(); stopSvcPoll(); });
+  onDestroy(() => { stopPolling(); unlistenLogs?.(); unlistenReplay?.(); stopSvcPoll(); });
 
   async function loadDeps() {
     loadingDeps = true;
@@ -89,6 +90,7 @@
 
   async function selectContainer(id: string) {
     unlistenLogs?.();
+    unlistenReplay?.();
     selDep = null;
     selService = null; stopSvcPoll();
     selectedContainerId = id;
@@ -100,11 +102,16 @@
         logLines = [...logLines.slice(-1000), line];
         if (autoscroll) { await tick(); logEl?.scrollTo({ top: logEl.scrollHeight }); }
       });
+      unlistenReplay = await api.onLogReplay(id, async (lines) => {
+        logLines = [...logLines, ...lines].slice(-1000);
+        if (autoscroll) { await tick(); logEl?.scrollTo({ top: logEl.scrollHeight }); }
+      });
     } catch (e) { console.error('Failed to subscribe', e); }
   }
 
   async function selectService(project: string, name: string) {
     unlistenLogs?.(); unlistenLogs = null;
+    unlistenReplay?.(); unlistenReplay = null;
     selDep = null; selectedContainerId = null;
     selService = { project, name };
     serviceLogText = '';

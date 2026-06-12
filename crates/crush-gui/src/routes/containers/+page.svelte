@@ -10,6 +10,7 @@
   let searchQuery = $state('');
   let logLines = $state<LogLine[]>([]);
   let unlistenLogs: (() => void) | null = null;
+  let unlistenReplay: (() => void) | null = null;
   let logEl: HTMLDivElement | undefined = $state();
   let stopping = $state(false);
   let copied = $state(false);
@@ -35,10 +36,11 @@
   );
 
   onMount(() => startPolling());
-  onDestroy(() => { stopPolling(); unlistenLogs?.(); });
+  onDestroy(() => { stopPolling(); unlistenLogs?.(); unlistenReplay?.(); });
 
   async function selectContainer(c: ContainerSummary) {
     unlistenLogs?.();
+    unlistenReplay?.();
     selected = c;
     logLines = [];
     copied = false;
@@ -51,6 +53,11 @@
         await tick();
         logEl?.scrollTo({ top: logEl.scrollHeight });
       });
+      unlistenReplay = await api.onLogReplay(c.id, async (lines) => {
+        logLines = [...logLines, ...lines].slice(-500);
+        await tick();
+        logEl?.scrollTo({ top: logEl.scrollHeight });
+      });
     } catch { /* container may have no logs yet */ }
   }
 
@@ -58,6 +65,8 @@
     if (selected) api.unsubscribeLogs(selected.id).catch(() => {});
     unlistenLogs?.();
     unlistenLogs = null;
+    unlistenReplay?.();
+    unlistenReplay = null;
     selected = null;
   }
 
