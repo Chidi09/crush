@@ -34,11 +34,36 @@ pub async fn subscribe_logs(
         let mut offsets: std::collections::HashMap<String, u64> = std::collections::HashMap::new();
         for (path, stream_name) in [(&paths.0, "stdout"), (&paths.1, "stderr")] {
             if path.exists() {
-                if let Ok(content) = tokio::fs::read_to_string(&path).await {
-                    offsets.insert(stream_name.to_string(), content.len() as u64);
-                    // emit existing lines
-                    for line in content.lines() {
-                        events::emit_log_line(&window, &container_id, "", stream_name, line);
+                if let Ok(mut f) = tokio::fs::File::open(&path).await {
+                    if let Ok(meta) = f.metadata().await {
+                        let len = meta.len();
+                        offsets.insert(stream_name.to_string(), len);
+                        use tokio::io::AsyncSeekExt;
+                        let max_tail = 256 * 1024;
+                        let start = if len > max_tail { len - max_tail } else { 0 };
+                        if start > 0 {
+                            let _ = f.seek(std::io::SeekFrom::Start(start)).await;
+                        }
+                        let mut buf = Vec::new();
+                        let _ = f.read_to_end(&mut buf).await;
+                        let text = String::from_utf8_lossy(&buf);
+                        // Split and handle partial lines correctly if we started mid-line
+                        let mut lines: Vec<&str> = text.lines().collect();
+                        if start > 0 && !lines.is_empty() {
+                            lines.remove(0); // discard the first partial line
+                        }
+                        let tail = if lines.len() > 500 { &lines[lines.len() - 500..] } else { &lines[..] };
+                        let mut replay = Vec::new();
+                        for line in tail {
+                            replay.push(crate::events::LogLine {
+                                ts: "".to_string(),
+                                stream: stream_name.to_string(),
+                                text: line.to_string(),
+                            });
+                        }
+                        if !replay.is_empty() {
+                            crate::events::emit_log_replay(&window, &container_id, replay);
+                        }
                     }
                 }
             }

@@ -20,6 +20,7 @@
   let activeRunId = $state<string | null>(null);
   let stoppingAll = $state(false);
   let refreshing = $state(false);
+  let devMode = $state(false);
 
   let runningCount = $derived($containers.filter(c => c.status === 'running').length);
 
@@ -65,8 +66,9 @@
 
   async function runProject() {
     if (!projectPath) { await openProject(); return; }
+    if (activeRunId) return;
     try {
-      activeRunId = await api.runProject(projectPath);
+      activeRunId = await api.runProject(projectPath, devMode);
     } catch (e) {
       console.error('run failed', e);
     }
@@ -115,6 +117,9 @@
     <div class="hero-right">
       <span class="running-ind"><span class="rdot" class:live={runningCount > 0}></span>{runningCount} running</span>
       <button class="ghost-btn" onclick={loadAll} title="Refresh" class:spinning={refreshing}><Icon name="refresh" size={14} /></button>
+      <label style="font-size: 13px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--color-gray-400); margin-right: 8px;">
+        <input type="checkbox" bind:checked={devMode} /> Dev mode
+      </label>
       <button class="run-btn" onclick={runProject}>crush <Icon name="play" size={12} fill /></button>
     </div>
   </header>
@@ -135,6 +140,9 @@
         </div>
         <div class="proj-actions">
           <button class="ghost-btn sm" onclick={openProject}>Change</button>
+          <label style="font-size: 13px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--color-gray-400); margin-right: 8px;">
+            <input type="checkbox" bind:checked={devMode} /> Dev mode
+          </label>
           <button class="btn-primary" onclick={runProject}>Run <Icon name="play" size={13} fill /></button>
         </div>
       </div>

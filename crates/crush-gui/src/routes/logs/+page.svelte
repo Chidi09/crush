@@ -11,6 +11,7 @@
   let logLines = $state<LogLine[]>([]);
   let filterLevel = $state<'all' | 'error'>('all');
   let unlistenLogs: (() => void) | null = null;
+  let unlistenReplay: (() => void) | null = null;
 
   let diagnosis = $state<DiagnosisResult | null>(null);
   let diagnosing = $state(false);
@@ -27,10 +28,12 @@
   onDestroy(() => {
     stopPolling();
     unlistenLogs?.();
+    unlistenReplay?.();
   });
 
   async function selectContainer(id: string) {
     unlistenLogs?.();
+    unlistenReplay?.();
     selectedContainerId = id;
     logLines = [];
     diagnosis = null;
@@ -40,6 +43,10 @@
       await api.subscribeLogs(id);
       unlistenLogs = await api.onLogLine(id, async (line) => {
         logLines = [...logLines.slice(-1000), line];
+        if (autoscroll) { await tick(); logEl?.scrollTo({ top: logEl.scrollHeight }); }
+      });
+      unlistenReplay = await api.onLogReplay(id, async (lines) => {
+        logLines = [...logLines, ...lines].slice(-1000);
         if (autoscroll) { await tick(); logEl?.scrollTo({ top: logEl.scrollHeight }); }
       });
     } catch (e) {

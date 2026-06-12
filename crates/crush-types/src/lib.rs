@@ -4,6 +4,32 @@ use serde::{Serialize, Deserialize};
 use thiserror::Error;
 use async_trait::async_trait;
 
+pub fn dirs_or_default() -> PathBuf {
+    let base = if cfg!(target_os = "linux") {
+        if let Ok(env_dir) = std::env::var("CRUSH_DATA_DIR") {
+            PathBuf::from(env_dir)
+        } else {
+            let var_lib = PathBuf::from("/var/lib/crush");
+            let test_dir = var_lib.join(".access_test");
+            if std::fs::create_dir_all(&test_dir).is_ok() {
+                let _ = std::fs::remove_dir(&test_dir);
+                var_lib
+            } else {
+                dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("crush")
+            }
+        }
+    } else if cfg!(target_os = "windows") {
+        let local_app_data = std::env::var("LOCALAPPDATA")
+            .unwrap_or_else(|_| format!("{}\\AppData\\Local",
+                std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".to_string())));
+        PathBuf::from(local_app_data).join("Crush")
+    } else {
+        dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("crush")
+    };
+    std::fs::create_dir_all(&base).ok();
+    base
+}
+
 #[derive(Error, Debug)]
 pub enum CrushError {
     #[error("Namespace error: {0}")]

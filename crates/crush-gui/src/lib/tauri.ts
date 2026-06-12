@@ -108,6 +108,68 @@ export interface RunEventAppOutput {
   service_name: string | null;
 }
 
+export interface RunEventDepStarted {
+  kind: 'dep-started';
+  name: string;
+  image: string;
+  native: boolean;
+}
+
+export interface RunEventDepFailed {
+  kind: 'dep-failed';
+  name: string;
+  error: string;
+}
+
+export interface RunEventImageFresh {
+  kind: 'image-fresh';
+  digest: string;
+}
+
+export interface RunEventImagePacked {
+  kind: 'image-packed';
+  digest: string;
+  size_bytes: number;
+  duration_ms: number;
+}
+
+export interface RunEventBuildStarted {
+  kind: 'build-started';
+  command: string;
+  service_name: string | null;
+}
+
+export interface RunEventBuildFinished {
+  kind: 'build-finished';
+  duration_ms: number;
+  success: boolean;
+  service_name: string | null;
+}
+
+export interface RunEventSpawning {
+  kind: 'spawning';
+  command: string;
+  port: number;
+  service_name: string | null;
+}
+
+export interface RunEventWarning {
+  kind: 'warning';
+  message: string;
+}
+
+export interface RunEventWarmRun {
+  kind: 'warm-run';
+}
+
+export interface RunEventDepsFresh {
+  kind: 'deps-fresh';
+}
+
+export interface RunEventAborted {
+  kind: 'aborted';
+}
+
 export interface RunEventExited {
   kind: 'exited';
   code: number;
@@ -122,8 +184,23 @@ export interface RunEventPortBound {
   service_name: string | null;
 }
 
-export type RunEvent = RunEventDetected | RunEventBuildOutput | RunEventAppOutput | RunEventExited | RunEventPortBound;
-
+export type RunEvent =
+  | RunEventDetected
+  | RunEventDepStarted
+  | RunEventDepFailed
+  | RunEventImageFresh
+  | RunEventImagePacked
+  | RunEventBuildStarted
+  | RunEventBuildOutput
+  | RunEventBuildFinished
+  | RunEventSpawning
+  | RunEventAppOutput
+  | RunEventPortBound
+  | RunEventExited
+  | RunEventWarning
+  | RunEventWarmRun
+  | RunEventDepsFresh
+  | RunEventAborted;
 // Tauri commands
 export function listContainers(): Promise<ContainerSummary[]> {
   return invoke('list_containers');
@@ -157,8 +234,8 @@ export function removeImage(id: string): Promise<void> {
   return invoke('remove_image', { id });
 }
 
-export function runProject(projectPath: string): Promise<string> {
-  return invoke('run_project', { projectPath });
+export function runProject(projectPath: string, devMode: boolean): Promise<string> {
+  return invoke('run_project', { projectPath, devMode });
 }
 
 export function abortRun(runId: string): Promise<void> {
@@ -208,6 +285,10 @@ export function onRunEvent(runId: string, cb: (event: RunEvent) => void): Promis
 
 export function onLogLine(containerId: string, cb: (line: LogLine) => void): Promise<UnlistenFn> {
   return listen<LogLine>(`log-line::${containerId}`, (e) => cb(e.payload));
+}
+
+export function onLogReplay(containerId: string, cb: (lines: LogLine[]) => void): Promise<UnlistenFn> {
+  return listen<LogLine[]>(`log-replay::${containerId}`, (e) => cb(e.payload));
 }
 
 export function onContainerStateChanged(cb: () => void): Promise<UnlistenFn> {
