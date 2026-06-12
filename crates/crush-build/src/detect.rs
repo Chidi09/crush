@@ -201,6 +201,8 @@ impl CrushSpecDetector {
                     dockerfile_found: None,
                     base_image,
                     generic_subdir_hint: Vec::new(),
+                    external_services: Vec::new(),
+                    stack_kind: String::new(),
                 };
             }
         }
@@ -417,6 +419,8 @@ impl CrushSpecDetector {
                                 dockerfile_found: None,
                                 base_image: "ubuntu:22.04".to_string(),
                                 generic_subdir_hint: Vec::new(),
+                                external_services: Vec::new(),
+                                stack_kind: String::new(),
                             };
                         }
                     }
@@ -770,6 +774,8 @@ impl CrushSpecDetector {
             dockerfile_found: Self::find_dockerfile(root),
             base_image,
             generic_subdir_hint: Vec::new(),
+            external_services: Vec::new(),
+            stack_kind: String::new(),
         }
     }
 
