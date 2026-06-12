@@ -1,0 +1,20 @@
+# Crush
+
+> A from-scratch, production-grade container runtime written in Rust. Crush runs your project natively — no Docker daemon, no WSL2, no VMs. It detects your stack automatically, starts native deps (Postgres, Redis, MySQL), and kills the full process tree on exit via Windows Job Objects. For production you `crush eject` to a real Dockerfile and deploy anywhere.
+
+## Key pages
+
+- [Home](https://crush-web-six.vercel.app): Hero, feature overview, stack compatibility list
+- [Getting Started](https://crush-web-six.vercel.app/docs/getting-started): First container in 5 minutes
+- [Installation](https://crush-web-six.vercel.app/docs/installation): All install methods (curl/PowerShell scripts, .deb, from source)
+- [CLI Reference](https://crush-web-six.vercel.app/docs/cli-reference): Every command with usage syntax and flags
+- [Crushfile Schema](https://crush-web-six.vercel.app/docs/crushfile): TOML config reference
+- [Docker Migration](https://crush-web-six.vercel.app/docs/docker-migration): Convert Dockerfile workflows to Crush
+- [Windows Guide](https://crush-web-six.vercel.app/docs/windows): Job Objects internals, Windows-specific setup
+- [Security](https://crush-web-six.vercel.app/docs/security): Secret scanning, encrypted secret store, release signing
+- [Changelog](https://crush-web-six.vercel.app/changelog): Full release history
+
+## Optional
+
+- [llms-full.txt](https://crush-web-six.vercel.app/llms-full.txt): All documentation content in one file for LLM ingestion
+- [GitHub](https://github.com/Chidi09/crush): Source code, issues, releases

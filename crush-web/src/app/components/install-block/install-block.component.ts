@@ -13,13 +13,13 @@ const METHODS: InstallMethod[] = [
   {
     label: 'Linux / macOS',
     filename: 'install.sh',
-    command: 'curl -fsSL https://crushrun.dev/install | sh',
+    command: 'curl -fsSL https://crush-web-six.vercel.app/install.sh | sh',
     iconPath: 'M2 4h20v16H2V4zm2 4v10h16V8H4zm3 2h2v2H7v-2zm4 0h6v2h-6v-2z', // Terminal SVG
   },
   {
     label: 'Windows (PowerShell)',
     filename: 'install.ps1',
-    command: 'irm https://crushrun.dev/install.ps1 | iex',
+    command: 'irm https://crush-web-six.vercel.app/install.ps1 | iex',
     iconPath:
       'M0 0h11.377v11.373H0zm12.623 0H24v11.373H12.623zM0 12.627h11.377V24H0zm12.623 0H24V24H12.623z', // Windows SVG
   },

@@ -37,10 +37,10 @@ import { InstallBlockComponent } from '../../components/install-block/install-bl
             <h2 class="text-lg font-bold text-white mb-4 flex items-center gap-2 select-none">
               APT repository
               <span class="text-xs font-normal text-crush-textMuted">(Debian / Ubuntu)</span>
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">coming soon</span>
             </h2>
             <p class="text-sm text-crush-textMuted mb-4 leading-relaxed">
-              Install via our official Debian package repository to get automatic system updates
-              directly through your system packet manager.
+              The APT repository is planned. For now, use the direct download above or install the <code class="text-crush-orange">.deb</code> from the GitHub releases page. The commands below show the planned form for when the repo goes live.
             </p>
 
             <div
@@ -79,8 +79,12 @@ import { InstallBlockComponent } from '../../components/install-block/install-bl
               <span class="text-xs font-normal text-crush-textMuted"
                 >(Fedora / Red Hat / Rocky)</span
               >
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">coming soon</span>
             </h2>
             <p class="text-sm text-crush-textMuted mb-4 leading-relaxed">
+              RPM repository support is planned. Currently install via the direct download or from source. The commands below show the planned form.
+            </p>
+            <p class="text-sm text-crush-textMuted mb-4 leading-relaxed hidden">
               Manage installation package cycles natively through standard yum or dnf repository
               configurations.
             </p>
@@ -118,6 +122,7 @@ import { InstallBlockComponent } from '../../components/install-block/install-bl
             <h2 class="text-lg font-bold text-white mb-4 flex items-center gap-2 select-none">
               Arch User Repository
               <span class="text-xs font-normal text-crush-textMuted">(Arch Linux / Manjaro)</span>
+              <span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20">coming soon</span>
             </h2>
 
             <div

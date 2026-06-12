@@ -57,7 +57,7 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
                 >
               </div>
               <div class="p-4 font-mono text-sm overflow-x-auto text-crush-text">
-                <code>curl -fsSL https://crushrun.dev/install | sh</code>
+                <code>curl -fsSL https://crush-web-six.vercel.app/install.sh | sh</code>
               </div>
             </div>
           </section>
@@ -69,21 +69,20 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
                 class="flex h-6 w-6 items-center justify-center rounded-full bg-crush-orange/10 text-crush-orange text-xs font-bold border border-crush-orange/20"
                 >2</span
               >
-              Convert your Dockerfile
+              Let Crush detect your stack (or migrate your Dockerfile)
             </h2>
             <p class="text-sm text-crush-textMuted mb-4 leading-relaxed">
-              Run
+              If your project already has a Dockerfile, run
               <code
                 class="bg-crush-surface px-1 py-0.5 rounded text-white border border-crush-border"
                 ><span class="text-crush-orange font-bold">crush</span> migrate</code
               >
-              inside your project folder. The migration wizard automatically scans your Dockerfile
-              instructions, determines the optimal framework layers, and generates a corresponding
+              to convert it to a Crushfile. For projects without one, just run
               <code
                 class="bg-crush-surface px-1 py-0.5 rounded text-white border border-crush-border"
-                >Crushfile</code
+                ><span class="text-crush-orange font-bold">crush</span> detect</code
               >
-              schema.
+              — Crush fingerprints the language, framework, and port automatically.
             </p>
 
             <div
@@ -199,17 +198,20 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
             </div>
           </section>
 
-          <!-- DOCKER_HOST compatibility -->
+          <!-- Eject for production -->
           <section class="mb-12">
-            <h2 class="text-xl font-bold text-white mb-4 select-none">DOCKER_HOST API Layer</h2>
+            <h2 class="text-xl font-bold text-white mb-4 select-none">Eject to Dockerfile for production</h2>
             <p class="text-sm text-crush-textMuted mb-4 leading-relaxed">
-              Crush spins up a localized socket adapter mirroring standard Docker REST sockets.
-              External integrations or automation tools communicating over
-              <code
-                class="bg-crush-surface px-1 py-0.5 rounded text-white border border-crush-border"
-                >DOCKER_HOST</code
+              Crush is a development tool, not a production container runtime. When you're ready to
+              ship, run
+              <code class="bg-crush-surface px-1 py-0.5 rounded text-white border border-crush-border"
+                ><span class="text-crush-orange font-bold">crush</span> eject</code
               >
-              interfaces function transparently.
+              to generate a real <code class="bg-crush-surface px-1 py-0.5 rounded text-white border border-crush-border">Dockerfile</code>
+              and <code class="bg-crush-surface px-1 py-0.5 rounded text-white border border-crush-border">docker-compose.yml</code>
+              from the detected configuration. The generated files are annotated with
+              <code class="bg-crush-surface px-1 py-0.5 rounded text-white border border-crush-border"># crush:eject</code>
+              so Crush skips them on future dev runs.
             </p>
 
             <div
@@ -225,21 +227,18 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
                   <span class="text-[10px] text-crush-textMuted font-mono ml-2">Terminal</span>
                 </div>
                 <span class="text-[9px] text-crush-textMuted uppercase tracking-wider font-semibold"
-                  >socket adapter</span
+                  >eject</span
                 >
               </div>
               <div
                 class="p-4 font-mono text-sm overflow-x-auto text-crush-text leading-relaxed whitespace-pre"
               >
-                <span class="text-crush-textMuted"
-                  ># Route third-party tools through local socket</span
-                >
-                export DOCKER_HOST=unix:///var/run/crush.sock
-
-                <span class="text-crush-textMuted"
-                  ># Standard docker commands route cleanly to Crush process engines</span
-                >
-                docker ps docker-compose up
+                <span class="text-crush-textMuted"># Generate production Dockerfile + compose</span>
+                <span class="text-crush-orange font-bold">crush</span> eject
+                <span class="text-crush-textMuted">↳ detected: Node.js 20 · TypeScript · Express</span>
+                <span class="text-crush-textMuted">↳ writing Dockerfile (marked # crush:eject)</span>
+                <span class="text-crush-textMuted">↳ writing docker-compose.yml</span>
+                <span class="text-emerald-400">✓ ejected — deploy with: docker compose up -d</span>
               </div>
             </div>
           </section>

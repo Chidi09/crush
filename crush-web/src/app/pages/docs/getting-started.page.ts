@@ -53,7 +53,7 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
                 >
               </div>
               <div class="p-4 font-mono text-sm overflow-x-auto text-crush-text">
-                <code>curl -fsSL https://crushrun.dev/install | sh</code>
+                <code>curl -fsSL https://crush-web-six.vercel.app/install.sh | sh</code>
               </div>
             </div>
 
@@ -280,10 +280,10 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
                 >
                 <span class="text-crush-textMuted">~/my-api $ </span
                 ><span class="text-crush-orange font-bold">crush</span> push
-                registry.crushrun.dev/myapp:latest
+                ghcr.io/chidi09/myapp:latest
                 <span class="text-crush-textMuted">↳ Uploading dependency layer cache [100%]</span>
                 <span class="text-emerald-400"
-                  >✓ Image pushed successfully (registry.crushrun.dev/myapp:latest)</span
+                  >✓ Image pushed successfully (ghcr.io/chidi09/myapp:latest)</span
                 >
 
                 <span class="text-crush-textMuted"
@@ -291,7 +291,7 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
                 >
                 <span class="text-crush-textMuted">~/my-api $ </span
                 ><span class="text-crush-orange font-bold">crush</span> run
-                registry.crushrun.dev/myapp:latest --port 3000 -d
+                ghcr.io/chidi09/myapp:latest --port 3000 -d
                 <span class="text-crush-textMuted"
                   >↳ Launching daemonless process in remote container scheduler...</span
                 >

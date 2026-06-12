@@ -1,0 +1,378 @@
+# Crush — Full Documentation (v0.8.1)
+
+> Crush is a from-scratch container runtime written in Rust. It runs your project natively on Windows (no WSL2, no Docker daemon, no VMs), auto-detects your stack, starts native dependencies, and cleans up via Windows Job Objects. For production, `crush eject` generates a real Dockerfile + docker-compose.yml.
+
+---
+
+## What Crush actually does
+
+You `cd` into a project. You type `crush`. Crush:
+
+1. Detects the stack — language, framework, port, monorepo structure. Precedence: Crushfile > compose > Dockerfile > heuristics. Files annotated `# crush:eject` are skipped.
+2. Auto-starts the deps — native PostgreSQL, Garnet (Redis-compat), MySQL by parsing docker-compose.yml, application.yml, or .env. Per-service env merge for monorepos.
+3. Picks the right entry command — `mvn spring-boot:run` if no Dockerfile, `pnpm dev` for standalone frontends, `pnpm start` for monorepos with a compose file.
+4. Skips work already done — `pnpm install` is skipped when node_modules is newer than lockfile; image repack is skipped when source fingerprints match.
+5. Scans for secrets before building — AWS, GCP, GitHub PAT, OpenAI, GitLab, npm, Vercel, Cloudflare tokens; DB connection strings; high-entropy strings. Lines annotated `# crush:ignore-secret` are skipped.
+6. Surfaces URLs — probes /swagger-ui/index.html, /v3/api-docs, /actuator/health and prints them.
+7. Kills the full process tree on Ctrl+C via Windows Job Object — no orphan processes holding ports.
+
+Crush is NOT a Docker Desktop replacement. It does not run Linux containers on Windows. Your app runs as a native process. Use `crush eject` to get a real Dockerfile for production deployment.
+
+---
+
+## Installation
+
+### Linux / macOS (curl)
+```
+curl -fsSL https://crush-web-six.vercel.app/install.sh | sh
+```
+
+### Windows (PowerShell)
+```
+irm https://crush-web-six.vercel.app/install.ps1 | iex
+```
+
+### Direct download
+Download from https://github.com/Chidi09/crush/releases/latest
+- Linux: crush-v0.8.1-linux-x86_64 (binary), Crush_0.8.1_amd64.deb, Crush_0.8.1_amd64.AppImage
+- Windows: crush-windows-x86_64.exe (rename to crush.exe, place on PATH)
+
+### From source
+```
+git clone https://github.com/Chidi09/crush.git
+cd crush
+cargo build --release -p crush-cli
+```
+Note: do NOT use --all-features (the ebpf feature requires nightly + bpf-linker).
+
+### Package managers
+APT, DNF, AUR, Winget, and Scoop packages are planned but not yet published.
+
+---
+
+## CLI Reference
+
+### crush (default)
+Detect stack, start deps, build, run — all in one command.
+```
+crush [--rebuild] [--repack] [--watch] [--memory 1G] [--cpus 0.5] [--platform linux/amd64]
+```
+
+### crush detect
+Print what Crush detects about the current project without building.
+```
+crush detect
+crush detect --json
+```
+
+### crush build
+Build a Crush image.
+```
+crush build [--tag myapp:latest] [--platform linux/amd64] [--rebuild] [--repack]
+```
+
+### crush run
+Run a previously-built image.
+```
+crush run <image> [--port 3000] [-d] [--restart always] [--memory 512M]
+```
+
+### crush eject
+Write a real Dockerfile + docker-compose.yml. Generated files are marked `# crush:eject` so they don't loop back into detection.
+```
+crush eject [--out ./deploy]
+```
+
+### crush ps
+List running containers.
+```
+crush ps [-a]
+crush ps --format json
+```
+
+### crush logs
+Stream or tail container logs.
+```
+crush logs <container-id> [-f] [--tail 100]
+```
+
+### crush stop
+Stop a container and its process tree.
+```
+crush stop <container-id>
+```
+
+### crush inspect
+Show detailed metadata for a container or image.
+```
+crush inspect <container-id|image-ref>
+```
+
+### crush stats
+Live TUI dashboard (CPU + memory sparklines).
+```
+crush stats
+```
+
+### crush debug
+AI crash diagnosis via Claude. Requires ANTHROPIC_API_KEY.
+```
+crush debug <container-id>
+```
+
+### crush watch
+Hot-restart on source change. On Windows use the --watch flag; on Linux you can use this subcommand.
+```
+crush --watch          # Windows
+crush watch            # Linux
+```
+
+### crush images
+List locally-stored images.
+```
+crush images
+crush images --format json
+```
+
+### crush pull / crush push
+Pull or push OCI images.
+```
+crush pull <registry>/<repo>:<tag>
+crush push <registry>/<repo>:<tag>
+```
+
+### crush compose
+Multi-service applications from docker-compose.yml.
+```
+crush compose up [-d]
+crush compose down
+crush compose ps
+```
+
+### crush services
+Inspect and control native dependency processes.
+```
+crush services ps
+crush services ps --format json
+crush services ps --all-projects
+crush services stop <name>
+```
+
+### crush history
+Recent build outcomes.
+```
+crush history
+crush history --format json
+```
+
+### crush migrate
+Convert an existing Dockerfile into a Crushfile.
+```
+crush migrate [--dockerfile ./Dockerfile]
+```
+
+### crush secrets
+Manage AES-256-GCM encrypted secrets.
+```
+crush secrets set <KEY> <value>
+crush secrets list
+crush secrets remove <KEY>
+crush secrets export --to vault
+```
+
+### crush scan / crush sbom
+Vulnerability scan and SBOM generation.
+```
+crush scan <image>
+crush sbom <image> [--format spdx-json]
+```
+
+### crush network / crush volume
+Container networks and persistent volumes.
+```
+crush network create <name>
+crush network ls
+crush volume create <name>
+crush volume ls
+```
+
+### crush deploy / crush rollback
+Deploy to a remote host and roll back.
+```
+crush deploy [--host user@server] [--image myapp:latest]
+crush rollback [--host user@server]
+```
+
+### crush update
+Self-update from GitHub releases.
+```
+crush update [--version v0.8.1]
+```
+
+### crush system
+System info and maintenance.
+```
+crush system info
+crush system prune
+```
+
+### crush completions
+Shell completions.
+```
+crush completions bash
+crush completions zsh
+crush completions fish
+crush completions powershell
+```
+
+### Global flags
+- `--rebuild` — bust warm-run cache; re-run install + build steps
+- `--repack` — force image re-pack even if source fingerprints match
+- `--watch` — hot-restart on source file changes
+- `--memory <limit>` — memory cap e.g. 512M or 2G
+- `--cpus <n>` — CPU limit e.g. 0.5 for half a core
+- `--priority <level>` — low | normal | high (Windows scheduling priority)
+- `--platform <target>` — e.g. linux/amd64 or linux/arm64
+- `--no-proxy` — skip the reverse proxy for monorepos
+
+---
+
+## Crushfile Schema (TOML)
+
+The Crushfile is optional — Crush auto-detects everything. Use it to override or pin settings.
+
+```toml
+[project]
+name = "my-api"
+version = "0.1.0"
+
+[build]
+platform = "linux/amd64"          # target platform
+base_image = "node:20-alpine"     # override auto-detected base
+cmd = ["node", "dist/index.js"]   # override default entry command
+expose = [3000]                   # ports to expose
+env = { NODE_ENV = "production" } # build-time env vars
+
+[runtime]
+restart = "no"        # no | always | on-failure
+memory = "512MB"
+cpu = 0.5
+
+[secrets]
+# Set with: crush secrets set DB_PASSWORD <value>
+# DO NOT put plaintext values here — use crush secrets set
+```
+
+Crushfile takes precedence over docker-compose.yml, which takes precedence over a Dockerfile, which takes precedence over heuristic detection. Files with `# crush:eject` in the first line are excluded from detection (used by `crush eject` to mark generated files).
+
+---
+
+## Stack Detection
+
+Supported stacks (zero-config):
+
+**Node.js / TypeScript**: Next.js, Nuxt, Vite, SvelteKit, AnalogJS, Angular, Astro, Express, Fastify, NestJS, Hono, Qwik
+**Java**: Spring Boot, Quarkus, Micronaut (Maven and Gradle)
+**Python**: FastAPI, Django, Flask, Litestar, Starlette
+**Other**: Go, Rust, Ruby on Rails, PHP (Laravel), Elixir (Phoenix), .NET
+**Monorepos**: Turborepo, Nx, pnpm-workspace, Lerna
+
+Dockerfile detection searches: root, infra/, docker/, .docker/, deploy/, ops/
+Dockerfile names matched: Dockerfile, dockerfile, Containerfile
+
+---
+
+## Secret Scanning
+
+Runs automatically at build time before any code executes.
+
+Detected patterns:
+- AWS: access key IDs, secret keys
+- GCP: service account keys
+- GitHub: personal access tokens (ghp_, gho_, ghs_, ghr_ prefixes)
+- OpenAI project keys
+- GitLab personal access tokens (glpat- prefix)
+- npm auth tokens
+- Vercel tokens
+- Cloudflare API tokens
+- Database connection strings: postgresql://, mysql://, mongodb://, redis://, amqps:// with embedded credentials
+- High-entropy strings: threshold 3.3 for hex, 4.5 for other charsets
+- Hex keys with 64-char boundary guards
+
+Escape hatch: annotate any line with `# crush:ignore-secret` to skip it.
+
+Env var scanning: reads .env.example, .env.sample, .env.template, .env.dist for required vs optional classification. Code references scanned: process.env (JS), os.environ (Python), std::env::var (Rust), System.getenv (Java), ENV[] (Ruby), Deno.env.get (Deno).
+
+---
+
+## Security
+
+Secrets are stored with AES-256-GCM encryption and decrypted only in memory at container runtime. They are injected as environment variables and never written to disk in plaintext.
+
+Release binaries are distributed with SHA256SUMS for verification.
+
+---
+
+## Windows Job Objects
+
+Crush uses the Win32 CreateJobObjectW / AssignProcessToJobObject APIs to group all spawned processes into a single job. When `crush` exits (including on Ctrl+C), the entire job is terminated — no orphan node, java, or postgres processes left holding ports.
+
+Resource limits (--memory, --cpus) are enforced via SetInformationJobObject with JOB_OBJECT_LIMIT_WORKING_SET_SIZE and JobObjectCpuRateControlInformation.
+
+This is the isolation mechanism. Crush does NOT use Linux namespaces, cgroups, or any hypervisor on Windows.
+
+---
+
+## Architecture
+
+Crush is a Cargo workspace. Active crates (daily-driven):
+- crush-cli: CLI entry, all subcommands
+- crush-build: stack detection, Dockerfile/compose parsing, secrets & env scanning, build engine, RunEvent types
+- crush-types: shared structs, dirs_or_default(), Container, Image
+- crush-services: native postgres/redis/mysql, pgvector extension
+- crush-image: OCI image store + sled-backed metadata
+- crush-ai: Anthropic-backed crash diagnosis
+- crush-tui: ratatui-based stats dashboard
+- crush-runtime-windows: Job Objects, ConPTY
+- crush-gui/src-tauri: Tauri 2 + Svelte desktop app
+
+Scaffolded (not yet daily-driven):
+- crush-runtime-linux, crush-runtime-macos, crush-runtime-wasm
+- crush-network (eBPF feature gated behind ebpf feature flag, needs aya-ebpf port)
+- crush-registry, crush-reliability, crush-volume, crush-deploy
+
+---
+
+## What's not implemented yet
+
+- crush update SHA256 verification (self-update works but doesn't verify the downloaded binary)
+- crush images "0 B" size display (images list but sizes show zero)
+- Full crush compose lifecycle (starts deps, doesn't manage up/down/scale fully)
+- crush watch subcommand on Windows (use --watch flag instead)
+- Linux/macOS/WASM runtimes (crates exist, not battle-tested)
+- APT/DNF/AUR/Winget/Scoop packages (planned, not published)
+
+---
+
+## Changelog highlights
+
+### v0.8.1 (2026-06-12)
+Version bump only — resolves tag collision with earlier v0.8.0 from a different branch.
+
+### v0.8.0 (2026-06-12)
+- Desktop GUI ships: Tauri 2 + Svelte. Real-time run events, working abort, batched log replay, dev mode toggle.
+- Build engine: Crushfile > compose > Dockerfile > heuristics precedence. Dockerfile detection in nested dirs.
+- Secrets scanner: multi-tier, charset-aware entropy, 10+ token pattern families.
+- Env scanning: .env.example variants + code reference scanning.
+- CLI: commands split into modules, StatelessEngine import fixed.
+- Shared dirs_or_default() in crush-types.
+- Local CI/release pipeline: scripts/ci-local.sh + release-local.sh, post-receive hook.
+
+### v0.7.74 (2026-05-28)
+Restored four output lines dropped by v0.7.73 refactor: dependencies cached, crushed to image, deps fresh, warm run icon.
+
+---
+
+## Source
+
+https://github.com/Chidi09/crush

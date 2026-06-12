@@ -13,41 +13,64 @@ interface CliCmd {
 const COMMANDS: CliCmd[] = [
   {
     name: 'crush',
-    desc: 'Auto-detect stack, build, and run in one command.',
-    usage: 'crush [--platform linux/amd64]',
+    desc: 'Detect stack, start deps, build, and run — all in one command. The default workflow.',
+    usage: 'crush [--rebuild] [--repack] [--watch] [--memory 1G] [--cpus 0.5] [--platform linux/amd64]',
+  },
+  {
+    name: 'crush detect',
+    desc: 'Print what Crush detects about the current project — stack, framework, port, monorepo structure — without building or running.',
+    usage: 'crush detect\ncrush detect --json',
   },
   {
     name: 'crush build',
-    desc: 'Build a Crush image from the current project.',
-    usage: 'crush build [--platform linux/amd64] [--tag myapp:latest]',
+    desc: 'Build a Crush image from the current project directory.',
+    usage: 'crush build [--tag myapp:latest] [--platform linux/amd64] [--rebuild] [--repack]',
   },
   {
     name: 'crush run',
-    desc: 'Run a Crush image.',
-    usage: 'crush run <image> [--port 3000] [-d] [--restart always]',
+    desc: 'Run a previously-built Crush image.',
+    usage: 'crush run <image> [--port 3000] [-d] [--restart always] [--memory 512M]',
   },
-  { name: 'crush ps', desc: 'List running containers.', usage: 'crush ps [-a]' },
-  { name: 'crush logs', desc: 'View container logs.', usage: 'crush logs <container-id> [-f]' },
+  {
+    name: 'crush eject',
+    desc: 'Write a real Dockerfile + docker-compose.yml from the detected configuration. The generated files are marked with # crush:eject so Crush ignores them on future detection runs.',
+    usage: 'crush eject [--out ./deploy]',
+  },
+  { name: 'crush ps', desc: 'List running containers.', usage: 'crush ps [-a]\ncrush ps --format json' },
+  {
+    name: 'crush logs',
+    desc: 'Stream or tail logs for a running container.',
+    usage: 'crush logs <container-id> [-f] [--tail 100]',
+  },
+  {
+    name: 'crush stop',
+    desc: 'Stop a running container and its full process tree.',
+    usage: 'crush stop <container-id>',
+  },
+  {
+    name: 'crush inspect',
+    desc: 'Show detailed metadata for a container or image.',
+    usage: 'crush inspect <container-id|image-ref>',
+  },
+  {
+    name: 'crush stats',
+    desc: 'Live TUI dashboard with real-time CPU and memory sparklines for all running containers.',
+    usage: 'crush stats',
+  },
   {
     name: 'crush debug',
-    desc: 'Debug a container — attach a shell.',
+    desc: 'AI-powered crash diagnosis. Sends the container\'s stack trace to Claude and returns an explanation and suggested fix. Requires ANTHROPIC_API_KEY.',
     usage: 'crush debug <container-id>',
   },
-  { name: 'crush watch', desc: 'Watch mode — auto-rebuild on file changes.', usage: 'crush watch' },
   {
-    name: 'crush compose',
-    desc: 'Run multi-container applications from docker-compose.yml.',
-    usage: 'crush compose up [-d]',
+    name: 'crush watch',
+    desc: 'Watch mode — hot-restart on source file changes. On Windows, use the --watch flag on the default command instead of this subcommand (the subcommand uses Linux overlayfs).',
+    usage: 'crush --watch\n# Windows: crush --watch (flag)\n# Linux:   crush watch',
   },
   {
-    name: 'crush migrate',
-    desc: 'Migrate a Dockerfile to Crushfile.',
-    usage: 'crush migrate [--dockerfile ./Dockerfile]',
-  },
-  {
-    name: 'crush push',
-    desc: 'Push an image to an OCI registry.',
-    usage: 'crush push <registry>/<repo>:<tag>',
+    name: 'crush images',
+    desc: 'List locally-stored Crush images.',
+    usage: 'crush images\ncrush images --format json',
   },
   {
     name: 'crush pull',
@@ -55,30 +78,79 @@ const COMMANDS: CliCmd[] = [
     usage: 'crush pull <registry>/<repo>:<tag>',
   },
   {
+    name: 'crush push',
+    desc: 'Push a locally-built image to an OCI registry.',
+    usage: 'crush push <registry>/<repo>:<tag>',
+  },
+  {
+    name: 'crush compose',
+    desc: 'Run a multi-service application from docker-compose.yml. Crush parses the file and starts native deps (postgres, redis, mysql); full lifecycle management is in progress.',
+    usage: 'crush compose up [-d]\ncrush compose down\ncrush compose ps',
+  },
+  {
+    name: 'crush services',
+    desc: 'Inspect and control the native dependency processes Crush manages (postgres, garnet, mysql, etc.).',
+    usage: 'crush services ps\ncrush services ps --format json\ncrush services ps --all-projects\ncrush services stop <name>',
+  },
+  {
+    name: 'crush history',
+    desc: 'View recent build outcomes for the current project.',
+    usage: 'crush history\ncrush history --format json',
+  },
+  {
+    name: 'crush migrate',
+    desc: 'Convert an existing Dockerfile into a Crushfile. The generated Crushfile will include the detected base image, build steps, and exposed ports.',
+    usage: 'crush migrate [--dockerfile ./Dockerfile]',
+  },
+  {
     name: 'crush secrets',
-    desc: 'Manage encrypted secrets.',
-    usage: 'crush secrets set <key> <value>\ncrush secrets list\ncrush secrets export --to vault',
+    desc: 'Manage encrypted project secrets. Secrets are stored with AES-256-GCM and injected into the container environment at runtime.',
+    usage: 'crush secrets set <KEY> <value>\ncrush secrets list\ncrush secrets remove <KEY>\ncrush secrets export --to vault',
+  },
+  {
+    name: 'crush scan',
+    desc: 'Scan an image for known CVEs and dependency vulnerabilities.',
+    usage: 'crush scan <image>',
+  },
+  {
+    name: 'crush sbom',
+    desc: 'Generate a Software Bill of Materials for an image.',
+    usage: 'crush sbom <image> [--format spdx-json]',
   },
   {
     name: 'crush network',
     desc: 'Manage container networks.',
-    usage: 'crush network create <name>\ncrush network ls',
+    usage: 'crush network create <name>\ncrush network ls\ncrush network remove <name>',
   },
   {
     name: 'crush volume',
     desc: 'Manage persistent volumes.',
-    usage: 'crush volume create <name>\ncrush volume ls',
+    usage: 'crush volume create <name>\ncrush volume ls\ncrush volume remove <name>',
   },
-  { name: 'crush scan', desc: 'Scan an image for vulnerabilities.', usage: 'crush scan <image>' },
   {
-    name: 'crush sbom',
-    desc: 'Generate an SBOM for an image.',
-    usage: 'crush sbom <image> [--format spdx-json]',
+    name: 'crush deploy',
+    desc: 'Deploy a built image to a remote host.',
+    usage: 'crush deploy [--host user@server] [--image myapp:latest]',
+  },
+  {
+    name: 'crush rollback',
+    desc: 'Roll back to the previous deployed image on the target host.',
+    usage: 'crush rollback [--host user@server]',
+  },
+  {
+    name: 'crush update',
+    desc: 'Self-update Crush from the latest GitHub release.',
+    usage: 'crush update [--version v0.8.1]',
   },
   {
     name: 'crush system',
-    desc: 'System information and diagnostics.',
+    desc: 'System information and maintenance.',
     usage: 'crush system info\ncrush system prune',
+  },
+  {
+    name: 'crush completions',
+    desc: 'Generate shell completion scripts.',
+    usage: 'crush completions bash\ncrush completions zsh\ncrush completions fish\ncrush completions powershell',
   },
 ];
 
@@ -102,6 +174,20 @@ const COMMANDS: CliCmd[] = [
             <p class="text-base text-crush-textMuted">
               Complete command line interface handbook with syntax guides.
             </p>
+          </div>
+
+          <!-- Global flags callout -->
+          <div class="mb-10 rounded-xl border border-crush-border/40 bg-crush-surface/10 p-5">
+            <h2 class="text-base font-bold text-white mb-3 select-none">Global flags</h2>
+            <p class="text-xs text-crush-textMuted mb-4 leading-relaxed">These flags work on the default <code class="text-crush-orange">crush</code> command and most subcommands. Run <code class="text-crush-orange">crush &lt;cmd&gt; --help</code> for the full set.</p>
+            <div class="grid gap-2 sm:grid-cols-2 font-mono text-xs">
+              @for (flag of globalFlags; track flag.flag) {
+                <div class="flex flex-col gap-0.5 rounded-lg border border-crush-border/30 bg-crush-black/40 px-3 py-2">
+                  <span class="text-crush-orangeLight font-semibold">{{ flag.flag }}</span>
+                  <span class="text-crush-textMuted">{{ flag.desc }}</span>
+                </div>
+              }
+            </div>
           </div>
 
           <div class="space-y-6">
@@ -193,6 +279,17 @@ const COMMANDS: CliCmd[] = [
 })
 export default class CliReferencePage implements OnInit {
   commands = COMMANDS;
+
+  globalFlags = [
+    { flag: '--rebuild', desc: 'Bust the warm-run cache; re-runs install + build steps.' },
+    { flag: '--repack', desc: 'Force image re-pack even if source fingerprints match.' },
+    { flag: '--watch', desc: 'Hot-restart on source file changes.' },
+    { flag: '--memory <limit>', desc: 'Memory cap via Job Object, e.g. 512M or 2G.' },
+    { flag: '--cpus <n>', desc: 'CPU limit, e.g. 0.5 for half a core.' },
+    { flag: '--priority <level>', desc: 'Process priority: low | normal | high (Windows).' },
+    { flag: '--platform <target>', desc: 'Target platform, e.g. linux/amd64 or linux/arm64.' },
+    { flag: '--no-proxy', desc: 'Skip the reverse proxy (monorepos with separate backend+frontend).' },
+  ];
 
   constructor(
     private title: Title,

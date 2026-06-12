@@ -187,15 +187,15 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
                     class="p-5 font-mono text-xs sm:text-sm text-crush-text leading-relaxed whitespace-pre overflow-x-auto"
                   >
                     <span class="text-crush-textMuted">PS C:\\projects\\my-service> </span
-                    ><span class="text-crush-orange font-bold">crush</span> init
+                    ><span class="text-crush-orange font-bold">crush</span> detect
                     <span class="text-crush-textMuted">↳ Scanning files...</span>
                     <span class="text-crush-textMuted"
                       >↳ Found package.json -> Node.js Express API detected</span
                     >
+                    <span class="text-crush-textMuted">↳ port: 3000  deps: postgres</span>
                     <span class="text-emerald-400"
-                      >✓ Generated default configuration in .\\Crushfile</span
+                      >✓ Stack detected. Run 'crush' to start.</span
                     >
-                    <span class="text-emerald-400">✓ Isolated local layer cache prepared</span>
                   </div>
                 </div>
               </div>
@@ -553,11 +553,11 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
                 <div
                   class="rounded-b-xl border border-crush-border/40 bg-crush-black/85 p-4 font-mono text-xs sm:text-sm text-crush-text overflow-x-auto"
                 >
-                  <code>irm https://crushrun.dev/install.ps1 | iex</code>
+                  <code>irm https://crush-web-six.vercel.app/install.ps1 | iex</code>
                 </div>
               </div>
 
-              <!-- Winget Install -->
+              <!-- GitHub release (direct download) -->
               <div>
                 <div
                   class="flex items-center justify-between px-4 py-2 border border-b-0 border-crush-border/40 rounded-t-xl bg-crush-surface/30 select-none"
@@ -567,48 +567,25 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
                     <span class="w-2 h-2 rounded-full bg-[#ffbd2e]"></span>
                     <span class="w-2 h-2 rounded-full bg-[#27c93f]"></span>
                     <span class="text-[10px] text-crush-textMuted font-mono ml-2"
-                      >Winget Package Manager</span
+                      >GitHub Releases (direct)</span
                     >
                   </div>
                   <span class="text-[9px] text-crush-textMuted uppercase font-semibold"
-                    >winget</span
+                    >manual</span
                   >
                 </div>
                 <div
                   class="rounded-b-xl border border-crush-border/40 bg-crush-black/85 p-4 font-mono text-xs sm:text-sm text-crush-text overflow-x-auto"
                 >
-                  <code
-                    >winget install
-                    <span class="text-crush-orange font-bold">Crush</span>.Container</code
+                  <code class="text-crush-textMuted"
+                    ># Download from https://github.com/Chidi09/crush/releases/latest<br /># Place crush-windows-x86_64.exe on your PATH and rename to crush.exe</code
                   >
                 </div>
               </div>
 
-              <!-- Scoop Install -->
-              <div>
-                <div
-                  class="flex items-center justify-between px-4 py-2 border border-b-0 border-crush-border/40 rounded-t-xl bg-crush-surface/30 select-none"
-                >
-                  <div class="flex items-center gap-1.5">
-                    <span class="w-2 h-2 rounded-full bg-[#ff5f56]"></span>
-                    <span class="w-2 h-2 rounded-full bg-[#ffbd2e]"></span>
-                    <span class="w-2 h-2 rounded-full bg-[#27c93f]"></span>
-                    <span class="text-[10px] text-crush-textMuted font-mono ml-2"
-                      >Scoop Package Manager</span
-                    >
-                  </div>
-                  <span class="text-[9px] text-crush-textMuted uppercase font-semibold">scoop</span>
-                </div>
-                <div
-                  class="rounded-b-xl border border-crush-border/40 bg-crush-black/85 p-4 font-mono text-xs sm:text-sm text-crush-text leading-relaxed overflow-x-auto"
-                >
-                  <code
-                    >scoop bucket add
-                    <span class="text-crush-orange font-bold">crush</span>
-                    https://github.com/crushcontainer/scoop-bucket<br />scoop install
-                    <span class="text-crush-orange font-bold">crush</span></code
-                  >
-                </div>
+              <!-- Winget / Scoop coming soon note -->
+              <div class="rounded-xl border border-crush-border/30 bg-crush-surface/10 px-4 py-3 text-xs text-crush-textMuted">
+                <span class="font-semibold text-crush-orange">Coming soon:</span> Winget and Scoop package manager support is on the roadmap once the Windows release process is automated.
               </div>
             </div>
           </section>
