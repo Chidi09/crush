@@ -38,6 +38,8 @@ use crush_reliability::{
 };
 mod runtime;
 mod job_object;
+mod commands;
+use runtime::StatelessEngine;
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
 use crush_build::run::Stream;
@@ -220,7 +222,7 @@ struct DetectArgs {
 }
 
 #[derive(Args, Debug)]
-struct BuildArgs {
+pub struct BuildArgs {
     #[arg(short, long, help = "Output image tag", default_value = "app:latest")]
     tag: String,
     #[arg(long, help = "Platforms to build for (e.g. linux/amd64,linux/arm64)")]
@@ -236,7 +238,7 @@ struct WatchArgs {
 }
 
 #[derive(Args, Debug)]
-struct RunArgs {
+pub struct RunArgs {
     #[arg(help = "Image tag or digest to run")]
     image: String,
     #[arg(short, long, help = "Map container ports (e.g. 8080:80)")]
@@ -1996,74 +1998,7 @@ async fn main() -> anyhow::Result<()> {
             println!("  Port:       {}", stack.default_port);
         }
         Commands::Build(args) => {
-            if let Some(ref plat) = args.platform {
-                std::env::set_var("CRUSH_DEFAULT_PLATFORM", plat);
-            }
-            info!("Building image: {} (platforms: {:?})", args.tag, args.platform);
-            let detector = StackDetector::new();
-            let project_root = std::env::current_dir()?;
-            let stack = detector.detect(&project_root).await?;
-
-            let cache_dir = data_dir.join("cache");
-            let cache = crush_build::BuildCache::new(cache_dir.clone());
-            let pipeline = crush_build::BuildPipeline::new(cache).with_progress();
-
-            let crushfile_path = project_root.join("Crushfile");
-            let stages = if crushfile_path.exists() {
-                println!("Parsing Crushfile at: {}", crushfile_path.display());
-                let parsed = crush_build::CrushfileParser::parse(&crushfile_path)
-                    .map_err(|e| CrushError::StorageError(format!("Failed to parse Crushfile: {}", e)))?;
-                parsed.stages.unwrap_or_default()
-            } else {
-                println!("No Crushfile found, synthesising stages from stack detection...");
-                let base_img = stack.base_image.clone();
-                vec![
-                    crush_build::CrushfileStage {
-                        name: Some("base".to_string()),
-                        stage_type: "base".to_string(),
-                        image: Some(base_img),
-                        command: None,
-                        rule: None,
-                        from: None,
-                        target: None,
-                        platforms: None,
-                    },
-                    crush_build::CrushfileStage {
-                        name: Some("deps".to_string()),
-                        stage_type: "run".to_string(),
-                        image: None,
-                        command: Some(stack.build_command.clone()),
-                        rule: None,
-                        from: None,
-                        target: None,
-                        platforms: None,
-                    },
-                    crush_build::CrushfileStage {
-                        name: Some("source".to_string()),
-                        stage_type: "copy".to_string(),
-                        image: None,
-                        command: None,
-                        rule: Some(".".to_string()),
-                        from: None,
-                        target: None,
-                        platforms: None,
-                    },
-                    crush_build::CrushfileStage {
-                        name: Some("final".to_string()),
-                        stage_type: "config".to_string(),
-                        image: None,
-                        command: None,
-                        rule: None,
-                        from: None,
-                        target: None,
-                        platforms: None,
-                    },
-                ]
-            };
-
-            let pipeline_result = pipeline.execute(&project_root, &stages, &std::collections::HashMap::new()).await?;
-            let digest = pipeline_result.digest;
-            println!("Built image {} -> digest: {}", args.tag, digest);
+            commands::build::exec(&args, &data_dir).await?;
         }
         Commands::Watch(args) => {
             #[cfg(windows)]
@@ -2345,229 +2280,7 @@ async fn main() -> anyhow::Result<()> {
             }
         }
         Commands::Run(args) => {
-            // If image is "." or a directory path containing a Dockerfile, build and run from it
-            let mut df_entrypoint = None;
-            let mut df_cmd = None;
-            let mut df_env = Vec::new();
-            let mut df_exposed_ports = Vec::new();
-            let mut is_df_build = false;
-            let mut project_dir = None;
-
-            let resolved_image = if args.image == "." || std::path::Path::new(&args.image).is_dir() {
-                let dir = if args.image == "." {
-                    std::env::current_dir()?
-                } else {
-                    PathBuf::from(&args.image)
-                };
-                let df_path = dir.join("Dockerfile");
-                if df_path.exists() {
-                    is_df_build = true;
-                    project_dir = Some(dir.clone());
-                    // Parse Dockerfile for base image
-                    let df_parser = crush_compat::DockerfileParserV2::new();
-                    let df = df_parser.parse_path(&df_path)?;
-                    let base = df.stages.first()
-                        .and_then(|s| s.base_image.clone())
-                        .unwrap_or_else(|| "debian:bookworm-slim".to_string());
-                    
-                    if base != "scratch" && store.database().get_image_by_tag(&base).await?.is_none() {
-                        println!("Pulling base image {}...", base);
-                        store.pull_image(&base).await?;
-                    }
-
-                    // Extract ENV, EXPOSE, CMD, ENTRYPOINT from the stages
-                    for stage in &df.stages {
-                        for instr in &stage.instructions {
-                            match instr {
-                                DockerInstruction::Env { pairs } => {
-                                    for (k, v) in pairs { df_env.push(format!("{}={}", k, v)); }
-                                }
-                                DockerInstruction::Expose { ports } => df_exposed_ports.extend(ports.clone()),
-                                DockerInstruction::Cmd { args, .. } => df_cmd = Some(args.clone()),
-                                DockerInstruction::Entrypoint { args, .. } => df_entrypoint = Some(args.clone()),
-                                _ => {}
-                            }
-                        }
-                    }
-
-                    base
-                } else {
-                    return Err(anyhow::anyhow!("No Dockerfile found in {:?}", dir));
-                }
-            } else {
-                args.image.clone()
-            };
-
-            info!("Running image: {}", resolved_image);
-
-            // Check local store first; pull only if not present
-            let mut image = match store.database().get_image_by_tag(&resolved_image).await? {
-                Some(img) => img,
-                None => {
-                    eprintln!("Image not found locally, pulling {}...", resolved_image);
-                    store.pull_image(&resolved_image).await?
-                }
-            };
-
-            if is_df_build {
-                if let Some(e) = df_entrypoint { image.entrypoint = e; }
-                if let Some(c) = df_cmd { image.cmd = c; }
-                if !df_env.is_empty() { image.env.extend(df_env); }
-            }
-
-            let container_id = format!("crush_{}", hex_encode_random());
-            let container_name = args.name.unwrap_or_else(|| format!("crush_{}", &container_id[6..14]));
-            println!("Creating container {} from {}", container_name, image.tag);
-
-            // Extract image layers into a temporary rootfs
-            let rootfs = data_dir.join("containers").join(&container_id).join("rootfs");
-            tokio::fs::create_dir_all(&rootfs).await
-                .map_err(|e| CrushError::StorageError(format!("Failed to create rootfs: {}", e)))?;
-
-            store.extract_layers(&image.id, &rootfs).await?;
-
-            // Copy project files if it's a Dockerfile build
-            if is_df_build {
-                if let Some(ref p_dir) = project_dir {
-                    let app_dir = rootfs.join("app");
-                    tokio::fs::create_dir_all(&app_dir).await?;
-                    copy_project_into_rootfs(p_dir, &app_dir).await?;
-                }
-            }
-
-            // Build effective command: entrypoint + cmd, falling back to /bin/sh
-            let effective_cmd: Vec<String> = if !image.entrypoint.is_empty() {
-                let mut v = image.entrypoint.clone();
-                v.extend(image.cmd.iter().cloned());
-                v
-            } else if !image.cmd.is_empty() {
-                image.cmd.clone()
-            } else {
-                vec!["/bin/sh".to_string()]
-            };
-
-            let driver = LocalDriver::new(data_dir.clone());
-            
-            // Resolve mounts to proper MountConfigs
-            let mut resolved_mounts = Vec::new();
-            for spec in &args.volume {
-                let parts: Vec<&str> = spec.split(':').collect();
-                if parts.len() < 2 {
-                    continue;
-                }
-                let (src, dest, readonly) = if parts.len() == 2 {
-                    (parts[0], parts[1], false)
-                } else {
-                    (parts[0], parts[1], parts[2].eq_ignore_ascii_case("ro"))
-                };
-
-                let is_host_path = src.starts_with('/') || src.starts_with('.') || src.contains('\\') || src.contains(':');
-                let host_path = if is_host_path {
-                    PathBuf::from(src)
-                } else {
-                    let vol_name = if driver.inspect(src).await.is_ok() {
-                        src.to_string()
-                    } else {
-                        let anon_name = format!("anon_{}", &container_id[6..14]);
-                        let mut labels = std::collections::HashMap::new();
-                        labels.insert("anonymous".to_string(), container_id.clone());
-                        driver.create(&anon_name, labels).await?;
-                        anon_name
-                    };
-                    driver.path(&vol_name).await?
-                };
-
-                resolved_mounts.push(MountConfig {
-                    host_path,
-                    container_path: PathBuf::from(dest),
-                    read_only: readonly,
-                    is_tmpfs: false,
-                });
-            }
-
-            let container = Container {
-                id: container_id.clone(),
-                name: container_name.clone(),
-                image: image.tag.clone(),
-                status: ContainerStatus::Creating,
-                pid: None,
-                created_at: SystemTime::now(),
-                started_at: None,
-                ports: vec![],
-                mounts: resolved_mounts,
-                memory_limit_bytes: args.memory.map(|m| m * 1024 * 1024),
-                cpu_shares: args.cpu,
-                health: None,
-                restart_count: Some(0),
-                restart_policy: Some(args.restart.clone()),
-                health_cmd: args.health_cmd.clone(),
-                health_interval: Some(args.health_interval),
-                health_timeout: Some(args.health_timeout),
-                health_retries: Some(args.health_retries),
-                pids_limit: args.pids_limit,
-                read_only: Some(args.read_only),
-                security_opt: Some(args.security_opt.clone()),
-            };
-
-            let container_dir = data_dir.join("containers").join(&container_id);
-            let container_json_path = container_dir.join("container.json");
-            
-            #[cfg(target_os = "windows")]
-            let backend = WindowsRuntime::new();
-            #[cfg(not(target_os = "windows"))]
-            let backend = StatelessEngine::new(data_dir.clone());
-            backend.create(&container, &container_dir).await?;
-
-            // Save config.json containing the command and env
-            let config_json = serde_json::json!({
-                "cmd": effective_cmd,
-                "env": image.env.clone(),
-            });
-            let config_json_path = container_dir.join("config.json");
-            let config_json_str = serde_json::to_string_pretty(&config_json)?;
-            tokio::fs::write(&config_json_path, config_json_str).await?;
-
-            if args.detach {
-                backend.start(&container_id).await?;
-                println!("{}", container_id);
-            } else {
-                // Foreground/synchronous execution: spawn crush internal-run <id> synchronously
-                let current_exe = std::env::current_exe().unwrap_or_else(|_| PathBuf::from("crush"));
-                let mut cmd = std::process::Command::new(current_exe);
-                cmd.arg("internal-run").arg(&container_id);
-
-                let mut child = cmd.spawn()
-                    .map_err(|e| CrushError::Internal(anyhow::anyhow!("Failed to spawn foreground container: {}", e)))?;
-                job_object::assign_std(&child);
-
-                let pid = child.id();
-                let mut c_upd = container.clone();
-                c_upd.status = ContainerStatus::Running;
-                c_upd.pid = Some(pid);
-                c_upd.started_at = Some(SystemTime::now());
-                let serialized = serde_json::to_string_pretty(&c_upd)?;
-                tokio::fs::write(&container_json_path, serialized).await?;
-
-                let status = child.wait()
-                    .map_err(|e| CrushError::Internal(anyhow::anyhow!("Failed to wait for foreground container: {}", e)))?;
-
-                // On exit, set status to Stopped
-                if let Ok(content) = tokio::fs::read_to_string(&container_json_path).await {
-                    if let Ok(mut c_exit) = serde_json::from_str::<Container>(&content) {
-                        c_exit.status = ContainerStatus::Stopped;
-                        c_exit.pid = None;
-                        if let Ok(serialized_exit) = serde_json::to_string_pretty(&c_exit) {
-                            let _ = tokio::fs::write(&container_json_path, serialized_exit).await;
-                        }
-                    }
-                }
-
-                if let Some(code) = status.code() {
-                    if code != 0 {
-                        std::process::exit(code);
-                    }
-                }
-            }
+            commands::run::exec(&args, &data_dir, &store).await?;
         }
         Commands::Ps(args) => {
             info!("Fetching containers (show all: {})", args.all);
@@ -4826,24 +4539,11 @@ fn build_provider(
     }
 }
 
-fn dirs_or_default() -> PathBuf {
-    let base = if cfg!(target_os = "linux") {
-        PathBuf::from("/var/lib/crush")
-    } else if cfg!(target_os = "windows") {
-        // Use %LOCALAPPDATA%\Crush — user-writable, no admin required.
-        // %PROGRAMDATA% is system-wide and requires elevation.
-        let local_app_data = std::env::var("LOCALAPPDATA")
-            .unwrap_or_else(|_| format!("{}\\AppData\\Local",
-                std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".to_string())));
-        PathBuf::from(local_app_data).join("Crush")
-    } else {
-        dirs::data_dir().unwrap_or_else(|| PathBuf::from(".")).join("crush")
-    };
-    std::fs::create_dir_all(&base).ok();
-    base
+pub(crate) fn dirs_or_default() -> PathBuf {
+    crush_types::dirs_or_default()
 }
 
-fn hex_encode_random() -> String {
+pub(crate) fn hex_encode_random() -> String {
     // Use rand-like approach: hash of process ID + thread ID + counter
     use std::time::{SystemTime, UNIX_EPOCH};
     let pid = std::process::id();
@@ -4870,7 +4570,7 @@ fn which_docker() -> Option<std::path::PathBuf> {
     None
 }
 
-async fn copy_project_into_rootfs(src: &Path, dest: &Path) -> std::io::Result<()> {
+pub(crate) async fn copy_project_into_rootfs(src: &Path, dest: &Path) -> std::io::Result<()> {
     let skip = ["target", ".git", "node_modules", ".next", "__pycache__", ".venv", "dist"];
     let mut entries = tokio::fs::read_dir(src).await?;
     while let Some(entry) = entries.next_entry().await? {
