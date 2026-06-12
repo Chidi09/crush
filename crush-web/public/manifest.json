@@ -1,0 +1,21 @@
+{
+  "name": "Crush",
+  "short_name": "Crush",
+  "description": "The container runtime that actually works on Windows",
+  "icons": [
+    {
+      "src": "/android-chrome-192x192.png",
+      "sizes": "192x192",
+      "type": "image/png"
+    },
+    {
+      "src": "/android-chrome-512x512.png",
+      "sizes": "512x512",
+      "type": "image/png"
+    }
+  ],
+  "theme_color": "#e05c00",
+  "background_color": "#09090b",
+  "display": "standalone",
+  "start_url": "/"
+}
