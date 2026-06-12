@@ -6,18 +6,15 @@
 #   2. Settings → Environment → add secret: GITHUB_TOKEN (a classic PAT with repo scope)
 #   3. Push a tag — AppVeyor picks it up automatically.
 
-# Only run on version tags; skip regular branch pushes.
-branches:
-  only:
-    - /^v\d+\.\d+\.\d+.*$/
-
+# Only build on vX.Y.Z tags — skip all branch/PR pushes.
 skip_non_tags: true
 
 image: Visual Studio 2022
 
 environment:
-  GITHUB_TOKEN:
-    secure: YOUR_ENCRYPTED_TOKEN_HERE   # encrypt at: https://ci.appveyor.com/tools/encrypt
+  # Set GITHUB_TOKEN in AppVeyor project Settings → Environment (lock icon = secure).
+  # It will be injected automatically — no need to put the value in this file.
+  GITHUB_TOKEN: $(GITHUB_TOKEN)
 
 cache:
   - C:\Users\appveyor\.cargo\registry
