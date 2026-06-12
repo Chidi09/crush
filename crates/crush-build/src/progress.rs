@@ -1,22 +1,19 @@
-use std::time::Instant;
 use crate::pipeline::PipelineResult;
 
 pub struct BuildProgress {
-    start: Instant,
     phase_times: Vec<PhaseTime>,
 }
 
 struct PhaseTime {
     name: String,
     elapsed_ms: u64,
-    size_bytes: u64,
+    _size_bytes: u64,
     cached: bool,
 }
 
 impl BuildProgress {
     pub fn new() -> Self {
         Self {
-            start: Instant::now(),
             phase_times: Vec::new(),
         }
     }
@@ -25,7 +22,7 @@ impl BuildProgress {
         self.phase_times.push(PhaseTime {
             name: name.to_string(),
             elapsed_ms,
-            size_bytes,
+            _size_bytes: size_bytes,
             cached,
         });
     }

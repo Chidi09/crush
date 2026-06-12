@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashMap;
 use crush_types::{Result, CrushError};
 use crate::parser::CrushfileStage;
 

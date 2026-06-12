@@ -1,6 +1,5 @@
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
-use tokio::sync::Mutex;
 use sha2::Digest;
 use indicatif::{ProgressBar, ProgressStyle};
 use crush_types::{Result, CrushError};
@@ -234,7 +233,7 @@ impl BuildPipeline {
 
     async fn execute_copy(&self, root: &Path, rule: &str, _stage_name: &Option<String>) -> Result<LayerInfo> {
         let ignore = CrushIgnore::load(root);
-        let source_hash = BuildCache::source_tree_hash(root, &root.join(".crushignore"))?;
+        let source_hash = BuildCache::source_tree_hash(root)?;
 
         if let Ok(Some(cached)) = self.cache.get(&source_hash).await {
             return Ok(LayerInfo {

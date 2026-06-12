@@ -9,6 +9,8 @@
 
 use serde::{Deserialize, Serialize};
 use std::path::{Path, PathBuf};
+use std::fs;
+use crate::detect::SubService;
 
 /// Which stdio stream a captured line came from.
 #[derive(Debug, Clone, Copy, Serialize, Deserialize, PartialEq, Eq)]
@@ -749,7 +751,7 @@ async fn run_project_inner(
         .map(|n| n.to_string_lossy().to_lowercase().replace([' ', '-'], "_"))
         .unwrap_or_else(|| "app".into());
 
-    use crate::{StackDetector, BuildEngine, detect::SubService, service_orchestrator::*};
+    use crate::{StackDetector, BuildEngine, service_orchestrator::*};
 
     // ── 1. Compose: start dep services, extract app hints ────────────────
     let compose_files = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
@@ -974,10 +976,6 @@ async fn run_project_inner(
         );
     }
 
-    let extra_note = if !dep_service_names.is_empty() {
-        format!(" (+ {} service{})", dep_service_names.len(),
-            if dep_service_names.len() == 1 { "" } else { "s" })
-    } else { String::new() };
 
     let root_is_generic = stack.language.starts_with("generic")
         || stack.entry_point == "entrypoint.sh"
@@ -1080,7 +1078,7 @@ async fn run_project_inner(
     // ── 6. Multi-service branch ─────────────────────────────────────
     if is_multi_service {
         use std::sync::Arc;
-        use tokio::sync::{RwLock, Semaphore};
+        use tokio::sync::Semaphore;
 
         let url_sink: UrlSink = Arc::new(tokio::sync::Mutex::new(Vec::new()));
 
@@ -1138,12 +1136,52 @@ async fn run_project_inner(
             }
         }
 
-        // Phase B: start services
+        // Phase B: start services in dependency order
+        let sorted_services = topological_sort(&stack.services);
         let mut children: Vec<(String, u16, tokio::process::Child)> = Vec::new();
-        for sub in &stack.services {
+        let mut ready: Vec<(String, u16)> = Vec::new();
+
+        for sub in &sorted_services {
             let sub_path = PathBuf::from(&sub.path);
             let run = if options.dev { sub.dev_entry_point.clone() } else { sub.entry_point.clone() };
             let run = run.replace("$PORT", &sub.port.to_string());
+
+            let mut sub_env = dep_env.clone();
+            
+            // Read .env files of this sub-service and inject env vars, replacing any port conflicts
+            for env_file in &[".env", ".env.local", ".env.example", ".env.development"] {
+                let p = sub_path.join(env_file);
+                if p.exists() {
+                    if let Ok(dotenv_content) = fs::read_to_string(&p) {
+                        for line in dotenv_content.lines() {
+                            let line = line.trim();
+                            if line.is_empty() || line.starts_with('#') { continue; }
+                            if let Some((k, v)) = line.split_once('=') {
+                                let key = k.trim().to_string();
+                                let mut val = v.trim().trim_matches('"').trim_matches('\'').to_string();
+                                
+                                for other in &stack.services {
+                                    if other.name == sub.name { continue; }
+                                    let port_patterns = [
+                                        format!("localhost:{}", other.original_port),
+                                        format!("127.0.0.1:{}", other.original_port),
+                                        format!("{}:{}", other.name, other.original_port),
+                                    ];
+                                    for pat in &port_patterns {
+                                        if val.contains(pat) {
+                                            val = val.replace(pat, &format!("localhost:{}", other.port));
+                                        }
+                                    }
+                                    if val == other.name {
+                                        val = format!("localhost:{}", other.port);
+                                    }
+                                }
+                                sub_env.push((key, val));
+                            }
+                        }
+                    }
+                }
+            }
 
             let _ = tx.send(RunEvent::Spawning {
                 command: run.clone(),
@@ -1151,14 +1189,13 @@ async fn run_project_inner(
                 service_name: Some(sub.name.clone()),
             }).await;
 
-            let mut cmd = spawn_shell(&run, &sub_path, &dep_env);
+            let mut cmd = spawn_shell(&run, &sub_path, &sub_env);
             cmd.env("PORT", sub.port.to_string());
             cmd.stdout(std::process::Stdio::piped());
             cmd.stderr(std::process::Stdio::piped());
             match cmd.spawn() {
                 Ok(mut child) => {
                     assign_to_job(&child);
-                    let color_idx = children.len();
                     if let Some(stdout) = child.stdout.take() {
                         let n = sub.name.clone();
                         let sink = url_sink.clone();
@@ -1195,6 +1232,11 @@ async fn run_project_inner(
                             }
                         });
                     }
+                    
+                    if wait_for_port(sub.port, 15).await {
+                        ready.push((sub.name.clone(), sub.port));
+                    }
+                    
                     children.push((sub.name.clone(), sub.port, child));
                 }
                 Err(e) => {
@@ -1203,24 +1245,6 @@ async fn run_project_inner(
                     }).await;
                 }
             }
-        }
-
-        // Wait for ports to bind
-        let mut ready: Vec<(String, u16)> = Vec::new();
-        for _ in 0..300u32 {
-            tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
-            let mut still_waiting = false;
-            for (name, port, child) in children.iter_mut() {
-                if ready.iter().any(|(n, _)| n == name) { continue; }
-                if let Ok(Some(_)) = child.try_wait() { continue; }
-                if tokio::net::TcpStream::connect(format!("127.0.0.1:{}", port)).await.is_ok() {
-                    ready.push((name.clone(), *port));
-                } else {
-                    still_waiting = true;
-                }
-            }
-            if !still_waiting { break; }
-            // Check abort
             if abort_rx.try_recv().is_ok() { break; }
         }
 
@@ -1233,14 +1257,12 @@ async fn run_project_inner(
 
         // Proxy
         let proxy_shutdown_tx: Option<tokio::sync::oneshot::Sender<()>>;
-        let proxy_bound_port: Option<u16>;
         if !options.no_proxy {
             if let Some(proxy_cfg) = crate::proxy::infer_routes(&stack) {
                 let (ptx, prx) = tokio::sync::oneshot::channel::<()>();
                 match crate::proxy::run_proxy(proxy_cfg, prx).await {
                     Ok(port) => {
                         proxy_shutdown_tx = Some(ptx);
-                        proxy_bound_port = Some(port);
                         let _ = tx.send(RunEvent::PortBound {
                             port,
                             startup_ms: 0,
@@ -1252,23 +1274,15 @@ async fn run_project_inner(
                     Err(e) => {
                         let _ = tx.send(RunEvent::Warning { message: format!("proxy failed to start: {}", e) }).await;
                         proxy_shutdown_tx = None;
-                        proxy_bound_port = None;
                     }
                 }
             } else {
                 proxy_shutdown_tx = None;
-                proxy_bound_port = None;
             }
         } else {
             proxy_shutdown_tx = None;
-            proxy_bound_port = None;
         }
 
-        // Emit PortBound for each ready service
-        let missing: Vec<String> = children.iter()
-            .map(|(n, _, _)| n.clone())
-            .filter(|n| !ready.iter().any(|(rn, _)| rn == n))
-            .collect();
 
         for (name, port, links) in &probed {
             let _ = tx.send(RunEvent::PortBound {
@@ -1479,7 +1493,7 @@ async fn run_project_inner(
                 if abort_rx.try_recv().is_ok() { exited = None; break; }
                 tokio::time::sleep(tokio::time::Duration::from_millis(500)).await;
             }
-            if let Some((name, code)) = exited {
+            if let Some((_name, code)) = exited {
                 let _ = tx.send(RunEvent::Exited { code: code.unwrap_or(-1) }).await;
             }
             // Cleanup (non-watch branch)
@@ -1722,4 +1736,51 @@ async fn run_project_inner(
     }
 
     Ok(())
+}
+
+fn topological_sort(services: &[SubService]) -> Vec<SubService> {
+    let mut result = Vec::new();
+    let mut visited = std::collections::HashSet::new();
+    let mut temp = std::collections::HashSet::new();
+
+    fn visit(
+        name: &str,
+        services: &[SubService],
+        visited: &mut std::collections::HashSet<String>,
+        temp: &mut std::collections::HashSet<String>,
+        result: &mut Vec<SubService>,
+    ) {
+        if temp.contains(name) {
+            return;
+        }
+        if !visited.contains(name) {
+            temp.insert(name.to_string());
+            if let Some(sub) = services.iter().find(|s| s.name == name) {
+                for dep in &sub.depends_on {
+                    visit(dep, services, visited, temp, result);
+                }
+                result.push(sub.clone());
+            }
+            temp.remove(name);
+            visited.insert(name.to_string());
+        }
+    }
+
+    for service in services {
+        visit(&service.name, services, &mut visited, &mut temp, &mut result);
+    }
+
+    result
+}
+
+async fn wait_for_port(port: u16, timeout_secs: u64) -> bool {
+    let addr = format!("127.0.0.1:{}", port);
+    let start = std::time::Instant::now();
+    while start.elapsed().as_secs() < timeout_secs {
+        if tokio::net::TcpStream::connect(&addr).await.is_ok() {
+            return true;
+        }
+        tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
+    }
+    false
 }

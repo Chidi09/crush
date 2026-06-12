@@ -18,6 +18,7 @@ async-trait = { workspace = true }
 crush-types = { workspace = true }
 crush-image = { workspace = true }
 crush-services = { workspace = true }
+crush-compat = { workspace = true }
 sha2 = { workspace = true }
 hex = { workspace = true }
 zstd = { workspace = true }
@@ -33,6 +34,7 @@ rayon = "1.10"
 futures = { workspace = true }
 reqwest = { workspace = true }
 notify = "6"
+glob = "0.3"
 
 hyper = { version = "1", features = ["server", "client", "http1"] }
 hyper-util = { version = "0.1", features = ["tokio", "server-auto", "client-legacy", "http1"] }

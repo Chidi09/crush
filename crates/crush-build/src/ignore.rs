@@ -1,6 +1,6 @@
 use std::path::{Path, PathBuf};
 use std::fs;
-use crush_types::{Result, CrushError};
+use crush_types::Result;
 
 pub struct CrushIgnore {
     patterns: Vec<String>,

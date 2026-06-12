@@ -177,7 +177,6 @@ impl StackDetector {
 }
 
 pub struct BuildEngine {
-    cache: BuildCache,
     cache_dir: PathBuf,
 }
 
@@ -185,7 +184,6 @@ impl BuildEngine {
     pub fn new(cache_dir: PathBuf) -> Self {
         fs::create_dir_all(&cache_dir).ok();
         Self {
-            cache: BuildCache::new(cache_dir.clone()),
             cache_dir,
         }
     }

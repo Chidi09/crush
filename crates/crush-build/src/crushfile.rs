@@ -1,4 +1,4 @@
-use crate::detect::{Detection, RuntimeType};
+use crate::detect::Detection;
 
 pub fn generate_crushfile(detection: &Detection) -> String {
     let mut toml = String::new();

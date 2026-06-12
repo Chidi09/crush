@@ -9,9 +9,8 @@ impl MultiServiceDetector {
         let mut services = Vec::new();
         let mut seen = std::collections::HashSet::new();
 
-        // Pattern A: implicit monorepo — `backend/` and/or `frontend/` ARE the
+        // Pattern A: implicit monorepo — backend/ and/or frontend/ are the
         // services themselves (each contains project markers at its root).
-        // Common in projects without a workspace tool (NCIC, Solexpay-style repos).
         for direct in &["backend", "frontend", "server", "client", "web", "api"] {
             let path = root.join(direct);
             if path.is_dir() {
@@ -23,7 +22,7 @@ impl MultiServiceDetector {
             }
         }
 
-        // Pattern B: explicit container dirs — `apps/X`, `packages/X`, `services/X`
+        // Pattern B: explicit container dirs — apps/X, packages/X, services/X
         // are parents that hold many services; iterate their children.
         for container in &["apps", "packages", "services"] {
             let path = root.join(container);
@@ -46,72 +45,204 @@ impl MultiServiceDetector {
         }
 
         Self::check_npm_workspaces(root, &mut services, &mut seen);
+        Self::check_pnpm_workspaces(root, &mut services, &mut seen);
         Self::check_cargo_workspace(root, &mut services, &mut seen);
+
+        // Sort services deterministically by path to ensure consistent port assignment
+        services.sort_by(|a, b| a.path.cmp(&b.path));
+
+        // Save original ports and resolve conflicts
+        let mut occupied_ports = std::collections::HashSet::new();
+        for service in &mut services {
+            service.original_port = service.port;
+            let mut port = service.port;
+            while occupied_ports.contains(&port) {
+                port += 1;
+            }
+            service.port = port;
+            occupied_ports.insert(port);
+        }
+
+        // Infer service dependency graph
+        Self::infer_dependencies(&mut services);
 
         services
     }
 
     /// Builds a SubService if the dir contains a recognised project marker.
-    /// Picks a sensible default port per runtime + framework.
+    /// Delegates to CrushSpecDetector recursively (with recursion guard skip_multiservice = true).
     fn sub_from_dir(path: &Path, name: &str) -> Option<SubService> {
-        let (rt, port) = if path.join("package.json").exists() {
-            let pkg = fs::read_to_string(path.join("package.json")).unwrap_or_default();
-            let port = if pkg.contains("\"vite\"") { 5173 }
-                else if pkg.contains("\"next\"") { 3000 }
-                else if pkg.contains("\"@nestjs/core\"") { 3000 }
-                else if pkg.contains("\"fastify\"") { 3000 }
-                else if pkg.contains("\"express\"") { 3000 }
-                else { 3000 };
-            ("node", port)
-        } else if path.join("Cargo.toml").exists() {
-            ("rust", 8080)
-        } else if path.join("go.mod").exists() {
-            ("go", 8080)
-        } else if path.join("pyproject.toml").exists() || path.join("requirements.txt").exists() {
-            ("python", 8000)
-        } else if path.join("pom.xml").exists() || path.join("build.gradle").exists() {
-            ("java", 8080)
-        } else if path.join("Gemfile").exists() {
-            ("ruby", 3000)
-        } else if path.join("composer.json").exists() {
-            ("php", 8000)
-        } else if path.join("mix.exs").exists() {
-            ("elixir", 4000)
-        } else {
-            // .csproj — directory entries
-            let has_csproj = std::fs::read_dir(path).ok()
-                .map(|d| d.flatten().any(|e| e.path().extension()
-                    .and_then(|x| x.to_str()) == Some("csproj")))
-                .unwrap_or(false);
-            if has_csproj { ("dotnet", 5000) } else { return None; }
-        };
-        Some(Self::build_sub_service(path, name, rt, port))
+        let detector = crate::detect::CrushSpecDetector::sub();
+        let det = detector.detect(&path.to_path_buf());
+        
+        let has_marker = !matches!(det.runtime_type, crate::detect::RuntimeType::Generic)
+            || det.dockerfile_found.is_some()
+            || path.join("Crushfile").exists()
+            || path.join("entrypoint.sh").exists();
+
+        if !has_marker || !Self::is_runnable_service(path, &det) {
+            return None;
+        }
+
+        let initial_port = Self::extract_port_from_env_or_scripts(path, det.port);
+
+        Some(SubService {
+            name: name.to_string(),
+            path: path.to_string_lossy().to_string(),
+            runtime_type: det.runtime_type.as_str().to_string(),
+            port: initial_port,
+            entry_point: det.entry_point,
+            dev_entry_point: det.dev_entry_point,
+            build_command: det.build_command,
+            dev_install_command: det.dev_install_command,
+            env_required: det.env_required,
+            env_optional: det.env_optional,
+            env_secrets: det.env_secrets,
+            original_port: initial_port,
+            depends_on: Vec::new(),
+        })
     }
 
-    fn check_npm_workspaces(root: &Path, services: &mut Vec<SubService>, seen: &mut std::collections::HashSet<String>) {
-        let pkg_path = root.join("package.json");
-        if !pkg_path.exists() { return; }
-        if let Ok(content) = fs::read_to_string(&pkg_path) {
-            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                if let Some(workspaces) = json["workspaces"].as_array() {
-                    for ws_pattern in workspaces {
-                        if let Some(pattern) = ws_pattern.as_str() {
-                            let glob_pattern = root.join(pattern);
-                            let dir = glob_pattern.parent().unwrap_or(root);
-                            if dir.is_dir() {
-                                if let Ok(entries) = fs::read_dir(dir) {
-                                    for entry in entries.flatten() {
-                                        let p = entry.path();
-                                        let pkg_json = p.join("package.json");
-                                        if pkg_json.exists() {
-                                            if let Some(name) = p.file_name() {
-                                                let n = name.to_string_lossy().to_string();
-                                                if seen.insert(n.clone()) {
-                                                    services.push(Self::build_sub_service(&p, &n, "node", 3000));
-                                                }
-                                            }
-                                        }
-                                    }
+    fn is_runnable_service(path: &Path, det: &crate::detect::Detection) -> bool {
+        if det.dockerfile_found.is_some() || path.join("Crushfile").exists() || path.join("entrypoint.sh").exists() {
+            return true;
+        }
+
+        match det.runtime_type {
+            crate::detect::RuntimeType::Node => {
+                if let Ok(content) = fs::read_to_string(path.join("package.json")) {
+                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                        if let Some(scripts) = json["scripts"].as_object() {
+                            if scripts.contains_key("start") || scripts.contains_key("dev") {
+                                return true;
+                            }
+                        }
+                        if let Some(deps) = json["dependencies"].as_object() {
+                            let web_deps = [
+                                "express", "koa", "fastify", "next", "nuxt", "react", "vue",
+                                "svelte", "astro", "vite", "remix", "@nestjs/core", "hono",
+                                "graphql", "apollo-server"
+                            ];
+                            for dep in web_deps {
+                                if deps.contains_key(dep) {
+                                    return true;
+                                }
+                            }
+                        }
+                    }
+                }
+                false
+            }
+            crate::detect::RuntimeType::Rust => {
+                let has_main = path.join("src/main.rs").exists();
+                let has_bin = if let Ok(cargo_content) = fs::read_to_string(path.join("Cargo.toml")) {
+                    cargo_content.contains("[[bin]]")
+                } else {
+                    false
+                };
+                has_main || has_bin || det.framework_detected
+            }
+            crate::detect::RuntimeType::Python => {
+                path.join("main.py").exists() || path.join("app.py").exists() || path.join("manage.py").exists() || det.framework_detected
+            }
+            crate::detect::RuntimeType::Go => {
+                path.join("main.go").exists() || path.join("cmd").is_dir()
+            }
+            crate::detect::RuntimeType::Java => {
+                det.framework_detected
+            }
+            crate::detect::RuntimeType::DotNet => {
+                path.join("Program.cs").exists() || path.join("Startup.cs").exists() || path.join("src/Program.cs").exists()
+            }
+            crate::detect::RuntimeType::Generic => {
+                false
+            }
+            _ => {
+                det.framework_detected || (!det.entry_point.is_empty() && det.entry_point != "entrypoint.sh")
+            }
+        }
+    }
+
+    fn extract_port_from_env_or_scripts(path: &Path, default_port: u16) -> u16 {
+        for env_file in &[".env", ".env.local", ".env.example", ".env.development"] {
+            let p = path.join(env_file);
+            if p.exists() {
+                if let Ok(content) = fs::read_to_string(&p) {
+                    for line in content.lines() {
+                        let line = line.trim();
+                        if line.starts_with("PORT=") {
+                            if let Some(val) = line.split('=').nth(1) {
+                                if let Ok(parsed) = val.trim().parse::<u16>() {
+                                    return parsed;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
+        let pkg_path = path.join("package.json");
+        if pkg_path.exists() {
+            if let Ok(content) = fs::read_to_string(&pkg_path) {
+                if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                    if let Some(scripts) = json["scripts"].as_object() {
+                        for (_, cmd) in scripts {
+                            if let Some(cmd_str) = cmd.as_str() {
+                                if let Some(p) = Self::parse_port_from_cmd(cmd_str) {
+                                    return p;
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        default_port
+    }
+
+    fn parse_port_from_cmd(cmd: &str) -> Option<u16> {
+        let port_re = regex::Regex::new(r"(?:--port|-p)\s+(\d+)").unwrap();
+        if let Some(caps) = port_re.captures(cmd) {
+            if let Ok(p) = caps[1].parse::<u16>() {
+                return Some(p);
+            }
+        }
+        let env_port_re = regex::Regex::new(r"PORT=(\d+)").unwrap();
+        if let Some(caps) = env_port_re.captures(cmd) {
+            if let Ok(p) = caps[1].parse::<u16>() {
+                return Some(p);
+            }
+        }
+        None
+    }
+
+    fn resolve_workspace_globs(
+        root: &Path,
+        patterns: &[String],
+        services: &mut Vec<SubService>,
+        seen: &mut std::collections::HashSet<String>,
+    ) {
+        for pattern in patterns {
+            let glob_pattern = if pattern.ends_with('/') {
+                format!("{}{}", pattern, "*")
+            } else if !pattern.contains('*') {
+                format!("{}/{}", pattern, "*")
+            } else {
+                pattern.clone()
+            };
+
+            let full_glob = root.join(&glob_pattern).to_string_lossy().to_string();
+            if let Ok(entries) = glob::glob(&full_glob) {
+                for entry in entries.flatten() {
+                    if entry.is_dir() {
+                        if let Some(name) = entry.file_name().and_then(|n| n.to_str()) {
+                            if name == "node_modules" || name == "target" || name.starts_with('.') {
+                                continue;
+                            }
+                            if let Some(sub) = Self::sub_from_dir(&entry, name) {
+                                if seen.insert(sub.name.clone()) {
+                                    services.push(sub);
                                 }
                             }
                         }
@@ -121,265 +252,129 @@ impl MultiServiceDetector {
         }
     }
 
-    fn check_cargo_workspace(root: &Path, _services: &mut Vec<SubService>, _seen: &mut std::collections::HashSet<String>) {
-        let cargo_path = root.join("Cargo.toml");
-        if !cargo_path.exists() { return; }
-        if let Ok(content) = fs::read_to_string(&cargo_path) {
-            if content.contains("[workspace]") {
-                // Workspace is detected; individual crate detection happens at the crate level
+    fn check_npm_workspaces(root: &Path, services: &mut Vec<SubService>, seen: &mut std::collections::HashSet<String>) {
+        let pkg_path = root.join("package.json");
+        if !pkg_path.exists() { return; }
+        if let Ok(content) = fs::read_to_string(&pkg_path) {
+            if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
+                if let Some(workspaces) = json["workspaces"].as_array() {
+                    let patterns: Vec<String> = workspaces.iter()
+                        .filter_map(|w| w.as_str().map(|s| s.to_string()))
+                        .collect();
+                    Self::resolve_workspace_globs(root, &patterns, services, seen);
+                } else if let Some(packages) = json["workspaces"]["packages"].as_array() {
+                    let patterns: Vec<String> = packages.iter()
+                        .filter_map(|p| p.as_str().map(|s| s.to_string()))
+                        .collect();
+                    Self::resolve_workspace_globs(root, &patterns, services, seen);
+                }
             }
         }
     }
 
-    fn build_sub_service(path: &Path, name: &str, rt: &str, port: u16) -> SubService {
-        let (entry, dev_entry, build_cmd, dev_install) = match rt {
-            "node" => {
-                let pkg_content = fs::read_to_string(path.join("package.json")).unwrap_or_default();
-                let has_ts = path.join("tsconfig.json").exists();
-                let has_deno = path.join("deno.json").exists() || path.join("deno.jsonc").exists();
-                let has_bun = path.join("bun.lockb").exists();
-                
-                let pm = if has_bun { "bun" }
-                    else if path.join("pnpm-lock.yaml").exists() { "pnpm" }
-                    else if path.join("yarn.lock").exists() { "yarn" }
-                    else { "npm" };
-                
-                let dev_install = if has_deno { "".to_string() } else { format!("{} install", pm) };
-                let dev_entry = if has_deno { "deno task dev".to_string() } else { format!("{} run dev", pm) };
-                
-                // Let's determine framework
-                let framework = if pkg_content.contains("\"next\"") || path.join("next.config.js").exists() || path.join("next.config.ts").exists() { "Next.js" }
-                    else if pkg_content.contains("\"nuxt\"") || path.join("nuxt.config.ts").exists() { "Nuxt" }
-                    else if pkg_content.contains("\"@sveltejs/kit\"") || path.join("svelte.config.js").exists() { "SvelteKit" }
-                    else if pkg_content.contains("\"remix\"") || path.join("remix.config.js").exists() { "Remix" }
-                    else if pkg_content.contains("\"astro\"") || path.join("astro.config.mjs").exists() { "Astro" }
-                    else if pkg_content.contains("\"vite\"") || path.join("vite.config.ts").exists() || path.join("vite.config.js").exists() { "Vite" }
-                    else { "other" };
-                
-                let entry_prod = match framework {
-                    "Vite" => format!("{} exec vite preview -- --port $PORT --host 0.0.0.0", pm),
-                    "Next.js" => format!("{} run start", pm),
-                    "Nuxt" => format!("{} run preview", pm),
-                    "SvelteKit" => "node build/index.js".to_string(),
-                    "Remix" => format!("{} run start", pm),
-                    "Astro" => format!("{} run preview", pm),
-                    _ => {
-                        let pkg_json: serde_json::Value = serde_json::from_str(&pkg_content).unwrap_or(serde_json::Value::Null);
-                        let scripts = pkg_json["scripts"].as_object();
-                        let mut resolved_entry = format!("{} start", pm);
-                        if let Some(scripts) = scripts {
-                            if let Some(start) = scripts.get("start") {
-                                let start_str = start.as_str().unwrap_or("");
-                                for prefix in ["node ", "ts-node ", "bun ", "deno ", "tsx "] {
-                                    if let Some(cmd) = start_str.strip_prefix(prefix) {
-                                        resolved_entry = cmd.trim().to_string();
-                                        break;
-                                    }
-                                }
+    fn check_pnpm_workspaces(root: &Path, services: &mut Vec<SubService>, seen: &mut std::collections::HashSet<String>) {
+        let pnpm_ws = root.join("pnpm-workspace.yaml");
+        if !pnpm_ws.exists() { return; }
+        if let Ok(content) = fs::read_to_string(&pnpm_ws) {
+            #[derive(serde::Deserialize)]
+            struct PnpmWorkspace {
+                packages: Option<Vec<String>>,
+            }
+            if let Ok(ws) = serde_yaml::from_str::<PnpmWorkspace>(&content) {
+                if let Some(packages) = ws.packages {
+                    Self::resolve_workspace_globs(root, &packages, services, seen);
+                }
+            }
+        }
+    }
+
+    fn check_cargo_workspace(root: &Path, services: &mut Vec<SubService>, seen: &mut std::collections::HashSet<String>) {
+        let cargo_toml = root.join("Cargo.toml");
+        if !cargo_toml.exists() { return; }
+        if let Ok(content) = fs::read_to_string(&cargo_toml) {
+            if let Ok(toml_val) = toml::from_str::<serde_json::Value>(&content) {
+                if let Some(members) = toml_val["workspace"]["members"].as_array() {
+                    let member_patterns: Vec<String> = members.iter()
+                        .filter_map(|m| m.as_str().map(|s| s.to_string()))
+                        .collect();
+                    Self::resolve_workspace_globs(root, &member_patterns, services, seen);
+                }
+            }
+        }
+    }
+
+    fn infer_dependencies(services: &mut [SubService]) {
+        let service_infos: Vec<(String, String, u16)> = services.iter()
+            .map(|s| (s.name.clone(), s.path.clone(), s.port))
+            .collect();
+
+        for service in services {
+            let mut deps = Vec::new();
+            let s_path = Path::new(&service.path);
+            
+            let mut files = Vec::new();
+            Self::collect_source_files(s_path, &mut files, 0);
+            
+            for env_file in &[".env", ".env.local", ".env.example", ".env.development", "package.json", "Cargo.toml"] {
+                let p = s_path.join(env_file);
+                if p.exists() {
+                    files.push(p);
+                }
+            }
+
+            for file in files {
+                if let Ok(content) = fs::read_to_string(&file) {
+                    for (other_name, _, other_port) in &service_infos {
+                        if other_name == &service.name { continue; }
+                        
+                        let port_pattern1 = format!("localhost:{}", other_port);
+                        let port_pattern2 = format!("127.0.0.1:{}", other_port);
+                        let host_pattern = format!("://{}", other_name);
+                        let host_pattern_raw = format!("@{}", other_name);
+                        
+                        if content.contains(&port_pattern1)
+                            || content.contains(&port_pattern2)
+                            || content.contains(&host_pattern)
+                            || content.contains(&host_pattern_raw)
+                            || content.contains(other_name) && (content.contains("URL") || content.contains("HOST") || content.contains("API"))
+                        {
+                            if !deps.contains(other_name) {
+                                deps.push(other_name.clone());
                             }
                         }
-                        resolved_entry
                     }
-                };
-                
-                let build_script_exists = pkg_content.contains("\"build\"");
-                let build_cmd = if has_deno {
-                    "deno task build".to_string()
-                } else if build_script_exists {
-                    format!("{} install && {} run build", pm, pm)
-                } else {
-                    format!("{} install", pm)
-                };
-                
-                (entry_prod, dev_entry, build_cmd, dev_install)
+                }
             }
-            "go" => {
-                let main_path = if path.join("cmd").is_dir() { "cmd/main.go" } else if path.join("main.go").exists() { "main.go" } else { "." };
-                let bin = if std::env::consts::OS == "windows" { format!("{}.exe", name) } else { name.to_string() };
-                let build_cmd = if main_path == "." {
-                    format!("go build -o {} .", bin)
-                } else {
-                    format!("go build -o {} {}", bin, main_path)
-                };
-                let run_cmd = if main_path == "." { "go run .".to_string() } else { format!("go run {}", main_path) };
-                (format!("./{}", bin), run_cmd, build_cmd, "".to_string())
-            }
-            "rust" => (
-                format!("target/release/{}", name),
-                "cargo run".to_string(),
-                "cargo build --release".to_string(),
-                "".to_string()
-            ),
-            "python" => {
-                let has_uv = path.join("uv.lock").exists();
-                let has_pdm = path.join("pdm.lock").exists();
-                let has_poetry = path.join("poetry.lock").exists();
-                let has_requirements = path.join("requirements.txt").exists();
-                let has_pyproject = path.join("pyproject.toml").exists();
-                let has_conda = path.join("environment.yml").exists() || path.join("environment.yaml").exists();
-                
-                let build_cmd = if has_uv {
-                    "uv sync --no-dev --no-install-project".to_string()
-                } else if has_pdm {
-                    "pdm install --prod".to_string()
-                } else if has_poetry {
-                    "poetry install --no-dev".to_string()
-                } else if has_requirements {
-                    "pip install -r requirements.txt".to_string()
-                } else if has_pyproject {
-                    "pip install -e .".to_string()
-                } else if has_conda {
-                    "conda env create -f environment.yml".to_string()
-                } else {
-                    "pip install -r requirements.txt".to_string()
-                };
-                
-                let dev_install = build_cmd.clone();
-                let venv_bin = if cfg!(target_os = "windows") { r".venv\Scripts\" } else { ".venv/bin/" };
-                let exe_suffix = if cfg!(target_os = "windows") { ".exe" } else { "" };
-                let py = if has_uv { format!("{}{}{}", venv_bin, "python", exe_suffix) } else { "python".to_string() };
-                
-                let py_deps = if has_requirements {
-                    fs::read_to_string(path.join("requirements.txt")).unwrap_or_default()
-                } else { "".to_string() };
-                
-                let framework = if py_deps.contains("fastapi") || path.join("main.py").exists() { "FastAPI" }
-                    else if py_deps.contains("django") || path.join("manage.py").exists() { "Django" }
-                    else if py_deps.contains("flask") || path.join("app.py").exists() { "Flask" }
-                    else { "Python" };
-                
-                let entry_file = if framework == "Django" { "manage.py" }
-                    else if framework == "Flask" { "app.py" }
-                    else { "main.py" };
-                
-                let entry_prod = match framework {
-                    "FastAPI" => {
-                        let workers = if cfg!(target_os = "windows") { "" } else { " --workers 2" };
-                        if has_uv {
-                            format!("{}uvicorn{} main:app --host 0.0.0.0 --port $PORT{}", venv_bin, exe_suffix, workers)
-                        } else {
-                            format!("uvicorn main:app --host 0.0.0.0 --port $PORT{}", workers)
-                        }
-                    }
-                    "Flask" => {
-                        if cfg!(target_os = "windows") {
-                            if has_uv { format!("{}flask{} --app app run --host=0.0.0.0 --port=$PORT", venv_bin, exe_suffix) }
-                            else { "flask --app app run --host=0.0.0.0 --port=$PORT".to_string() }
-                        } else {
-                            "gunicorn app:app -b 0.0.0.0:$PORT".to_string()
-                        }
-                    }
-                    "Django" => {
-                        if cfg!(target_os = "windows") {
-                            format!("{} manage.py runserver 0.0.0.0:$PORT", py)
-                        } else {
-                            format!("gunicorn {}.wsgi -b 0.0.0.0:$PORT", name)
-                        }
-                    }
-                    _ => format!("{} {}", py, entry_file),
-                };
-                
-                let dev_entry = match framework {
-                    "FastAPI" => {
-                        if has_uv { format!("{}uvicorn{} main:app --host 0.0.0.0 --port $PORT --reload", venv_bin, exe_suffix) }
-                        else { "uvicorn main:app --host 0.0.0.0 --port $PORT --reload".to_string() }
-                    }
-                    "Flask" => {
-                        if has_uv { format!("{}flask{} --app app run --host=0.0.0.0 --port=$PORT", venv_bin, exe_suffix) }
-                        else { "flask --app app run --host=0.0.0.0 --port=$PORT".to_string() }
-                    }
-                    "Django" => format!("{} manage.py runserver 0.0.0.0:$PORT", py),
-                    _ => format!("{} {}", py, entry_file),
-                };
-                
-                (entry_prod, dev_entry, build_cmd, dev_install)
-            }
-            "java" => {
-                let has_maven = path.join("pom.xml").exists();
-                let (build_cmd, entry_prod, dev_entry) = if has_maven {
-                    (
-                        "mvn -B package -Dmaven.test.skip=true".to_string(),
-                        "java -jar target/*.jar".to_string(),
-                        "mvn spring-boot:run -Dmaven.test.skip=true".to_string()
-                    )
-                } else {
-                    (
-                        "gradle bootJar -x test".to_string(),
-                        "java -jar build/libs/*.jar".to_string(),
-                        "gradle bootRun -x test".to_string()
-                    )
-                };
-                (entry_prod, dev_entry, build_cmd, "".to_string())
-            }
-            "ruby" => {
-                let has_gemfile = path.join("Gemfile").exists();
-                let framework = if has_gemfile && fs::read_to_string(path.join("Gemfile")).unwrap_or_default().contains("rails") { "Rails" } else { "other" };
-                let (build_cmd, entry_prod, dev_entry) = if framework == "Rails" {
-                    (
-                        "bundle install && bundle exec rails assets:precompile".to_string(),
-                        "bundle exec rails assets:precompile && RAILS_ENV=production bundle exec rails server -b 0.0.0.0 -p $PORT".to_string(),
-                        "bundle exec rails server -b 0.0.0.0 -p $PORT".to_string()
-                    )
-                } else {
-                    (
-                        "bundle install".to_string(),
-                        "bundle exec ruby app.rb".to_string(),
-                        "bundle exec ruby app.rb".to_string()
-                    )
-                };
-                (entry_prod, dev_entry, build_cmd, "bundle install".to_string())
-            }
-            "php" => {
-                let has_laravel = path.join("artisan").exists();
-                let (build_cmd, entry_prod, dev_entry) = if has_laravel {
-                    (
-                        "composer install --no-dev --optimize-autoloader && php artisan config:cache".to_string(),
-                        "php artisan serve --host=0.0.0.0 --port=$PORT".to_string(),
-                        "php artisan serve --host=0.0.0.0 --port=$PORT".to_string()
-                    )
-                } else {
-                    (
-                        "composer install --no-dev --optimize-autoloader".to_string(),
-                        "php -S 0.0.0.0:$PORT -t public".to_string(),
-                        "php -S 0.0.0.0:$PORT -t public".to_string()
-                    )
-                };
-                (entry_prod, dev_entry, build_cmd, "composer install".to_string())
-            }
-            "elixir" => {
-                let has_phoenix = path.join("lib").is_dir();
-                let (build_cmd, entry_prod, dev_entry) = if has_phoenix {
-                    (
-                        "mix deps.get && MIX_ENV=prod mix release".to_string(),
-                        format!("_build/prod/rel/{}/bin/{} start", name, name),
-                        "mix phx.server".to_string()
-                    )
-                } else {
-                    (
-                        "mix deps.get && MIX_ENV=prod mix compile".to_string(),
-                        "MIX_ENV=prod mix run --no-halt".to_string(),
-                        "mix run --no-halt".to_string()
-                    )
-                };
-                (entry_prod, dev_entry, build_cmd, "mix deps.get".to_string())
-            }
-            _ => (
-                "entrypoint.sh".to_string(),
-                "entrypoint.sh".to_string(),
-                "echo 'No build required'".to_string(),
-                "".to_string()
-            )
+            service.depends_on = deps;
+        }
+    }
+
+    fn collect_source_files(dir: &Path, result: &mut Vec<std::path::PathBuf>, depth: usize) {
+        if depth > 10 { return; }
+        let read_dir = match fs::read_dir(dir) {
+            Ok(d) => d,
+            Err(_) => return,
         };
-        
-        SubService {
-            name: name.to_string(),
-            path: path.to_string_lossy().to_string(),
-            runtime_type: rt.to_string(),
-            port,
-            entry_point: entry,
-            dev_entry_point: dev_entry,
-            build_command: build_cmd,
-            dev_install_command: dev_install,
+        for entry in read_dir.flatten() {
+            let path = entry.path();
+            let name = path.file_name().unwrap_or_default().to_string_lossy();
+            if entry.file_type().map(|t| t.is_dir()).unwrap_or(false) {
+                if name.starts_with('.') && name != "." && name != ".." { continue; }
+                if matches!(name.as_ref(),
+                    "node_modules" | "target" | "dist" | "build" | "venv" | ".venv" |
+                    "__pycache__" | "obj" | "bin" | ".gradle" | "vendor" | "deps" |
+                    "_build" | "out" | ".git" | ".cache"
+                ) {
+                    continue;
+                }
+                Self::collect_source_files(&path, result, depth + 1);
+            } else if entry.file_type().map(|t| t.is_file()).unwrap_or(false) {
+                if let Some(ext) = path.extension().and_then(|e| e.to_str()) {
+                    if matches!(ext, "js" | "ts" | "jsx" | "tsx" | "py" | "rs" | "java" | "cs" | "go" | "rb" | "php") {
+                        result.push(path);
+                    }
+                }
+            }
         }
     }
 }

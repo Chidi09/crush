@@ -1,4 +1,3 @@
-use std::path::Path;
 use std::process::Command;
 use crush_types::{Result, CrushError};
 
