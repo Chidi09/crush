@@ -3927,31 +3927,34 @@ async fn main() -> anyhow::Result<()> {
             let current_exe = std::env::current_exe()?;
             #[cfg(target_os = "windows")]
             {
-                // Windows won't let us write bytes directly to the running executable's
-                // path even after renaming it away (Access Denied, os error 5). Instead:
-                // 1. Download to %TEMP%\crush_update.exe
-                // 2. Spawn a detached batch file that waits ~2 s then moves it into place
-                let tmp_new = std::env::temp_dir().join("crush_update.exe");
-                tokio::fs::write(&tmp_new, &bytes).await?;
+                // Always install to %LOCALAPPDATA%\crush\bin\crush.exe — this directory
+                // is guaranteed writable without admin, and is the canonical install path.
+                // Overwriting current_exe directly hits "Access Denied" (os error 5) when
+                // the binary lives in a system or admin-owned directory.
+                let local_app_data = std::env::var("LOCALAPPDATA")
+                    .unwrap_or_else(|_| format!("{}\\AppData\\Local",
+                        std::env::var("USERPROFILE").unwrap_or_else(|_| "C:\\Users\\Default".to_string())));
+                let install_dir = std::path::PathBuf::from(&local_app_data).join("crush").join("bin");
+                let install_path = install_dir.join("crush.exe");
+                std::fs::create_dir_all(&install_dir)?;
 
-                // Batch: sleep long enough for this process to exit, then swap.
-                let bat_path = std::env::temp_dir().join("crush_update.bat");
-                let target = current_exe.to_string_lossy().replace('/', "\\");
-                let src    = tmp_new.to_string_lossy().replace('/', "\\");
-                let bat = format!(
-                    "@echo off\r\n\
-                     ping 127.0.0.1 -n 3 >nul\r\n\
-                     move /y \"{src}\" \"{target}\" >nul\r\n\
-                     del \"%~f0\"\r\n",
-                );
-                std::fs::write(&bat_path, bat)?;
+                tokio::fs::write(&install_path, &bytes).await
+                    .map_err(|e| anyhow::anyhow!(
+                        "Failed to write crush.exe to {}: {}\n\
+                         Try running this terminal as Administrator, or manually download from:\n\
+                         https://github.com/Chidi09/crush/releases/latest",
+                        install_path.display(), e
+                    ))?;
 
-                std::process::Command::new("cmd")
-                    .args(["/c", "start", "/b", &bat_path.to_string_lossy()])
-                    .spawn()?;
+                // Ensure %LOCALAPPDATA%\crush\bin is on PATH (idempotent)
+                let _ = cmd_install().await;
 
                 println!("Updated to v{}.", latest);
-                println!("Close this window — crush will be replaced in the background.");
+                if current_exe != install_path {
+                    println!("Installed to: {}", install_path.display());
+                    println!("If you ran crush from another location, that copy is unchanged.");
+                }
+                println!("Open a new terminal to use the updated version.");
                 return Ok(());
             }
             #[cfg(not(target_os = "windows"))]
