@@ -21,3 +21,6 @@ _tauri_dev.log
 
 # self-hosted release build artifacts
 dist/
+
+crush-*.exe
+*.exe

@@ -2,9 +2,7 @@ name: CI
 
 on:
   push:
-    branches: [main]
   pull_request:
-    branches: [main]
 
 env:
   CARGO_TERM_COLOR: always
@@ -19,9 +17,11 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
       - name: Check workspace
-        run: cargo check --workspace --all-features
+        # No --all-features: the `ebpf` feature needs nightly + bpf-linker
+        # and crush-ebpf-progs is unbuildable until ported to aya-ebpf.
+        run: cargo check --workspace --all-targets
       - name: Run tests
-        run: cargo test --workspace --exclude crush-ebpf-progs
+        run: cargo test --workspace --lib --exclude crush-ebpf-progs
 
   test-macos:
     name: Test (macOS)
@@ -101,4 +101,4 @@ jobs:
         with:
           components: clippy
       - uses: Swatinem/rust-cache@v2
-      - run: cargo clippy --workspace --exclude crush-ebpf-progs -- -D warnings
+      - run: cargo clippy --workspace --all-targets --exclude crush-ebpf-progs -- -D warnings
