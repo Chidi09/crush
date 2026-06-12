@@ -60,17 +60,35 @@ import { HlmBadgeDirective } from '../ui/badge';
 export default class ChangelogPage implements OnInit {
   releases = [
     {
-      version: 'v0.8.0',
-      date: '2026-05-29',
-      headline:
-        'Major v0.8.0 stable release featuring a beautiful Svelte/Tauri Desktop GUI, multi-cloud deployments, native MongoDB/MinIO services, and Git branch previews.',
+      version: 'v0.8.1',
+      date: '2026-06-12',
+      headline: 'Patch version bump — no behavior change. Resolves a tag collision with an earlier v0.8.0 release cut from a different branch.',
       items: [
-        '<strong>Desktop GUI Dashboard</strong>: Fully interactive, Svelte 5 + Tauri desktop dashboard to manage local projects, control container states, and visualize CPU/memory resources.',
-        '<strong>AI Copilot Diagnostics</strong>: Secure integration with Claude to parse call stacks, inspect build logs, and suggest code corrections inside the GUI.',
-        '<strong>Multi-Cloud Deployments</strong>: Direct eject-to-Dockerfile and deployment integrations across 11 major cloud platforms (Railway, Fly, DO, AWS, GCP, Render, Vercel, Netlify, Hetzner, etc.).',
-        '<strong>Native MongoDB & MinIO Services</strong>: Run local native MongoDB databases and MinIO local S3 storage buckets directly on host processes with zero VM overhead.',
-        '<strong>Git Branch Previews</strong>: Spin up isolated, worktree-based git branch previews to test and review pull requests instantly without disrupting your main branch.',
-        'Fixed pre-req packaging bug where release workflow uploaded raw uncompressed binaries instead of packed <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">.tar.gz</code> and <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">.zip</code> archives.',
+        'Version bumped in <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">Cargo.toml</code> workspace and <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">tauri.conf.json</code> to v0.8.1.',
+        'Linux binary and <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">.deb</code> + AppImage released with SHA256SUMS.',
+        'All v0.8.0 features carry over unchanged — see v0.8.0 release notes below.',
+      ],
+    },
+    {
+      version: 'v0.8.0',
+      date: '2026-06-12',
+      headline: 'Desktop GUI ships. Build engine overhauled. CLI commands split into modules. Local CI/release pipeline added.',
+      items: [
+        '<strong>GUI (Tauri 2 + Svelte):</strong> cross-platform desktop app now ships in releases. Run events are streamed in real time on <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">run-event::{run_id}</code> with tagged payloads — the frontend discriminates events without stringly-typed checks.',
+        'Working abort: <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">Stop</code> button in the GUI now kills the actual spawned process tree (was a no-op before — abort sender was discarded).',
+        'Data directory resolved gracefully: <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">CRUSH_DATA_DIR</code> env override → <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">/var/lib/crush</code> probe → <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">dirs::data_dir()</code> fallback. Non-root users no longer get a panic on startup — a proper error dialog is shown instead.',
+        'Batched log replay: re-opening a container log tab sends the last 500 lines (256 KB window) in a single batched event instead of flooding the IPC channel line-by-line.',
+        'Dev mode toggle: <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">dev_mode: bool</code> param plumbed through Tauri commands → <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">RunOptions { dev }</code>.',
+        'New app icons for web and desktop (Tauri icon set + favicons regenerated).',
+        '<strong>Build / detection engine overhaul:</strong> Crushfile &gt; compose &gt; Dockerfile &gt; heuristics precedence ladder. Files annotated <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded"># crush:eject</code> are skipped so ejected Dockerfiles never loop back.',
+        'Dockerfile detection now searches <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">infra/</code>, <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">docker/</code>, <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">.docker/</code>, <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">deploy/</code>, <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">ops/</code> directories and matches <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">Dockerfile</code>, <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">dockerfile</code>, <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">Containerfile</code> variants.',
+        'Monorepo compose support: per-service env vars merged in priority order (service-level overrides root-level).',
+        '<strong>Secrets scanning:</strong> real multi-tier scanner added. Detects AWS, GCP, GitHub PAT, OpenAI project keys, GitLab PAT, npm tokens, Vercel tokens, Cloudflare API tokens; PostgreSQL/MySQL/MongoDB/Redis/AMQP connection strings with embedded credentials; hex keys with boundary guards; high-entropy strings (charset-aware threshold: 3.3 for hex, 4.5 otherwise). Pattern tier fires before entropy — one finding per line. Escape hatch: annotate a line with <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded"># crush:ignore-secret</code>.',
+        '<strong>Env scanning:</strong> <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">.env.example</code> / <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">.env.sample</code> / <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">.env.template</code> / <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">.env.dist</code> scanned for required vs optional classification (fixed inverted logic: <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">PORT=3000</code> → optional, <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">DATABASE_URL=</code> → required). Code references scanned: <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">process.env</code>, <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">os.environ</code>, <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">std::env::var</code>, <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">System.getenv</code>, <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">ENV[]</code>, <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">Deno.env.get</code>.',
+        '<strong>CLI:</strong> commands split out of <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">main.rs</code> into individual modules. Fixed missing <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">StatelessEngine</code> import that prevented compilation on clean checkouts.',
+        '<strong>Shared types:</strong> <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">crush_types::dirs_or_default()</code> added — single authoritative data directory resolver used by CLI and GUI.',
+        '<strong>CI / release pipeline:</strong> <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">scripts/ci-local.sh</code> mirrors GitHub Actions gates locally (check + lib tests + clippy + fmt). <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">scripts/release-local.sh</code> builds CLI binary + <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">.deb</code> + AppImage + SHA256SUMS. <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">git push ci &lt;tag&gt;</code> triggers a full release build via post-receive hook.',
+        '<code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">crush-ebpf-progs</code> excluded from workspace (built by <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">crush-network</code>\'s build script; needs eBPF target). CI gates drop <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">--all-features</code> until the crate is ported to <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">aya-ebpf</code>.',
       ],
     },
     {
