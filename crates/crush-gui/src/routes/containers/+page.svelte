@@ -3,7 +3,7 @@
   import StatusBadge from '$lib/components/StatusBadge.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import * as api from '$lib/tauri';
-  import { containers, loading, startPolling, stopPolling } from '$lib/stores/containers.svelte.ts';
+  import { containers, loading } from '$lib/stores/containers.svelte.ts';
   import type { ContainerSummary, LogLine } from '$lib/tauri';
 
   let selected: ContainerSummary | null = $state(null);
@@ -35,8 +35,7 @@
     )
   );
 
-  onMount(() => startPolling());
-  onDestroy(() => { stopPolling(); unlistenLogs?.(); unlistenReplay?.(); });
+  onDestroy(() => { unlistenLogs?.(); unlistenReplay?.(); });
 
   async function selectContainer(c: ContainerSummary) {
     unlistenLogs?.();

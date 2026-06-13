@@ -43,9 +43,19 @@ pub struct BranchInfo {
     pub committed_ms: Option<i64>,
 }
 
+fn git_cmd(path: &str) -> Command {
+    let mut cmd = Command::new("git");
+    cmd.current_dir(path);
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
+    cmd
+}
+
 fn run_git_cmd(path: &str, args: &[&str]) -> Option<String> {
-    Command::new("git")
-        .current_dir(path)
+    git_cmd(path)
         .args(args)
         .output()
         .ok()
@@ -98,8 +108,7 @@ fn parse_commit(log_out: &str) -> Option<GitCommit> {
 
 #[tauri::command]
 pub async fn git_info(path: String) -> Result<GitInfo, String> {
-    let is_repo = Command::new("git")
-        .current_dir(&path)
+    let is_repo = git_cmd(&path)
         .args(&["rev-parse", "--is-inside-work-tree"])
         .output()
         .map(|out| out.status.success())
@@ -156,8 +165,7 @@ pub async fn git_info(path: String) -> Result<GitInfo, String> {
 #[tauri::command]
 pub async fn git_branches(path: String, fetch: bool) -> Result<Vec<BranchInfo>, String> {
     if fetch {
-        let _ = Command::new("git")
-            .current_dir(&path)
+        let _ = git_cmd(&path)
             .args(&["fetch", "--prune"])
             .output();
     }
@@ -236,20 +244,17 @@ pub async fn preview_branch(path: String, branch: String, state: State<'_, AppSt
     let dir = state.data_dir.join("worktrees").join(sanitize(&project_name)).join(sanitize(&branch));
 
     if !dir.exists() {
-        let status = Command::new("git")
-            .current_dir(&path)
+        let status = git_cmd(&path)
             .args(&["worktree", "add", "--force", &dir.to_string_lossy(), &branch])
             .status();
         if status.is_err() || !status.unwrap().success() {
             return Err("Failed to create worktree".to_string());
         }
     } else {
-        let _ = Command::new("git")
-            .current_dir(&dir)
+        let _ = git_cmd(&dir.to_string_lossy())
             .args(&["checkout", &branch])
             .status();
-        let _ = Command::new("git")
-            .current_dir(&dir)
+        let _ = git_cmd(&dir.to_string_lossy())
             .args(&["pull", "--ff-only"])
             .status();
     }
@@ -262,8 +267,7 @@ pub async fn remove_worktree(path: String, branch: String, state: State<'_, AppS
     let project_name = std::path::Path::new(&path).file_name().unwrap_or_default().to_string_lossy();
     let dir = state.data_dir.join("worktrees").join(sanitize(&project_name)).join(sanitize(&branch));
 
-    let status = Command::new("git")
-        .current_dir(&path)
+    let status = git_cmd(&path)
         .args(&["worktree", "remove", "--force", &dir.to_string_lossy()])
         .status();
 

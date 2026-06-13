@@ -1,14 +1,23 @@
 <script lang="ts">
   import '../app.css';
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
   import { page } from '$app/stores';
   import Sidebar from '$lib/components/Sidebar.svelte';
   import Toaster from '$lib/components/Toaster.svelte';
   import { installNativeGuard } from '$lib/native-guard';
+  import { startPolling, stopPolling } from '$lib/stores/containers.svelte.ts';
+  import { refreshServices } from '$lib/stores/services.svelte.ts';
+  import { refreshImages } from '$lib/stores/images.svelte.ts';
   let { children } = $props();
 
-  // Suppress browser-isms (reload / context menu / devtools) in production.
-  onMount(installNativeGuard);
+  // Start all background polling here so individual pages never restart it on navigation.
+  onMount(() => {
+    installNativeGuard();
+    startPolling();
+    refreshServices();
+    refreshImages();
+  });
+  onDestroy(() => stopPolling());
 </script>
 
 <div class="app-shell">

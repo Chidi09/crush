@@ -8,6 +8,7 @@ export const loading = writable(true);
 let intervalId: ReturnType<typeof setInterval> | null = null;
 
 export function startPolling() {
+  if (intervalId) return; // already running — don't double-start or double-refresh
   refresh();
   intervalId = setInterval(refresh, 2000);
 }

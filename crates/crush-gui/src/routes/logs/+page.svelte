@@ -5,7 +5,7 @@
   import TechIcon from '$lib/components/TechIcon.svelte';
   import * as api from '$lib/tauri';
   import { parseAnsi } from '$lib/ansi';
-  import { containers, startPolling, stopPolling } from '$lib/stores/containers.svelte.ts';
+  import { containers } from '$lib/stores/containers.svelte.ts';
   import { services, refreshServices } from '$lib/stores/services.svelte.ts';
   import type { LogLine, DiagnosisResult, DeploymentRecord, DeploymentDetail } from '$lib/tauri';
 
@@ -60,8 +60,8 @@
         : (depText ? depText.split('\n').filter(l => ERR_RE.test(l)).length : 0)
   );
 
-  onMount(() => { startPolling(); loadDeps(); refreshServices(); });
-  onDestroy(() => { stopPolling(); unlistenLogs?.(); unlistenReplay?.(); stopSvcPoll(); });
+  onMount(() => { loadDeps(); refreshServices(); });
+  onDestroy(() => { unlistenLogs?.(); unlistenReplay?.(); stopSvcPoll(); });
 
   async function loadDeps() {
     loadingDeps = true;

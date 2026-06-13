@@ -410,6 +410,12 @@ pub fn spawn_shell(cmdline: &str, cwd: &Path, env: &[(String, String)]) -> tokio
     };
     cmd.current_dir(cwd);
     for (k, v) in env { cmd.env(k, v); }
+    // Suppress the cmd.exe console window that would otherwise flash on Windows.
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW
+    }
     cmd
 }
 

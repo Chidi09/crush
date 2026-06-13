@@ -70,8 +70,18 @@
   // Disk breakdown → segmented usage bar
   const SEG_COLORS = ['#e05540', '#22d3ee', '#4ade80', '#c084fc', '#eab308', '#6b6b80'];
 
+  // Favicon: try to load from the running dev server once a port is known.
+  let faviconUrl = $state<string | null>(null);
+  $effect(() => {
+    if (runPort) {
+      faviconUrl = `http://localhost:${runPort}/favicon.ico`;
+    } else {
+      faviconUrl = null;
+    }
+  });
+
   onMount(async () => {
-    startPolling();
+    // startPolling is already called by the layout — don't restart it here.
     const autorun = sessionStorage.getItem('crush:autorun');
     const saved = localStorage.getItem(LAST_PROJECT);
     if (autorun) {
@@ -88,7 +98,7 @@
     }
     pollId = setInterval(async () => { await refreshLight(); }, 5000);
   });
-  onDestroy(() => { stopPolling(); if (pollId) clearInterval(pollId); });
+  onDestroy(() => { if (pollId) clearInterval(pollId); });
 
   async function refreshLight() {
     await Promise.allSettled([
@@ -232,74 +242,87 @@
       <div class="proj-top">
         <div class="proj-id">
           <div class="proj-label">Current project</div>
-          <div class="proj-name">{project?.name ?? baseName(projectPath)}</div>
+          <div class="proj-name-row">
+            {#if faviconUrl}
+              <img class="proj-favicon" src={faviconUrl} alt="" width="18" height="18"
+                onerror={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+            {/if}
+            <div class="proj-name">{project?.name ?? baseName(projectPath)}</div>
+          </div>
           <div class="proj-path">{projectPath}</div>
         </div>
         <div class="proj-actions">
-          <button class="ghost-btn sm" onclick={openProject}>Change</button>
-          <label style="font-size: 13px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--color-gray-400); margin-right: 8px;">
-            <input type="checkbox" bind:checked={devMode} /> Dev mode
-          </label>
-          <button
-            class="btn-primary"
-            class:fx-rainbow={fx.kind === 'turbo'}
-            class:fx-rainbow-soft={fx.kind === 'fullstack'}
-            class:fx-rainbow-faint={fx.kind === 'spa'}
-            onclick={runProject}
-          >Run <Icon name="play" size={13} fill /></button>
-        </div>
-      </div>
-      {#if detecting}
-        <div class="chips"><span class="chip skel">detecting stack…</span></div>
-      {:else if project}
-        <div class="chips">
-          <span class="chip accent"><TechIcon name={project.runtime} size={13} />{project.runtime}{project.version ? ` ${project.version}` : ''}</span>
-          {#if project.framework}<span class="chip"><TechIcon name={project.framework} size={13} />{project.framework}</span>{/if}
-          <span class="chip">:{project.port}</span>
-          {#if project.is_monorepo}<span class="chip">monorepo · {project.service_count} svc</span>{/if}
-          {#if project.env_required.length}<span class="chip muted-chip">{project.env_required.length} env</span>{/if}
-          <span class="chip muted-chip">{Math.round(project.confidence * 100)}% match</span>
-          {#if fx.kind === 'turbo'}<span class="chip fx-chip-rainbow">⚡ {fx.label}</span>
-          {:else if fx.kind === 'fullstack'}<span class="chip fx-chip-grad">✦ {fx.label}</span>
-          {:else if fx.kind === 'spa'}<span class="chip fx-chip-grad faint">○ {fx.label}</span>{/if}
-        </div>
-        {#if project.external_services && project.external_services.length > 0}
-          <div class="uses-row">
-            <span class="uses-label">Uses</span>
-            <div class="chips inline-chips">
-              {#each project.external_services as ext}
-                <span class="chip ext-chip" title={`${ext.source_var} detected`}>
-                  <TechIcon name={ext.name} size={13} />
-                  {ext.name}
-                </span>
-              {/each}
-            </div>
-          </div>
-        {/if}
-      {/if}
-      
-      {#if git && git.is_repo}
-        <div class="git-source mt-4">
-          <div class="git-source-header">
-            {#if git.parsed_github}
-              <button class="ghost-btn sm" onclick={() => api.openUrl(git?.remote_url || '')} title="Open GitHub">
-                <Icon name="github" size={13} fill /> {git.parsed_github.owner}/{git.parsed_github.repo}
-              </button>
-            {/if}
-            <div class="chip accent branch-chip"><Icon name="branch" size={13} /> {git.branch}</div>
-            <div class="chips">
-              {#if git.dirty_count > 0}<span class="chip">dirty: {git.dirty_count}</span>{/if}
-              {#if git.ahead && git.ahead > 0}<span class="chip">↑ {git.ahead}</span>{/if}
-              {#if git.behind && git.behind > 0}<span class="chip">↓ {git.behind}</span>{/if}
-            </div>
-          </div>
-          {#if git.head}
-            <div class="git-commit mt-2">
-              <span class="strong">{git.head.message}</span>
-              <span class="dim sm">— {git.head.author} · {git.head.committed_rel}</span>
-            </div>
+          {#if !activeRunId}
+            <button class="ghost-btn sm" onclick={openProject}>Change</button>
+            <label style="font-size: 13px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--color-gray-400); margin-right: 8px;">
+              <input type="checkbox" bind:checked={devMode} /> Dev mode
+            </label>
+            <button
+              class="btn-primary"
+              class:fx-rainbow={fx.kind === 'turbo'}
+              class:fx-rainbow-soft={fx.kind === 'fullstack'}
+              class:fx-rainbow-faint={fx.kind === 'spa'}
+              onclick={runProject}
+            >Run <Icon name="play" size={13} fill /></button>
+          {:else}
+            <button class="ghost-btn sm danger" onclick={stopRun}>Stop</button>
           {/if}
         </div>
+      </div>
+
+      {#if !activeRunId}
+        {#if detecting}
+          <div class="chips"><span class="chip skel">detecting stack…</span></div>
+        {:else if project}
+          <div class="chips">
+            <span class="chip accent"><TechIcon name={project.runtime} size={13} />{project.runtime}{project.version ? ` ${project.version}` : ''}</span>
+            {#if project.framework}<span class="chip"><TechIcon name={project.framework} size={13} />{project.framework}</span>{/if}
+            <span class="chip">:{project.port}</span>
+            {#if project.is_monorepo}<span class="chip">monorepo · {project.service_count} svc</span>{/if}
+            {#if project.env_required.length}<span class="chip muted-chip">{project.env_required.length} env</span>{/if}
+            <span class="chip muted-chip">{Math.round(project.confidence * 100)}% match</span>
+            {#if fx.kind === 'turbo'}<span class="chip fx-chip-rainbow">⚡ {fx.label}</span>
+            {:else if fx.kind === 'fullstack'}<span class="chip fx-chip-grad">✦ {fx.label}</span>
+            {:else if fx.kind === 'spa'}<span class="chip fx-chip-grad faint">○ {fx.label}</span>{/if}
+          </div>
+          {#if project.external_services && project.external_services.length > 0}
+            <div class="uses-row">
+              <span class="uses-label">Uses</span>
+              <div class="chips inline-chips">
+                {#each project.external_services as ext}
+                  <span class="chip ext-chip" title={`${ext.source_var} detected`}>
+                    <TechIcon name={ext.name} size={13} />
+                    {ext.name}
+                  </span>
+                {/each}
+              </div>
+            </div>
+          {/if}
+        {/if}
+
+        {#if git && git.is_repo}
+          <div class="git-source mt-4">
+            <div class="git-source-header">
+              {#if git.parsed_github}
+                <button class="ghost-btn sm" onclick={() => api.openUrl(git?.remote_url || '')} title="Open GitHub">
+                  <Icon name="github" size={13} fill /> {git.parsed_github.owner}/{git.parsed_github.repo}
+                </button>
+              {/if}
+              <div class="chip accent branch-chip"><Icon name="branch" size={13} /> {git.branch}</div>
+              <div class="chips">
+                {#if git.dirty_count > 0}<span class="chip">dirty: {git.dirty_count}</span>{/if}
+                {#if git.ahead && git.ahead > 0}<span class="chip">↑ {git.ahead}</span>{/if}
+                {#if git.behind && git.behind > 0}<span class="chip">↓ {git.behind}</span>{/if}
+              </div>
+            </div>
+            {#if git.head}
+              <div class="git-commit mt-2">
+                <span class="strong">{git.head.message}</span>
+                <span class="dim sm">— {git.head.author} · {git.head.committed_rel}</span>
+              </div>
+            {/if}
+          </div>
+        {/if}
       {/if}
     {:else}
       <EmptyState title="No project open" description="Open a Crush project to detect its stack and run it" action="Open project…" onAction={openProject} />
@@ -461,8 +484,12 @@
   .proj-top { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; margin-bottom: 14px; }
   .proj-id { min-width: 0; }
   .proj-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-crush-text-muted); }
-  .proj-name { font-size: 20px; font-weight: 600; margin-top: 2px; }
+  .proj-name-row { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
+  .proj-favicon { border-radius: 3px; object-fit: contain; flex-shrink: 0; }
+  .proj-name { font-size: 20px; font-weight: 600; }
   .proj-path { font-family: var(--font-mono); font-size: 12px; color: var(--color-crush-muted); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .ghost-btn.danger { color: var(--color-crush-red); border-color: rgba(239,68,68,0.3); }
+  .ghost-btn.danger:hover { background: rgba(239,68,68,0.08); border-color: rgba(239,68,68,0.5); }
   .proj-actions { display: flex; gap: 8px; flex-shrink: 0; }
   .btn-primary { display: inline-flex; align-items: center; gap: 6px; background: var(--color-crush-primary); color: var(--color-crush-on-primary); border: none; border-radius: 0.75rem; padding: 7px 18px; font-size: 13px; cursor: pointer; transition: background 0.15s; }
   .btn-primary:hover { background: var(--color-crush-primary-hover); }
