@@ -3276,7 +3276,7 @@ async fn main() -> anyhow::Result<()> {
                 println!("{:<20} {:<12} {:<12} {:<10}", "REPOSITORY", "TAG", "IMAGE ID", "SIZE");
                 for img in &images {
                     let short_id = if img.id.len() > 12 { &img.id[7..19] } else { &img.id };
-                    println!("{:<20} {:<12} {:<12} {:<10}", img.tag, "latest", short_id, "0 B");
+                    println!("{:<20} {:<12} {:<12} {:<10}", img.tag, "latest", short_id, format_bytes(img.size_bytes));
                 }
             }
         }
