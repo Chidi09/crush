@@ -13,25 +13,23 @@ image: Visual Studio 2022
 
 environment:
   # Set GITHUB_TOKEN in AppVeyor project Settings → Environment (lock icon = secure).
-  # It will be injected automatically — no need to put the value in this file.
   GITHUB_TOKEN: $(GITHUB_TOKEN)
 
 cache:
-  - C:\Users\appveyor\.cargo\registry
-  - target -> Cargo.lock
+  - C:\Users\appveyor\.cargo\registry -> Cargo.lock
+  - C:\Users\appveyor\AppData\Local\pnpm\store -> crates\crush-gui\pnpm-lock.yaml
 
 install:
-  # Rust (MSVC toolchain)
-  - rustup default stable-x86_64-pc-windows-msvc
+  # Rust — VS 2022 image doesn't put rustup/cargo on PATH; install explicitly.
+  - appveyor DownloadFile https://win.rustup.rs/x86_64 -FileName rustup-init.exe
+  - rustup-init.exe -y --default-toolchain stable-x86_64-pc-windows-msvc --no-modify-path
+  - set PATH=%USERPROFILE%\.cargo\bin;%PATH%
   - rustup show
 
   # Node + pnpm
   - node --version
   - npm install -g pnpm@latest
   - pnpm --version
-
-  # Tauri CLI
-  - cargo install tauri-cli --locked 2>/dev/null || true
 
 build_script:
   - cd crates\crush-gui
@@ -42,40 +40,37 @@ build_script:
 
 after_build:
   - ps: |
-      $tag     = $env:APPVEYOR_REPO_TAG_NAME
-      $version = $tag.TrimStart("v")
-      $bundles = @(
-        "target\release\bundle\msi",
-        "target\release\bundle\nsis",
-        "crates\crush-gui\src-tauri\target\release\bundle\msi",
-        "crates\crush-gui\src-tauri\target\release\bundle\nsis"
-      ) | Where-Object { Test-Path $_ }
+      $tag = $env:APPVEYOR_REPO_TAG_NAME
 
-      $files = $bundles | ForEach-Object {
+      $searchPaths = @(
+        "crates\crush-gui\src-tauri\target\release\bundle\msi",
+        "crates\crush-gui\src-tauri\target\release\bundle\nsis",
+        "target\release\bundle\msi",
+        "target\release\bundle\nsis"
+      )
+
+      $files = $searchPaths | Where-Object { Test-Path $_ } | ForEach-Object {
         Get-ChildItem $_ -Include *.msi,*.exe -Recurse -ErrorAction SilentlyContinue
       }
 
-      if (-not $files) { Write-Host "No installer artifacts found"; exit 1 }
+      if (-not $files) { Write-Host "No installer artifacts found — build may have failed"; exit 1 }
 
-      $headers = @{ Authorization = "token $env:GITHUB_TOKEN"; "User-Agent" = "appveyor" }
+      $headers = @{ Authorization = "token $env:GITHUB_TOKEN"; "User-Agent" = "appveyor-crush" }
 
+      $rel = Invoke-RestMethod "https://api.github.com/repos/Chidi09/crush/releases/tags/$tag" -Headers $headers
       foreach ($f in $files) {
         Write-Host "Uploading $($f.Name)..."
-        $uploadUrl = "https://uploads.github.com/repos/Chidi09/crush/releases"
-        # Get release ID for this tag
-        $rel = Invoke-RestMethod "https://api.github.com/repos/Chidi09/crush/releases/tags/$tag" -Headers $headers
-        $up  = "https://uploads.github.com/repos/Chidi09/crush/releases/$($rel.id)/assets?name=$($f.Name)"
+        $up = "https://uploads.github.com/repos/Chidi09/crush/releases/$($rel.id)/assets?name=$($f.Name)"
         try {
           Invoke-RestMethod -Uri $up -Method Post -Headers $headers `
             -ContentType "application/octet-stream" -InFile $f.FullName
-          Write-Host "  uploaded $($f.Name)"
+          Write-Host "  uploaded OK"
         } catch {
-          Write-Host "  failed: $_"
+          Write-Host "  upload failed: $_"
         }
       }
 
 artifacts:
-  - path: target\release\bundle\**\*.msi
-  - path: target\release\bundle\**\*.exe
+  - path: crates\crush-gui\src-tauri\target\release\bundle\**\*.msi
+  - path: crates\crush-gui\src-tauri\target\release\bundle\**\*.exe
     name: InstallerNSIS
-
