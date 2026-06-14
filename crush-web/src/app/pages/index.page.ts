@@ -12,7 +12,7 @@ import {
   HlmCardTitleDirective,
 } from '../ui/card';
 import { TerminalComponent } from '../components/terminal/terminal.component';
-import { InstallBlockComponent } from '../components/install-block/install-block.component';
+import { DownloadBlockComponent } from '../components/download-block/download-block.component';
 import { ComparisonTableComponent } from '../components/comparison-table/comparison-table.component';
 
 @Component({
@@ -29,7 +29,7 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
     HlmCardHeaderDirective,
     HlmCardTitleDirective,
     TerminalComponent,
-    InstallBlockComponent,
+    DownloadBlockComponent,
     ComparisonTableComponent,
   ],
   template: `
@@ -77,10 +77,10 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
               </svg>
             </a>
             <a
-              href="https://github.com/Chidi09/crush/releases/latest"
+              href="#download"
               class="inline-flex items-center gap-2 px-6 py-2.5 rounded-lg text-sm font-semibold text-white bg-crush-surface border border-crush-border hover:bg-crush-surface/80 hover:border-crush-orange/50 hover:text-white transition-colors duration-200 select-none outline-none shadow-lg shadow-crush-orange/5"
             >
-              Download CLI (Windows)
+              Download — GUI &amp; CLI
               <svg viewBox="0 0 24 24" class="h-4 w-4 fill-none stroke-current stroke-2">
                 <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4" />
                 <polyline points="7 10 12 15 17 10" />
@@ -796,21 +796,21 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
     <hr class="max-w-7xl mx-auto border-crush-border/30" />
 
     <!-- Install -->
-    <section class="py-20 sm:py-28">
-      <div class="mx-auto max-w-3xl px-4 sm:px-6 lg:px-8">
-        <div class="mx-auto max-w-2xl text-center mb-10">
-          <h2 class="text-3xl font-bold text-white sm:text-4xl">Install in one command</h2>
+    <section id="download" class="py-20 sm:py-28">
+      <div class="mx-auto max-w-5xl px-4 sm:px-6 lg:px-8">
+        <div class="mx-auto max-w-2xl text-center mb-12">
+          <h2 class="text-3xl font-bold text-white sm:text-4xl">Download Crush</h2>
           <p class="mt-4 text-lg text-crush-textMuted">
-            Pick your platform and you're running in seconds
+            Get the desktop app or the CLI — pick your platform and you're running in seconds.
           </p>
         </div>
-        <app-install-block />
+        <app-download-block />
         <div class="mt-8 text-center">
           <a
             routerLink="/docs/installation"
             class="text-sm text-crush-orange hover:text-crush-orangeLight transition-colors"
           >
-            View all 10 install methods &rarr;
+            Full installation guide &amp; all package managers &rarr;
           </a>
         </div>
       </div>

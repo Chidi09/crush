@@ -155,6 +155,10 @@ pub struct Image {
     pub layers: Vec<String>,
     pub architecture: String,
     pub os: String,
+    /// OCI `os.version` — required for Windows images (host kernel build must match);
+    /// `None` for Linux images, where it is absent from the config.
+    #[serde(default)]
+    pub os_version: Option<String>,
     #[serde(default)]
     pub entrypoint: Vec<String>,
     #[serde(default)]
@@ -236,6 +240,7 @@ mod tests {
             layers: vec!["sha256:layer1".to_string(), "sha256:layer2".to_string()],
             architecture: "amd64".to_string(),
             os: "linux".to_string(),
+            os_version: None,
             entrypoint: vec![],
             cmd: vec!["/bin/bash".to_string()],
             env: vec!["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string()],

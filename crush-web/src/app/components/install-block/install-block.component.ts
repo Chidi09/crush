@@ -172,21 +172,21 @@ const METHODS: InstallMethod[] = [
             </svg>
           </div>
           <div>
-            <h4 class="text-sm font-semibold text-white">Looking for the Desktop GUI Dashboard?</h4>
+            <h4 class="text-sm font-semibold text-white">Prefer the Desktop GUI Dashboard?</h4>
             <p class="text-xs text-crush-textMuted mt-1 leading-relaxed">
-              Crush features a stunning, offline-first desktop GUI to monitor native containers,
-              view real-time log streams, and auto-diagnose errors using Claude. Standard installer
-              bundles are arriving in v1.0; until then, launch natively from source.
+              Crush ships a polished, offline-first desktop app to monitor native runs, stream logs
+              in real time, and auto-diagnose errors with AI. Installers for Windows (.msi / .exe)
+              and Linux (AppImage / .deb) are available now.
             </p>
           </div>
         </div>
         <a
-          href="https://github.com/Chidi09/crush#run-gui-from-source"
+          href="https://github.com/Chidi09/crush/releases/latest"
           target="_blank"
           rel="noopener"
-          class="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-crush-surface border border-crush-border/60 hover:border-white hover:bg-crush-surface/80 transition-colors duration-200 shrink-0 select-none text-center"
+          class="px-4 py-2 rounded-lg text-xs font-semibold text-white bg-crush-orange hover:bg-crush-orangeLight transition-colors duration-200 shrink-0 select-none text-center"
         >
-          View GUI Source
+          Download the GUI
         </a>
       </div>
     </div>

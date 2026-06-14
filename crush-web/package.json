@@ -5,6 +5,8 @@
   "type": "module",
   "scripts": {
     "dev": "vite",
+    "prefetch:release": "node scripts/fetch-release.mjs",
+    "prebuild": "node scripts/fetch-release.mjs",
     "build": "vite build",
     "start": "vite preview",
     "build:static": "vite build",

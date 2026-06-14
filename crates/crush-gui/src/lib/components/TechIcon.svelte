@@ -45,6 +45,15 @@
 
   type SI = { path: string; hex: string; title: string };
 
+  // Simple Icons dropped the Java logo over Oracle's trademark, so there's no
+  // `siJava`. Use a custom coffee-cup mark in Java's orange — recognisable as
+  // Java without shipping the trademarked Duke/cup-with-steam logo.
+  const javaIcon: SI = {
+    title: 'Java',
+    hex: 'ED8B00',
+    path: 'M20 3H4v10c0 2.21 1.79 4 4 4h6c2.21 0 4-1.79 4-4v-3h2c1.11 0 2-.89 2-2V5c0-1.11-.89-2-2-2zm0 5h-2V5h2v3zM4 19h16v2H4z',
+  };
+
   // Detected runtime/framework/service strings → Simple Icons. Keys are
   // lowercased with dots kept and everything else stripped, matching `norm`
   // below — so "Node.js", "FastAPI", "Actix-web", "Spring Boot" all resolve.
@@ -103,6 +112,7 @@
     echo: siGo, fiber: siGo, chi: siGo, grpc: siGo,
 
     // ── java / .net ──
+    java: javaIcon, jvm: javaIcon,
     spring: siSpring, springboot: siSpringboot,
     quarkus: siQuarkus, micronaut: siSpring,
     javamaven: siApachemaven, javagradle: siGradle,

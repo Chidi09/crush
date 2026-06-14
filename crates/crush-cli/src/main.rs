@@ -107,6 +107,8 @@ enum Commands {
     Ps(PsArgs),
     #[command(about = "Gracefully stop a running container")]
     Stop(StopArgs),
+    #[command(about = "Run a command in a running container's environment")]
+    Exec(ExecArgs),
     #[command(about = "Fetch and stream logs of a container with smart AI diagnosis")]
     Logs(LogsArgs),
     #[command(about = "Perform interactive AI-driven error analysis on a failed container")]
@@ -298,6 +300,22 @@ struct LogsArgs {
     follow: bool,
     #[arg(long, help = "Lines to tail", default_value_t = 100)]
     tail: usize,
+}
+
+#[derive(Args, Debug)]
+struct ExecArgs {
+    #[arg(help = "Container ID or name")]
+    id: String,
+    #[arg(help = "Command to run (defaults to a shell)", trailing_var_arg = true)]
+    command: Vec<String>,
+    #[arg(short = 'i', long, help = "Keep STDIN open (interactive)")]
+    interactive: bool,
+    #[arg(short = 't', long, help = "Allocate a TTY")]
+    tty: bool,
+    #[arg(short = 'w', long, help = "Working directory inside the container")]
+    workdir: Option<String>,
+    #[arg(short = 'e', long = "env", help = "Set environment variables (KEY=VALUE), repeatable")]
+    env: Vec<String>,
 }
 
 #[derive(Args, Debug)]
@@ -2332,6 +2350,7 @@ async fn main() -> anyhow::Result<()> {
                 layers: vec![digest.clone()],
                 architecture: "amd64".to_string(),
                 os: "linux".to_string(),
+                os_version: None,
                 entrypoint: vec![],
                 cmd: vec![stack.entry_point.clone()],
                 env: vec![format!("PORT={}", stack.default_port)],
@@ -2451,6 +2470,7 @@ async fn main() -> anyhow::Result<()> {
                     layers: vec![digest.clone()],
                     architecture: "amd64".to_string(),
                     os: "linux".to_string(),
+                    os_version: None,
                     entrypoint: vec![],
                     cmd: vec![stack.entry_point.clone()],
                     env: vec![format!("PORT={}", stack.default_port)],
@@ -2712,6 +2732,12 @@ async fn main() -> anyhow::Result<()> {
             }
             if !stopped {
                 eprintln!("Container {} not found", args.id);
+            }
+        }
+        Commands::Exec(args) => {
+            let code = cmd_exec(&args, &data_dir).await;
+            if code != 0 {
+                std::process::exit(code);
             }
         }
         Commands::Logs(args) => {
@@ -4734,6 +4760,111 @@ pub(crate) async fn copy_project_into_rootfs(src: &Path, dest: &Path) -> std::io
     Ok(())
 }
 
+/// Resolve a container directory by ID or name. Returns the container dir and parsed Container.
+async fn resolve_container(data_dir: &Path, id_or_name: &str) -> Option<(PathBuf, Container)> {
+    let containers_dir = data_dir.join("containers");
+    if !containers_dir.exists() {
+        return None;
+    }
+    let mut entries = tokio::fs::read_dir(&containers_dir).await.ok()?;
+    while let Some(entry) = entries.next_entry().await.ok()? {
+        let json_path = entry.path().join("container.json");
+        if let Ok(content) = tokio::fs::read_to_string(&json_path).await {
+            if let Ok(c) = serde_json::from_str::<Container>(&content) {
+                // Match full id, name, or a short-id prefix (Docker-style).
+                if c.id == id_or_name || c.name == id_or_name || c.id.starts_with(id_or_name) {
+                    return Some((entry.path(), c));
+                }
+            }
+        }
+    }
+    None
+}
+
+/// `crush exec` — run a command in a running container's environment.
+///
+/// Crush's default run model is native: a "container" is a tracked host process with a
+/// rootfs dir and a `config.json` capturing its cmd/env. `exec` runs the requested command
+/// in that same working directory and environment, inheriting stdio so `-it` shells work.
+/// Returns the child's exit code (or a non-zero code on failure to launch).
+async fn cmd_exec(args: &ExecArgs, data_dir: &Path) -> i32 {
+    let (container_dir, container) = match resolve_container(data_dir, &args.id).await {
+        Some(v) => v,
+        None => {
+            eprintln!("Error: container '{}' not found", args.id);
+            return 1;
+        }
+    };
+
+    if container.status != ContainerStatus::Running {
+        eprintln!("Error: container '{}' is not running (status: {:?})", args.id, container.status);
+        return 1;
+    }
+
+    // Pull the container's captured environment from config.json (written at start).
+    let mut env: Vec<(String, String)> = Vec::new();
+    if let Ok(cfg) = tokio::fs::read_to_string(container_dir.join("config.json")).await {
+        if let Ok(v) = serde_json::from_str::<serde_json::Value>(&cfg) {
+            if let Some(arr) = v.get("env").and_then(|e| e.as_array()) {
+                for item in arr {
+                    if let Some(s) = item.as_str() {
+                        if let Some((k, val)) = s.split_once('=') {
+                            env.push((k.to_string(), val.to_string()));
+                        }
+                    }
+                }
+            }
+        }
+    }
+    // Caller-supplied `-e KEY=VALUE` overrides win.
+    for pair in &args.env {
+        if let Some((k, val)) = pair.split_once('=') {
+            env.push((k.to_string(), val.to_string()));
+        }
+    }
+
+    // Working dir: explicit -w, else the container rootfs if present, else the container dir.
+    let rootfs = container_dir.join("rootfs");
+    let cwd = match &args.workdir {
+        Some(w) => PathBuf::from(w),
+        None if rootfs.exists() => rootfs,
+        None => container_dir.clone(),
+    };
+
+    // Default to a platform shell when no command is given.
+    let command: Vec<String> = if args.command.is_empty() {
+        #[cfg(windows)]
+        { vec!["cmd.exe".to_string()] }
+        #[cfg(not(windows))]
+        { vec!["/bin/sh".to_string()] }
+    } else {
+        args.command.clone()
+    };
+
+    let mut cmd = std::process::Command::new(&command[0]);
+    cmd.args(&command[1..]);
+    cmd.current_dir(&cwd);
+    for (k, v) in &env {
+        cmd.env(k, v);
+    }
+    // Inherit stdio so interactive shells (`-it`) work; this is the default for Command.
+    let _ = (args.interactive, args.tty); // stdio is inherited regardless; flags kept for Docker familiarity
+
+    #[cfg(target_os = "windows")]
+    {
+        use std::os::windows::process::CommandExt;
+        cmd.creation_flags(0x08000000); // CREATE_NO_WINDOW — don't pop a console
+    }
+
+    match cmd.status() {
+        Ok(status) => status.code().unwrap_or(0),
+        Err(e) => {
+            eprintln!("Error: failed to exec '{}' in container '{}': {}", command[0], args.id, e);
+            127
+        }
+    }
+}
+
 async fn run_compose_up(compose_path: &Path, data_dir: &Path, store: &ImageStore) -> anyhow::Result<()> {
     use crush_compat::{ComposeParser};
 
@@ -4741,6 +4872,33 @@ async fn run_compose_up(compose_path: &Path, data_dir: &Path, store: &ImageStore
     let compose = parser.parse_path(compose_path)?;
     let order = ComposeParser::get_dependency_order(&compose)?;
     let services = compose.services.unwrap_or_default();
+    let compose_dir = compose_path.parent().unwrap_or(Path::new(".")).to_path_buf();
+
+    // ── Named volumes ──────────────────────────────────────────────────────
+    // Back each top-level named volume with a persistent dir under the data dir,
+    // keyed by compose project so two projects don't collide. Bind mounts (host
+    // paths in a service's `volumes:`) are resolved later, per service.
+    let project = compose_path.file_stem().unwrap_or_default().to_string_lossy().to_string();
+    let volumes_root = data_dir.join("volumes").join(&project);
+    if let Some(named) = compose.volumes.as_ref() {
+        for name in named.keys() {
+            tokio::fs::create_dir_all(volumes_root.join(name)).await?;
+        }
+    }
+
+    // ── Network membership ─────────────────────────────────────────────────
+    // Compose networks isolate who can talk to whom. In crush's native model all
+    // services run on localhost, so "honoring networks" means: a service may
+    // resolve a peer by name (→ localhost) only if they share a network. Build
+    // service → set(networks) so we can compute each service's reachable peers.
+    let svc_networks: std::collections::HashMap<String, std::collections::HashSet<String>> = services
+        .iter()
+        .map(|(name, svc)| {
+            let nets: std::collections::HashSet<String> = svc.networks.clone()
+                .unwrap_or_default().into_iter().collect();
+            (name.clone(), nets)
+        })
+        .collect();
 
     // Persist compose state so `compose down` and `compose ps` can find containers
     let state_path = data_dir.join("compose").join(
@@ -4820,7 +4978,6 @@ async fn run_compose_up(compose_path: &Path, data_dir: &Path, store: &ImageStore
         // Env files
         let mut all_env = env_vars;
         if let Some(env_files) = &svc.env_file {
-            let compose_dir = compose_path.parent().unwrap_or(Path::new("."));
             for ef in env_files {
                 let ef_path = compose_dir.join(ef);
                 if let Ok(content) = std::fs::read_to_string(&ef_path) {
@@ -4833,6 +4990,39 @@ async fn run_compose_up(compose_path: &Path, data_dir: &Path, store: &ImageStore
                 }
             }
         }
+
+        // ── Honor networks ──────────────────────────────────────────────
+        // A service can reach peers that share at least one network with it.
+        // Since native services live on localhost, rewrite those peer names in
+        // env values to "localhost" so e.g. `DB_HOST=postgres_db` resolves. Peers
+        // on no shared network are intentionally left unrewritten (isolated).
+        let my_nets = svc_networks.get(svc_name).cloned().unwrap_or_default();
+        let reachable_peers: Vec<String> = svc_networks.iter()
+            .filter(|(name, nets)| {
+                name.as_str() != svc_name.as_str() && (
+                    // shared network, or neither side declared any (compose default network)
+                    !nets.is_disjoint(&my_nets) || (nets.is_empty() && my_nets.is_empty())
+                )
+            })
+            .map(|(name, _)| name.clone())
+            .collect();
+        if !reachable_peers.is_empty() {
+            let pairs: Vec<(String, String)> = all_env.iter()
+                .filter_map(|e| e.split_once('=').map(|(k, v)| (k.to_string(), v.to_string())))
+                .collect();
+            all_env = crush_build::rewrite_env_hostnames(&pairs, &reachable_peers)
+                .into_iter().map(|(k, v)| format!("{}={}", k, v)).collect();
+        }
+
+        // ── Honor volumes ───────────────────────────────────────────────
+        // Each `volumes:` entry is `source:target[:ro]`. A source that looks like
+        // a path (./ ../ / or X:\) is a bind mount resolved against the compose
+        // dir; anything else is a named volume backed under the data dir.
+        let mounts: Vec<MountConfig> = svc.volumes.as_ref().map(|vols| {
+            vols.iter().filter_map(|entry| {
+                parse_compose_volume(entry, &compose_dir, &volumes_root)
+            }).collect()
+        }).unwrap_or_default();
 
         // Resolve port mappings
         let ports: Vec<PortMapping> = svc.ports.as_ref().map(|ps| {
@@ -4866,20 +5056,37 @@ async fn run_compose_up(compose_path: &Path, data_dir: &Path, store: &ImageStore
             created_at: SystemTime::now(),
             started_at: None,
             ports,
-            mounts: vec![],
+            mounts: mounts.clone(),
             memory_limit_bytes: svc.deploy.as_ref()
                 .and_then(|d| d.resources.as_ref())
                 .and_then(|r| r.limits.as_ref())
                 .and_then(|l| l.memory.as_ref())
                 .and_then(|m| parse_memory_bytes(m)),
-            cpu_shares: None,
+            // compose `deploy.resources.limits.cpus` (e.g. "0.50") → Docker cpu_shares
+            // (1024 == one CPU's relative weight), so 0.50 → 512.
+            cpu_shares: svc.deploy.as_ref()
+                .and_then(|d| d.resources.as_ref())
+                .and_then(|r| r.limits.as_ref())
+                .and_then(|l| l.cpus.as_ref())
+                .and_then(|c| c.parse::<f64>().ok())
+                .map(|c| (c * 1024.0).round() as u64),
             health: None,
             restart_count: Some(0),
             restart_policy: Some(restart_policy),
-            health_cmd: None,
-            health_interval: Some(30),
-            health_timeout: Some(30),
-            health_retries: Some(3),
+            health_cmd: svc.healthcheck.as_ref()
+                .and_then(|h| h.test.as_ref())
+                .and_then(compose_healthcheck_cmd),
+            health_interval: svc.healthcheck.as_ref()
+                .and_then(|h| h.interval.as_ref())
+                .and_then(|s| parse_duration_secs(s))
+                .or(Some(30)),
+            health_timeout: svc.healthcheck.as_ref()
+                .and_then(|h| h.timeout.as_ref())
+                .and_then(|s| parse_duration_secs(s))
+                .or(Some(30)),
+            health_retries: svc.healthcheck.as_ref()
+                .and_then(|h| h.retries)
+                .or(Some(3)),
             pids_limit: None,
             read_only: Some(false),
             security_opt: Some(vec![]),
@@ -4890,18 +5097,32 @@ async fn run_compose_up(compose_path: &Path, data_dir: &Path, store: &ImageStore
         tokio::fs::create_dir_all(&rootfs).await?;
         store.extract_layers(&image.id, &rootfs).await?;
 
+        // Apply volume mounts onto the extracted rootfs so reads/writes hit the
+        // persistent backing dir. Best-effort: a failed mount logs and continues.
+        for m in &mounts {
+            if let Err(e) = apply_mount_to_rootfs(&rootfs, m).await {
+                println!("  [WARN] volume {:?} → {:?} not mounted: {}", m.host_path, m.container_path, e);
+            }
+        }
+
         #[cfg(target_os = "windows")]
         let backend = WindowsRuntime::new();
         #[cfg(not(target_os = "windows"))]
         let backend = StatelessEngine::new(data_dir.to_path_buf());
         backend.create(&container, &container_dir).await?;
 
-        let effective_cmd = if !image.entrypoint.is_empty() {
-            let mut v = image.entrypoint.clone();
-            v.extend(image.cmd.iter().cloned());
+        // Service-level `entrypoint`/`command` override the image's, matching Docker Compose:
+        // entrypoint replaces the image entrypoint; command replaces the image cmd (args).
+        let svc_entrypoint = svc.entrypoint.as_ref().map(compose_str_or_vec).filter(|v| !v.is_empty());
+        let svc_command = svc.command.as_ref().map(compose_str_or_vec).filter(|v| !v.is_empty());
+        let entrypoint = svc_entrypoint.unwrap_or_else(|| image.entrypoint.clone());
+        let cmd_args = svc_command.unwrap_or_else(|| image.cmd.clone());
+        let effective_cmd = if !entrypoint.is_empty() {
+            let mut v = entrypoint;
+            v.extend(cmd_args);
             v
-        } else if !image.cmd.is_empty() {
-            image.cmd.clone()
+        } else if !cmd_args.is_empty() {
+            cmd_args
         } else {
             vec!["/bin/sh".to_string()]
         };
@@ -4951,6 +5172,150 @@ async fn dir_size_bytes(path: std::path::PathBuf) -> std::io::Result<u64> {
     Ok(total)
 }
 
+/// Coerce a compose `command`/`entrypoint` value (string or array) into argv.
+/// A bare string is treated as a single shell word list split on whitespace,
+/// matching Compose's "shell form" behavior closely enough for our exec model.
+fn compose_str_or_vec(v: &serde_json::Value) -> Vec<String> {
+    if let Some(s) = v.as_str() {
+        s.split_whitespace().map(|w| w.to_string()).collect()
+    } else if let Some(arr) = v.as_array() {
+        arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect()
+    } else {
+        Vec::new()
+    }
+}
+
+/// Coerce a compose `healthcheck.test` into a single command string.
+/// Handles the three Compose forms: a string, `["CMD", exe, args...]`,
+/// `["CMD-SHELL", "cmd string"]`, and `["NONE"]` (disables → None).
+fn compose_healthcheck_cmd(v: &serde_json::Value) -> Option<String> {
+    if let Some(s) = v.as_str() {
+        return if s.is_empty() { None } else { Some(s.to_string()) };
+    }
+    let arr = v.as_array()?;
+    let parts: Vec<String> = arr.iter().filter_map(|x| x.as_str().map(|s| s.to_string())).collect();
+    match parts.first().map(|s| s.as_str()) {
+        Some("NONE") => None,
+        Some("CMD-SHELL") => parts.get(1).cloned(),
+        Some("CMD") => Some(parts[1..].join(" ")),
+        _ if !parts.is_empty() => Some(parts.join(" ")),
+        _ => None,
+    }
+}
+
+/// Parse a compose duration like "30s", "1m30s", "500ms", "2h" into whole seconds.
+/// Returns None if no recognizable unit is found.
+fn parse_duration_secs(s: &str) -> Option<u64> {
+    let s = s.trim();
+    if s.is_empty() { return None; }
+    // Bare integer → seconds.
+    if let Ok(n) = s.parse::<u64>() { return Some(n); }
+    let mut total: u64 = 0;
+    let mut num = String::new();
+    let mut chars = s.chars().peekable();
+    while let Some(&c) = chars.peek() {
+        if c.is_ascii_digit() {
+            num.push(c);
+            chars.next();
+        } else {
+            // Collect the unit (alphabetic run).
+            let mut unit = String::new();
+            while let Some(&u) = chars.peek() {
+                if u.is_ascii_alphabetic() { unit.push(u); chars.next(); } else { break; }
+            }
+            let val: u64 = num.parse().ok()?;
+            num.clear();
+            match unit.as_str() {
+                "h" => total += val * 3600,
+                "m" => total += val * 60,
+                "s" => total += val,
+                "ms" => total += val / 1000, // sub-second rounds toward zero
+                _ => return None,
+            }
+        }
+    }
+    if total == 0 && !num.is_empty() { return None; }
+    Some(total)
+}
+
+/// Parse a compose `volumes:` entry (`source:target[:ro]`) into a MountConfig.
+/// A source that looks like a filesystem path (`.`, `..`, `/`, or `X:\`) is a
+/// bind mount resolved against the compose dir; otherwise it's a named volume
+/// backed under `volumes_root/<name>`. Returns None for anonymous/unparseable
+/// entries (e.g. a bare container path with no source).
+fn parse_compose_volume(entry: &str, compose_dir: &Path, volumes_root: &Path) -> Option<MountConfig> {
+    // Split into at most 3 parts: source : target : mode. Handle Windows drive
+    // letters (C:\...) by detecting a single-letter first segment.
+    let parts: Vec<&str> = entry.split(':').collect();
+    let (source, target, mode) = match parts.as_slice() {
+        // C:\host\path:/container  → drive-letter source
+        [drive, host_rest, target] if drive.len() == 1 => {
+            (format!("{}:{}", drive, host_rest), target.to_string(), None)
+        }
+        [drive, host_rest, target, mode] if drive.len() == 1 => {
+            (format!("{}:{}", drive, host_rest), target.to_string(), Some(*mode))
+        }
+        [source, target] => (source.to_string(), target.to_string(), None),
+        [source, target, mode] => (source.to_string(), target.to_string(), Some(*mode)),
+        _ => return None, // anonymous volume or malformed — skip
+    };
+
+    let is_path = source.starts_with("./")
+        || source.starts_with("../")
+        || source.starts_with('/')
+        || source.starts_with('.')
+        || (source.len() >= 2 && source.as_bytes()[1] == b':'); // C:\
+    let host_path = if is_path {
+        compose_dir.join(&source)
+    } else {
+        volumes_root.join(&source) // named volume
+    };
+
+    Some(MountConfig {
+        host_path,
+        container_path: PathBuf::from(target),
+        read_only: matches!(mode, Some("ro")),
+        is_tmpfs: false,
+    })
+}
+
+/// Make a mount visible inside the extracted rootfs by linking
+/// `rootfs/<container_path>` to the backing `host_path`. Uses a directory
+/// symlink on Unix and a junction on Windows; falls back to copying contents
+/// in if linking isn't permitted. Best-effort and idempotent.
+async fn apply_mount_to_rootfs(rootfs: &Path, mount: &MountConfig) -> anyhow::Result<()> {
+    // Ensure the backing dir exists.
+    tokio::fs::create_dir_all(&mount.host_path).await?;
+
+    // Compute the in-rootfs target, stripping any leading separator from the
+    // container path so it joins relative to the rootfs.
+    let rel = mount.container_path.strip_prefix("/").unwrap_or(&mount.container_path);
+    let link_path = rootfs.join(rel);
+
+    if let Some(parent) = link_path.parent() {
+        tokio::fs::create_dir_all(parent).await?;
+    }
+    // If something already exists at the target (extracted from the image), move
+    // it aside so the volume takes precedence (Docker shadows the image path).
+    if tokio::fs::symlink_metadata(&link_path).await.is_ok() {
+        let _ = tokio::fs::remove_dir_all(&link_path).await;
+        let _ = tokio::fs::remove_file(&link_path).await;
+    }
+
+    let host = mount.host_path.clone();
+    let link = link_path.clone();
+    tokio::task::spawn_blocking(move || -> std::io::Result<()> {
+        #[cfg(unix)]
+        { std::os::unix::fs::symlink(&host, &link) }
+        #[cfg(windows)]
+        { std::os::windows::fs::symlink_dir(&host, &link) }
+        #[cfg(not(any(unix, windows)))]
+        { Ok(()) }
+    }).await??;
+
+    Ok(())
+}
+
 fn parse_memory_bytes(s: &str) -> Option<u64> {
     let s = s.trim();
     if let Ok(n) = s.parse::<u64>() { return Some(n); }
@@ -4974,4 +5339,99 @@ pub struct LoginArgs {
     pub password: Option<String>,
     #[arg(long, help = "Read password from stdin")]
     pub password_stdin: bool,
+}
+
+#[cfg(test)]
+mod compose_honor_helpers {
+    use super::*;
+    use serde_json::json;
+
+    #[test]
+    fn healthcheck_cmd_forms() {
+        // CMD form joins the executable + args
+        assert_eq!(
+            compose_healthcheck_cmd(&json!(["CMD", "curl", "-f", "http://localhost/health"])),
+            Some("curl -f http://localhost/health".to_string())
+        );
+        // CMD-SHELL takes the single shell string
+        assert_eq!(
+            compose_healthcheck_cmd(&json!(["CMD-SHELL", "pg_isready -U admin"])),
+            Some("pg_isready -U admin".to_string())
+        );
+        // bare string is taken as-is
+        assert_eq!(
+            compose_healthcheck_cmd(&json!("redis-cli ping")),
+            Some("redis-cli ping".to_string())
+        );
+        // NONE disables the healthcheck
+        assert_eq!(compose_healthcheck_cmd(&json!(["NONE"])), None);
+    }
+
+    #[test]
+    fn str_or_vec_command_forms() {
+        // string (shell form) splits on whitespace
+        assert_eq!(compose_str_or_vec(&json!("node server.js")), vec!["node", "server.js"]);
+        // array (exec form) kept verbatim
+        assert_eq!(
+            compose_str_or_vec(&json!(["/usr/bin/tini", "--", "node"])),
+            vec!["/usr/bin/tini", "--", "node"]
+        );
+        // non-string/array → empty
+        assert!(compose_str_or_vec(&json!(42)).is_empty());
+    }
+
+    #[test]
+    fn duration_parsing() {
+        assert_eq!(parse_duration_secs("30s"), Some(30));
+        assert_eq!(parse_duration_secs("1m30s"), Some(90));
+        assert_eq!(parse_duration_secs("2h"), Some(7200));
+        assert_eq!(parse_duration_secs("45"), Some(45)); // bare int → seconds
+        assert_eq!(parse_duration_secs("500ms"), Some(0)); // sub-second rounds toward zero
+        assert_eq!(parse_duration_secs("garbage"), None);
+    }
+
+    #[test]
+    fn cpus_to_cpu_shares() {
+        // The mapping used in run_compose_up: cpus * 1024, rounded.
+        let shares = |c: f64| (c * 1024.0).round() as u64;
+        assert_eq!(shares(0.50), 512);
+        assert_eq!(shares(1.0), 1024);
+        assert_eq!(shares(0.25), 256);
+    }
+
+    #[test]
+    fn memory_parsing() {
+        assert_eq!(parse_memory_bytes("512M"), Some(512 * 1024 * 1024));
+        assert_eq!(parse_memory_bytes("1G"), Some(1024 * 1024 * 1024));
+        assert_eq!(parse_memory_bytes("1024"), Some(1024));
+    }
+
+    #[test]
+    fn volume_parsing() {
+        let compose_dir = Path::new("/proj");
+        let vroot = Path::new("/data/volumes/proj");
+
+        // named volume → backed under volumes_root
+        let named = parse_compose_volume("web_data:/usr/share/nginx/html", compose_dir, vroot).unwrap();
+        assert_eq!(named.host_path, vroot.join("web_data"));
+        assert_eq!(named.container_path, PathBuf::from("/usr/share/nginx/html"));
+        assert!(!named.read_only);
+
+        // relative bind mount → resolved against compose dir
+        let bind = parse_compose_volume("./backend:/app", compose_dir, vroot).unwrap();
+        assert_eq!(bind.host_path, compose_dir.join("./backend"));
+        assert_eq!(bind.container_path, PathBuf::from("/app"));
+
+        // read-only flag honored
+        let ro = parse_compose_volume("db_data:/var/lib/postgresql/data:ro", compose_dir, vroot).unwrap();
+        assert!(ro.read_only);
+        assert_eq!(ro.host_path, vroot.join("db_data"));
+
+        // absolute host bind mount
+        let abs = parse_compose_volume("/srv/data:/data", compose_dir, vroot).unwrap();
+        assert_eq!(abs.host_path, PathBuf::from("/srv/data"));
+
+        // anonymous / malformed → skipped
+        assert!(parse_compose_volume("just_a_path", compose_dir, vroot).is_none());
+    }
 }

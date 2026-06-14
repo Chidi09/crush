@@ -34,6 +34,46 @@
       content="Sub-second starts. No WSL2. No VM overhead. The container runtime that actually works on Windows."
     />
     <meta name="twitter:image" content="/og-image.png" />
+    <link rel="canonical" href="https://crush-web-six.vercel.app/" />
+
+    <!-- Structured data (JSON-LD) for SEO. Lives in the static head so crawlers
+         see it without executing JS. The FAQPage schema is added per-page. -->
+    <script type="application/ld+json">
+      {
+        "@context": "https://schema.org",
+        "@graph": [
+          {
+            "@type": "SoftwareApplication",
+            "name": "Crush",
+            "applicationCategory": "DeveloperApplication",
+            "operatingSystem": "Windows, macOS, Linux",
+            "description": "Crush runs your projects natively without containers in the dev loop, provides native databases (Postgres, Redis, MongoDB, MinIO), and exports runnable OCI images to collaborate with Docker users and deploy to the cloud.",
+            "url": "https://crush-web-six.vercel.app/",
+            "downloadUrl": "https://github.com/Chidi09/crush/releases/latest",
+            "softwareHelp": "https://crush-web-six.vercel.app/docs/getting-started",
+            "license": "https://github.com/Chidi09/crush/blob/main/LICENSE",
+            "offers": { "@type": "Offer", "price": "0", "priceCurrency": "USD" },
+            "author": {
+              "@type": "Organization",
+              "name": "Crush",
+              "url": "https://github.com/Chidi09/crush"
+            }
+          },
+          {
+            "@type": "WebSite",
+            "name": "Crush",
+            "url": "https://crush-web-six.vercel.app/"
+          },
+          {
+            "@type": "Organization",
+            "name": "Crush",
+            "url": "https://crush-web-six.vercel.app/",
+            "logo": "https://crush-web-six.vercel.app/og-image.png",
+            "sameAs": ["https://github.com/Chidi09/crush"]
+          }
+        ]
+      }
+    </script>
   </head>
   <body class="bg-crush-black text-crush-text antialiased">
     <app-root></app-root>

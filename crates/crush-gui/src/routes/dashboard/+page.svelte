@@ -202,7 +202,6 @@
     <div class="hero-left">
       <img class="logo" src="/logo.png" alt="Crush" width="84" height="56" />
       <span class="wordmark">crush</span>
-      {#if sys}<span class="ver-badge">v{sys.version}</span><span class="os-badge">{sys.os}/{sys.arch}</span>{/if}
     </div>
     <div class="hero-right">
       <span class="running-ind"><span class="rdot" class:live={runningCount > 0}></span>{runningCount} running</span>
@@ -468,8 +467,6 @@
   .hero-left { display: flex; align-items: center; gap: 10px; }
   .logo { display: block; height: 56px; width: auto; object-fit: contain; }
   .wordmark { font-family: var(--font-mono); font-size: 20px; font-weight: 700; letter-spacing: -0.02em; }
-  .ver-badge { font-family: var(--font-mono); font-size: 11px; color: var(--color-crush-orange); border: 1px solid rgba(224,85,64,0.25); border-radius: 9999px; padding: 1px 8px; }
-  .os-badge { font-family: var(--font-mono); font-size: 11px; color: var(--color-crush-text-muted); }
   .hero-right { display: flex; align-items: center; gap: 12px; }
   .running-ind { display: inline-flex; align-items: center; gap: 6px; font-size: 13px; color: var(--color-crush-text-muted); }
   .rdot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-crush-muted); }

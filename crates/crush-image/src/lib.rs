@@ -135,6 +135,7 @@ impl ImageStore {
                 },
                 "architecture": image.architecture,
                 "os": image.os,
+                "os.version": image.os_version,
             })).unwrap_or_default()
         };
 
@@ -469,9 +470,16 @@ impl ImageStore {
         }
 
         // Fetch config blob and parse OCI image config for entrypoint/cmd/env
+        // and the platform fields (architecture/os/os.version). These are read
+        // dynamically so Windows images (os: "windows", with an os.version that
+        // must match the host kernel build) are stored correctly rather than
+        // being forced to linux/amd64.
         let mut entrypoint = Vec::new();
         let mut cmd_vec = Vec::new();
         let mut env_vec = Vec::new();
+        let mut architecture = "amd64".to_string();
+        let mut os = "linux".to_string();
+        let mut os_version: Option<String> = None;
 
         if !config_digest.is_empty() {
             let config_data = if !self.blobs.contains(&config_digest) {
@@ -495,6 +503,15 @@ impl ImageStore {
                     if let Some(arr) = cfg["config"]["Env"].as_array() {
                         env_vec = arr.iter().filter_map(|v| v.as_str().map(String::from)).collect();
                     }
+                    if let Some(a) = cfg["architecture"].as_str() {
+                        architecture = a.to_string();
+                    }
+                    if let Some(o) = cfg["os"].as_str() {
+                        os = o.to_string();
+                    }
+                    // os.version is present on Windows images (e.g. "10.0.20348.x");
+                    // absent on Linux, where it stays None.
+                    os_version = cfg["os.version"].as_str().map(String::from);
                 }
             }
         }
@@ -534,8 +551,9 @@ impl ImageStore {
             digest: image_id,
             size_bytes: total_size,
             layers: stored_digests,
-            architecture: "amd64".to_string(),
-            os: "linux".to_string(),
+            architecture,
+            os,
+            os_version,
             entrypoint,
             cmd: cmd_vec,
             env: env_vec,

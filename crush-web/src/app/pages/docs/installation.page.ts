@@ -3,11 +3,12 @@ import { Title, Meta } from '@angular/platform-browser';
 import { RouterLink } from '@angular/router';
 import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar.component';
 import { InstallBlockComponent } from '../../components/install-block/install-block.component';
+import { DownloadBlockComponent } from '../../components/download-block/download-block.component';
 
 @Component({
   selector: 'page-installation',
   standalone: true,
-  imports: [RouterLink, DocsSidebarComponent, InstallBlockComponent],
+  imports: [RouterLink, DocsSidebarComponent, InstallBlockComponent, DownloadBlockComponent],
   template: `
     <div class="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
       <div class="flex flex-col md:flex-row gap-12">
@@ -24,10 +25,18 @@ import { InstallBlockComponent } from '../../components/install-block/install-bl
             </p>
           </div>
 
-          <!-- Section 1: Quick Install -->
+          <!-- Section 0: Direct downloads (GUI + CLI) -->
           <section class="mb-14">
             <h2 class="text-xl font-bold text-white mb-6 flex items-center gap-2.5 select-none">
-              Quick Install
+              Download
+            </h2>
+            <app-download-block />
+          </section>
+
+          <!-- Section 1: Quick Install (package managers) -->
+          <section class="mb-14">
+            <h2 class="text-xl font-bold text-white mb-6 flex items-center gap-2.5 select-none">
+              Install via package manager
             </h2>
             <app-install-block />
           </section>
