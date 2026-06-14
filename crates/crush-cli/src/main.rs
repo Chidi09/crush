@@ -1794,6 +1794,57 @@ fn format_detection_line(stack: &crush_build::InferredStack) -> String {
     }
 }
 
+/// `crush eject` — generate a Dockerfile + docker-compose.yml from the detected
+/// stack. Pulled out of the main dispatch so it can run *before* the image store
+/// (sled) is opened; it never needs the store, and running it lock-free lets the
+/// GUI shell out to it while the GUI itself holds the store lock.
+async fn run_eject(args: EjectArgs) -> anyhow::Result<()> {
+    let project_root = std::env::current_dir()?;
+    let out_dir = project_root.join(&args.out);
+    std::fs::create_dir_all(&out_dir).ok();
+    let detector = StackDetector::new();
+    let stack = detector.detect(&project_root).await?;
+
+    let dockerfile_path = out_dir.join("Dockerfile");
+    let compose_path = out_dir.join("docker-compose.yml");
+
+    if dockerfile_path.exists() && !args.force {
+        anyhow::bail!("Dockerfile already exists at {}. Pass --force to overwrite.",
+            dockerfile_path.display());
+    }
+    if compose_path.exists() && !args.force {
+        anyhow::bail!("docker-compose.yml already exists at {}. Pass --force to overwrite.",
+            compose_path.display());
+    }
+
+    // Parse compose deps if user already declared them, plus spring config fallback.
+    let compose_files = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
+    let existing_compose = compose_files.iter().map(|f| project_root.join(f))
+        .find(|p| p.exists() && *p != compose_path);
+    let mut dep_services: Vec<crush_build::DepService> = Vec::new();
+    if let Some(ref cp) = existing_compose {
+        if let Ok(parsed) = parse_compose(cp) {
+            dep_services = parsed.dep_services;
+        }
+    }
+    if dep_services.is_empty() {
+        dep_services = parse_spring_config(&project_root);
+    }
+
+    let dockerfile = generate_dockerfile(&stack);
+    let compose = generate_compose(&stack, &dep_services);
+
+    std::fs::write(&dockerfile_path, &dockerfile)?;
+    std::fs::write(&compose_path, &compose)?;
+
+    println!(" {} wrote {}", "✓".green().bold(), dockerfile_path.display().to_string().bold());
+    println!(" {} wrote {}", "✓".green().bold(), compose_path.display().to_string().bold());
+    println!("   {} review and edit, then deploy: {}",
+        "↳".cyan(),
+        "docker compose up --build".dimmed());
+    Ok(())
+}
+
 async fn run_internal(args: InternalRunArgs, data_dir: std::path::PathBuf) -> anyhow::Result<()> {
             let container_dir = data_dir.join("containers").join(&args.id);
             let container_json_path = container_dir.join("container.json");
@@ -2058,6 +2109,15 @@ async fn main() -> anyhow::Result<()> {
     if matches!(&command, Commands::InternalRun(_)) {
         let Commands::InternalRun(args) = command else { unreachable!() };
         return run_internal(args, data_dir).await;
+    }
+
+    // `eject` only reads the project tree (stack detection + template generation)
+    // and never touches the image store. Dispatch it before opening the sled db so
+    // it works even while another process (e.g. the GUI app) holds the store lock —
+    // sled is single-process, and the GUI shells out to `crush eject`.
+    if matches!(&command, Commands::Eject(_)) {
+        let Commands::Eject(args) = command else { unreachable!() };
+        return run_eject(args).await;
     }
 
     let store = ImageStore::new(data_dir.join("images")).await?;
@@ -3336,51 +3396,8 @@ async fn main() -> anyhow::Result<()> {
             println!("Exported {} → {}", args.image, args.output);
             println!("Load on any Docker host: docker load -i {}", args.output);
         }
-        Commands::Eject(args) => {
-            let project_root = std::env::current_dir()?;
-            let out_dir = project_root.join(&args.out);
-            std::fs::create_dir_all(&out_dir).ok();
-            let detector = StackDetector::new();
-            let stack = detector.detect(&project_root).await?;
-
-            let dockerfile_path = out_dir.join("Dockerfile");
-            let compose_path = out_dir.join("docker-compose.yml");
-
-            if dockerfile_path.exists() && !args.force {
-                anyhow::bail!("Dockerfile already exists at {}. Pass --force to overwrite.",
-                    dockerfile_path.display());
-            }
-            if compose_path.exists() && !args.force {
-                anyhow::bail!("docker-compose.yml already exists at {}. Pass --force to overwrite.",
-                    compose_path.display());
-            }
-
-            // Parse compose deps if user already declared them, plus spring config fallback.
-            let compose_files = ["docker-compose.yml", "docker-compose.yaml", "compose.yml", "compose.yaml"];
-            let existing_compose = compose_files.iter().map(|f| project_root.join(f))
-                .find(|p| p.exists() && *p != compose_path);
-            let mut dep_services: Vec<crush_build::DepService> = Vec::new();
-            if let Some(ref cp) = existing_compose {
-                if let Ok(parsed) = parse_compose(cp) {
-                    dep_services = parsed.dep_services;
-                }
-            }
-            if dep_services.is_empty() {
-                dep_services = parse_spring_config(&project_root);
-            }
-
-            let dockerfile = generate_dockerfile(&stack);
-            let compose = generate_compose(&stack, &dep_services);
-
-            std::fs::write(&dockerfile_path, &dockerfile)?;
-            std::fs::write(&compose_path, &compose)?;
-
-            println!(" {} wrote {}", "✓".green().bold(), dockerfile_path.display().to_string().bold());
-            println!(" {} wrote {}", "✓".green().bold(), compose_path.display().to_string().bold());
-            println!("   {} review and edit, then deploy: {}",
-                "↳".cyan(),
-                "docker compose up --build".dimmed());
-        }
+        // Dispatched before the store opens (see above); unreachable here.
+        Commands::Eject(_) => unreachable!("eject is handled before the image store opens"),
         Commands::Scan(args) => {
             if args.fix || args.image.is_none() {
                 let root = std::env::current_dir()?;
