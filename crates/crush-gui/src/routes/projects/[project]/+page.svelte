@@ -132,6 +132,17 @@
     return `${Math.floor(s / 86400)}d ago`;
   }
   function dur(ms: number): string { return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(0)}s`; }
+  // Past-tense labels: these are archived runs, not live processes. A run is
+  // stored as "running" when it starts and only flips when it ends, so an
+  // abandoned run stays "running" — don't imply it's live now.
+  function statusLabel(status: string): string {
+    switch (status) {
+      case 'running': return 'Ran';
+      case 'ready': return 'Ready';
+      case 'failed': return 'Failed';
+      default: return status;
+    }
+  }
 </script>
 
 <div class="page">
@@ -166,7 +177,7 @@
           {/if}
         </div>
         <div class="d-meta">
-          <div class="mg"><span class="mk">Status</span><span class="mv"><span class="sdot {selected.status}"></span>{selected.status}</span></div>
+          <div class="mg"><span class="mk">Status</span><span class="mv"><span class="sdot {selected.status}"></span>{statusLabel(selected.status)}</span></div>
           {#if selected.port}<div class="mg"><span class="mk">URL</span><button class="link" onclick={() => visit(selected!)}>localhost:{selected.port} ↗</button></div>{/if}
           <div class="mg"><span class="mk">Duration</span><span class="mv mono">{selected.duration_ms ? dur(selected.duration_ms) : '—'}</span></div>
           <div class="mg"><span class="mk">Created</span><span class="mv">{ago(selected.created_ms)}</span></div>
@@ -199,7 +210,7 @@
           {#each list as d}
             <div class="dep-row clickable" role="button" tabindex="0" onclick={() => open(d.id)} onkeydown={(e) => { if (e.key === 'Enter') open(d.id); }}>
               <span class="sdot {d.status}"></span>
-              <span class="dep-status">{d.status}</span>
+              <span class="dep-status">{statusLabel(d.status)}</span>
               <span class="dep-stack">{#if d.framework || d.runtime}<TechIcon name={d.framework ?? d.runtime} size={13} />{/if}{d.framework ?? d.runtime ?? '—'}</span>
               <span class="dep-port mono">{d.port ? `:${d.port}` : ''}</span>
               <span class="dep-dur mono">{d.duration_ms ? dur(d.duration_ms) : ''}</span>

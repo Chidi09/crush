@@ -60,6 +60,21 @@
   function dur(ms: number): string { return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(0)}s`; }
   function openProject(p: string) { goto(`/projects/${encodeURIComponent(p)}`); }
 
+  // These records are a historical archive of past `crush run`s, not live
+  // processes — a run is stored as "running" the moment it starts and only
+  // flips to "ready"/"failed" when it ends, so an abandoned run stays
+  // "running" forever. Show past-tense labels so the list doesn't imply the
+  // project is live right now.
+  function statusLabel(status: string): string {
+    switch (status) {
+      case 'running': return 'Ran';
+      case 'ready': return 'Ready';
+      case 'failed': return 'Failed';
+      case 'all': return 'All';
+      default: return status;
+    }
+  }
+
   const STATUSES = ['all', 'running', 'ready', 'failed'] as const;
 </script>
 
@@ -90,7 +105,7 @@
       </div>
       <div class="seg">
         {#each STATUSES as s}
-          <button class="seg-btn" class:active={statusFilter === s} onclick={() => statusFilter = s}>{s}</button>
+          <button class="seg-btn" class:active={statusFilter === s} onclick={() => statusFilter = s}>{statusLabel(s)}</button>
         {/each}
       </div>
       <div class="bulk">
@@ -116,7 +131,7 @@
             <!-- collapsed summary: latest status + when -->
             <span class="gh-summary">
               <span class="sdot {g.latest.status}"></span>
-              <span class="dep-status">{g.latest.status}</span>
+              <span class="dep-status">{statusLabel(g.latest.status)}</span>
               <span class="dep-when">{ago(g.latest.created_ms)}</span>
             </span>
             <span class="gh-count">{g.deps.length}</span>
@@ -128,7 +143,7 @@
               {#each g.deps.slice(0, 8) as d}
                 <button class="dep-row" onclick={() => openProject(g.project)}>
                   <span class="sdot {d.status}"></span>
-                  <span class="dep-status">{d.status}</span>
+                  <span class="dep-status">{statusLabel(d.status)}</span>
                   {#if d.branch}<span class="dep-branch mono"><Icon name="branch" size={11} /> {d.branch}{#if d.commit_short} · {d.commit_short}{/if}</span>{:else}<span></span>{/if}
                   <span class="dep-port mono">{d.port ? `:${d.port}` : ''}</span>
                   <span class="dep-dur mono">{d.duration_ms ? dur(d.duration_ms) : ''}</span>
