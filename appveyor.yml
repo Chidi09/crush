@@ -57,7 +57,13 @@ after_build:
 
       $headers = @{ Authorization = "token $env:GITHUB_TOKEN"; "User-Agent" = "appveyor-crush" }
 
-      $rel = Invoke-RestMethod "https://api.github.com/repos/Chidi09/crush/releases/tags/$tag" -Headers $headers
+      # Find the release by tag, INCLUDING drafts. The /releases/tags/{tag} endpoint
+      # returns 404 for draft releases (and races a not-yet-published CI release),
+      # so list releases and match tag_name instead — works whether draft or public.
+      $all = Invoke-RestMethod "https://api.github.com/repos/Chidi09/crush/releases?per_page=100" -Headers $headers
+      $rel = $all | Where-Object { $_.tag_name -eq $tag } | Select-Object -First 1
+      if (-not $rel) { Write-Host "No GitHub release found for tag $tag (draft or published) — aborting upload"; exit 1 }
+      Write-Host "Found release $($rel.tag_name) (id=$($rel.id), draft=$($rel.draft))"
       foreach ($f in $files) {
         Write-Host "Uploading $($f.Name)..."
         $up = "https://uploads.github.com/repos/Chidi09/crush/releases/$($rel.id)/assets?name=$($f.Name)"
