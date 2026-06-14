@@ -40,32 +40,44 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
           <section class="mb-12">
             <h2 class="text-lg font-bold text-white mb-4">Key Capabilities</h2>
             <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
-              <div class="p-4 rounded-xl border border-crush-border/30 bg-crush-surface/30">
+              <div class="group p-5 rounded-xl border border-crush-border/40 bg-card hover:border-crush-orange/30 transition-all duration-300">
+                <div class="h-10 w-10 mb-3 flex items-center justify-center rounded-lg bg-crush-orange/10 text-crush-orange border border-crush-orange/20 group-hover:scale-110 transition-transform">
+                  <svg viewBox="0 0 24 24" class="h-5 w-5 fill-none stroke-current stroke-2"><rect x="3" y="3" width="18" height="7" rx="1"/><rect x="3" y="14" width="18" height="7" rx="1"/><circle cx="7" cy="6.5" r=".5" fill="currentColor"/><circle cx="7" cy="17.5" r=".5" fill="currentColor"/></svg>
+                </div>
                 <h4 class="font-bold text-white mb-1.5">Service Control Panel</h4>
                 <p class="text-xs text-crush-textMuted font-light leading-relaxed">
                   Power on or off Postgres, Redis, Mongo, or MinIO databases dynamically. Clear
                   cached tables or files in one click.
                 </p>
               </div>
-              <div class="p-4 rounded-xl border border-crush-border/30 bg-crush-surface/30">
+              <div class="group p-5 rounded-xl border border-crush-border/40 bg-card hover:border-crush-orange/30 transition-all duration-300">
+                <div class="h-10 w-10 mb-3 flex items-center justify-center rounded-lg bg-crush-orange/10 text-crush-orange border border-crush-orange/20 group-hover:scale-110 transition-transform">
+                  <svg viewBox="0 0 24 24" class="h-5 w-5 fill-none stroke-current stroke-2"><polyline points="4 17 10 11 4 5"/><line x1="12" y1="19" x2="20" y2="19"/></svg>
+                </div>
                 <h4 class="font-bold text-white mb-1.5">Live Log Streaming</h4>
                 <p class="text-xs text-crush-textMuted font-light leading-relaxed">
-                  View structured real-time stdout/stderr stdout streams, filtered by service
-                  modules, formatted in a responsive terminal.
+                  View structured real-time stdout/stderr streams, filtered by service modules,
+                  formatted in a responsive terminal.
                 </p>
               </div>
-              <div class="p-4 rounded-xl border border-crush-border/30 bg-crush-surface/30">
+              <div class="group p-5 rounded-xl border border-crush-border/40 bg-card hover:border-crush-orange/30 transition-all duration-300">
+                <div class="h-10 w-10 mb-3 flex items-center justify-center rounded-lg bg-crush-orange/10 text-crush-orange border border-crush-orange/20 group-hover:scale-110 transition-transform">
+                  <svg viewBox="0 0 24 24" class="h-5 w-5 fill-none stroke-current stroke-2"><path d="M12 2a4 4 0 0 1 4 4c1.1 0 2 .9 2 2a3 3 0 0 1-.5 1.7A3 3 0 0 1 18 12a3 3 0 0 1-1 2.2V16a4 4 0 0 1-8 0v-1.8A3 3 0 0 1 8 12a3 3 0 0 1 .5-2.3A3 3 0 0 1 8 8c0-1.1.9-2 2-2a4 4 0 0 1 2-4z"/></svg>
+                </div>
                 <h4 class="font-bold text-white mb-1.5">AI Diagnose</h4>
                 <p class="text-xs text-crush-textMuted font-light leading-relaxed">
-                  Integrates directly with Claude to parse error frames, trace call stacks, and
-                  suggest immediate line-by-line code patches.
+                  Reads error frames, traces call stacks, and suggests immediate line-by-line code
+                  patches using your configured AI provider.
                 </p>
               </div>
-              <div class="p-4 rounded-xl border border-crush-border/30 bg-crush-surface/30">
+              <div class="group p-5 rounded-xl border border-crush-border/40 bg-card hover:border-crush-orange/30 transition-all duration-300">
+                <div class="h-10 w-10 mb-3 flex items-center justify-center rounded-lg bg-crush-orange/10 text-crush-orange border border-crush-orange/20 group-hover:scale-110 transition-transform">
+                  <svg viewBox="0 0 24 24" class="h-5 w-5 fill-none stroke-current stroke-2"><polyline points="3 12 7 12 10 4 14 20 17 12 21 12"/></svg>
+                </div>
                 <h4 class="font-bold text-white mb-1.5">Resource Statistics</h4>
                 <p class="text-xs text-crush-textMuted font-light leading-relaxed">
-                  Real-time system graphs tracking CPU percentage and memory bytes consumed by host
-                  processes, helping you spot memory leaks.
+                  Real-time graphs tracking CPU percentage and memory consumed by host processes,
+                  helping you spot leaks.
                 </p>
               </div>
             </div>

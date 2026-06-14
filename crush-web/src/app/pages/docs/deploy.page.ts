@@ -2,6 +2,7 @@ import { Component, OnInit } from '@angular/core';
 import { Title, Meta } from '@angular/platform-browser';
 import { RouterLink } from '@angular/router';
 import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar.component';
+import { BrandIconComponent } from '../../components/brand-icon/brand-icon.component';
 
 interface Provider {
   name: string;
@@ -28,7 +29,7 @@ const PROVIDERS: Provider[] = [
 @Component({
   selector: 'page-deploy',
   standalone: true,
-  imports: [RouterLink, DocsSidebarComponent],
+  imports: [RouterLink, DocsSidebarComponent, BrandIconComponent],
   template: `
     <div class="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
       <div class="flex flex-col md:flex-row gap-12">
@@ -103,21 +104,26 @@ const PROVIDERS: Provider[] = [
               Each row shows the one-time authentication and the deploy command. Stack detection
               filters targets — a static site won't be offered backend-only options.
             </p>
-            <div class="space-y-3">
+            <div class="grid gap-4 sm:grid-cols-2">
               @for (p of providers; track p.tag) {
-                <div class="rounded-xl border border-crush-border/30 bg-crush-surface/20 p-4">
-                  <div class="flex items-center justify-between gap-3 mb-2">
-                    <h3 class="text-sm font-bold text-white">{{ p.name }}</h3>
-                    <code class="text-[11px] text-crush-textMuted">--target {{ p.tag }}</code>
+                <div class="group rounded-xl border border-crush-border/40 bg-card p-5 hover:border-crush-orange/30 hover:bg-crush-surface/5 transition-all duration-300">
+                  <div class="flex items-center gap-3 mb-3">
+                    <div class="h-10 w-10 shrink-0 flex items-center justify-center rounded-lg bg-crush-surface/60 border border-crush-border/40 group-hover:scale-110 transition-transform duration-300">
+                      <app-brand-icon [name]="p.tag" [size]="20" />
+                    </div>
+                    <div class="min-w-0">
+                      <h3 class="text-sm font-bold text-white leading-tight">{{ p.name }}</h3>
+                      <code class="text-[11px] text-crush-textMuted">--target {{ p.tag }}</code>
+                    </div>
                   </div>
-                  <p class="text-xs text-crush-textMuted mb-3 leading-relaxed">{{ p.blurb }}</p>
-                  <div class="grid gap-2 sm:grid-cols-2 font-mono text-[12px]">
+                  <p class="text-xs text-crush-textMuted mb-4 leading-relaxed">{{ p.blurb }}</p>
+                  <div class="space-y-2 font-mono text-[12px]">
                     <div class="rounded-lg border border-crush-border/30 bg-crush-black/50 px-3 py-2">
-                      <span class="text-crush-textMuted text-[10px] uppercase block mb-0.5">Authenticate</span>
+                      <span class="text-crush-textMuted text-[10px] uppercase tracking-wide block mb-0.5">1 · Authenticate</span>
                       <span class="text-crush-text break-all">{{ p.auth }}</span>
                     </div>
-                    <div class="rounded-lg border border-crush-border/30 bg-crush-black/50 px-3 py-2">
-                      <span class="text-crush-textMuted text-[10px] uppercase block mb-0.5">Deploy</span>
+                    <div class="rounded-lg border border-crush-orange/20 bg-crush-orange/5 px-3 py-2">
+                      <span class="text-crush-orange/80 text-[10px] uppercase tracking-wide block mb-0.5">2 · Deploy</span>
                       <span class="text-crush-text break-all">{{ p.deploy }}</span>
                     </div>
                   </div>

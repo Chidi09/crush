@@ -1,11 +1,12 @@
 import { Component, OnInit } from '@angular/core';
 import { Title, Meta } from '@angular/platform-browser';
 import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar.component';
+import { BrandIconComponent } from '../../components/brand-icon/brand-icon.component';
 
 @Component({
   selector: 'page-services',
   standalone: true,
-  imports: [DocsSidebarComponent],
+  imports: [DocsSidebarComponent, BrandIconComponent],
   template: `
     <div class="mx-auto max-w-7xl px-4 py-16 sm:px-6 lg:px-8">
       <div class="flex flex-col md:flex-row gap-12">
@@ -38,62 +39,29 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
           <!-- Section 2: Core Native Services -->
           <section class="mb-12">
             <h2 class="text-lg font-bold text-white mb-4">Supported Databases & Storage</h2>
-            <div class="space-y-4">
-              <div class="p-4 rounded-xl border border-crush-border/30 bg-crush-surface/30">
-                <div class="flex items-center justify-between mb-2">
-                  <h4 class="font-bold text-white">PostgreSQL & pgvector</h4>
-                  <span
-                    class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold font-mono"
-                    >Port: 5432</span
-                  >
+            <div class="grid gap-4 sm:grid-cols-2">
+              @for (s of services; track s.name) {
+                <div class="group rounded-xl border border-crush-border/40 bg-card p-5 hover:border-crush-orange/30 hover:bg-crush-surface/5 transition-all duration-300">
+                  <div class="flex items-center gap-3 mb-3">
+                    <div class="h-11 w-11 shrink-0 flex items-center justify-center rounded-lg bg-crush-surface/60 border border-crush-border/40 group-hover:scale-110 transition-transform duration-300">
+                      <app-brand-icon [name]="s.icon" [size]="22" />
+                    </div>
+                    <div class="min-w-0 flex-1">
+                      <h4 class="font-bold text-white leading-tight">{{ s.name }}</h4>
+                      <div class="flex items-center gap-2 mt-1">
+                        <code class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono">:{{ s.port }}</code>
+                        <code class="text-[10px] text-crush-textMuted font-mono">{{ s.env }}</code>
+                      </div>
+                    </div>
+                  </div>
+                  <p class="text-xs text-crush-textMuted leading-relaxed">{{ s.desc }}</p>
                 </div>
-                <p class="text-xs text-crush-textMuted">
-                  Natively loaded standard Postgres binaries complete with vector embedding storage
-                  capabilities for AI models.
-                </p>
-              </div>
-
-              <div class="p-4 rounded-xl border border-crush-border/30 bg-crush-surface/30">
-                <div class="flex items-center justify-between mb-2">
-                  <h4 class="font-bold text-white">Redis Cache & Queue</h4>
-                  <span
-                    class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold font-mono"
-                    >Port: 6379</span
-                  >
-                </div>
-                <p class="text-xs text-crush-textMuted">
-                  High-performance native Redis key-value cache store with disk-backed logging
-                  persistence.
-                </p>
-              </div>
-
-              <div class="p-4 rounded-xl border border-crush-border/30 bg-crush-surface/30">
-                <div class="flex items-center justify-between mb-2">
-                  <h4 class="font-bold text-white">MongoDB</h4>
-                  <span
-                    class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold font-mono"
-                    >Port: 27017</span
-                  >
-                </div>
-                <p class="text-xs text-crush-textMuted">
-                  NoSQL JSON document store for applications needing highly dynamic schema designs.
-                </p>
-              </div>
-
-              <div class="p-4 rounded-xl border border-crush-border/30 bg-crush-surface/30">
-                <div class="flex items-center justify-between mb-2">
-                  <h4 class="font-bold text-white">MinIO (S3 Local Storage)</h4>
-                  <span
-                    class="text-xs px-2 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-semibold font-mono"
-                    >Port: 9000</span
-                  >
-                </div>
-                <p class="text-xs text-crush-textMuted">
-                  Complete local Amazon S3 bucket alternative. Store files, images, and static
-                  assets locally with AWS sdk compatibility.
-                </p>
-              </div>
+              }
             </div>
+            <p class="text-xs text-crush-textMuted mt-5 leading-relaxed">
+              Connection strings are injected automatically as environment variables — list a service
+              in your <code>Crushfile</code> (or compose file) and it starts on <code>crush run</code>.
+            </p>
           </section>
 
           <!-- Section 3: Detection -->
@@ -113,6 +81,37 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
   `,
 })
 export default class ServicesPageComponent implements OnInit {
+  services = [
+    {
+      name: 'PostgreSQL',
+      icon: 'postgres',
+      port: '5432',
+      env: 'DATABASE_URL',
+      desc: 'Full-featured relational database. Crush provisions an isolated data directory per project and injects the connection string automatically.',
+    },
+    {
+      name: 'Redis',
+      icon: 'redis',
+      port: '6379',
+      env: 'REDIS_URL',
+      desc: 'In-memory cache and queue backend. Boots in milliseconds for sessions, rate-limiting, and background job queues.',
+    },
+    {
+      name: 'MongoDB',
+      icon: 'mongodb',
+      port: '27017',
+      env: 'MONGODB_URI',
+      desc: 'Document store for schema-flexible workloads. Runs natively with a per-project data path and no VM overhead.',
+    },
+    {
+      name: 'MinIO',
+      icon: 'minio',
+      port: '9000',
+      env: 'S3_ENDPOINT',
+      desc: 'S3-compatible object storage for files and assets. Drop-in replacement for AWS S3 during local development.',
+    },
+  ];
+
   constructor(
     private title: Title,
     private meta: Meta

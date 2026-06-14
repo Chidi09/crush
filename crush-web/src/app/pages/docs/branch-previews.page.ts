@@ -27,7 +27,10 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
 
           <!-- Section 1: Introduction -->
           <section class="mb-12">
-            <h2 class="text-xl font-bold text-white mb-4">Git Worktree Previews</h2>
+            <h2 class="text-xl font-bold text-white mb-4 flex items-center gap-2.5">
+              <svg viewBox="0 0 24 24" class="h-5 w-5 fill-none stroke-crush-orange stroke-2"><line x1="6" y1="3" x2="6" y2="15"/><circle cx="18" cy="6" r="3"/><circle cx="6" cy="18" r="3"/><path d="M18 9a9 9 0 0 1-9 9"/></svg>
+              Git Worktree Previews
+            </h2>
             <p class="text-sm text-crush-textMuted leading-relaxed">
               When working on a complex feature, getting asked to review a colleague's PR or switch
               branches usually means stashing active changes, running <code>git checkout</code>,
@@ -43,7 +46,10 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
 
           <!-- Section 2: How to trigger -->
           <section class="mb-12">
-            <h2 class="text-lg font-bold text-white mb-4">Previewing a Branch</h2>
+            <h2 class="text-lg font-bold text-white mb-4 flex items-center gap-2.5">
+              <svg viewBox="0 0 24 24" class="h-5 w-5 fill-none stroke-crush-orange stroke-2"><circle cx="12" cy="12" r="3"/><path d="M2 12s3.5-7 10-7 10 7 10 7-3.5 7-10 7-10-7-10-7z"/></svg>
+              Previewing a Branch
+            </h2>
             <p class="text-sm text-crush-textMuted leading-relaxed mb-4">
               Inside the Crush GUI or via CLI, you can select any local or remote git branch and
               click "Preview".
@@ -72,7 +78,10 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
 
           <!-- Section 3: Cleanup -->
           <section class="mb-12">
-            <h2 class="text-lg font-bold text-white mb-4">Zero-Clutter Cleanups</h2>
+            <h2 class="text-lg font-bold text-white mb-4 flex items-center gap-2.5">
+              <svg viewBox="0 0 24 24" class="h-5 w-5 fill-none stroke-crush-orange stroke-2"><polyline points="3 6 5 6 21 6"/><path d="M19 6l-1 14a2 2 0 0 1-2 2H8a2 2 0 0 1-2-2L5 6"/><path d="M10 11v6M14 11v6"/></svg>
+              Zero-Clutter Cleanups
+            </h2>
             <p class="text-sm text-crush-textMuted leading-relaxed">
               Once you are finished reviewing the branch, simply hit "Stop Preview" or run
               <code>crush preview --clean</code>. Crush shuts down the isolated database processes
