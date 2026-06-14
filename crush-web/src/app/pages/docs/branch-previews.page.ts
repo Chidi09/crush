@@ -85,7 +85,7 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
     </div>
   `,
 })
-export class BranchPreviewsPageComponent implements OnInit {
+export default class BranchPreviewsPageComponent implements OnInit {
   constructor(
     private title: Title,
     private meta: Meta

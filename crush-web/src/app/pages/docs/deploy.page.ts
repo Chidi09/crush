@@ -212,7 +212,7 @@ const PROVIDERS: Provider[] = [
     </div>
   `,
 })
-export class DeployPageComponent implements OnInit {
+export default class DeployPageComponent implements OnInit {
   providers = PROVIDERS;
 
   constructor(

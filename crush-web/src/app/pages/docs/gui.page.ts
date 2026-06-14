@@ -75,7 +75,7 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
     </div>
   `,
 })
-export class GuiPageComponent implements OnInit {
+export default class GuiPageComponent implements OnInit {
   constructor(
     private title: Title,
     private meta: Meta

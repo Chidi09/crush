@@ -112,7 +112,7 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
     </div>
   `,
 })
-export class ServicesPageComponent implements OnInit {
+export default class ServicesPageComponent implements OnInit {
   constructor(
     private title: Title,
     private meta: Meta
