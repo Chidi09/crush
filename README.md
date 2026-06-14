@@ -95,7 +95,7 @@ Crush isn't faster than running these tools yourself. It's faster than running t
 
 ---
 
-## What works today (v0.8.1)
+## What works today (v0.8.4)
 
 Detection and run:
 - Node.js / TypeScript: Next / Nuxt / Vite / SvelteKit / AnalogJS / Angular / Astro / Express / Fastify / NestJS / Hono / Qwik
@@ -159,15 +159,24 @@ AI (requires `ANTHROPIC_API_KEY`):
 
 ## Install
 
-### Linux (v0.8.1+)
+### Linux (v0.8.4+)
 
 ```bash
-# One-line
-curl -fsSL https://github.com/Chidi09/crush/releases/latest/download/crush-$(uname -r | cut -d- -f1 | xargs)-linux-x86_64 -o crush && chmod +x crush && sudo mv crush /usr/local/bin/
+# One-line install (downloads the latest Linux x86_64 binary)
+curl -fsSL https://crush-web-six.vercel.app/install.sh | sh
+```
 
-# Or download the .deb
-wget https://github.com/Chidi09/crush/releases/latest/download/crush_0.8.1_amd64.deb
-sudo dpkg -i crush_0.8.1_amd64.deb
+Or grab a `.deb`, `.AppImage`, or the raw binary from the
+[releases page](https://github.com/Chidi09/crush/releases/latest) — asset names
+are version-pinned (e.g. `Crush_0.8.4_amd64.deb`), so use the install script
+above for a version-agnostic command.
+
+### macOS
+
+No prebuilt macOS binary yet (signed bundles coming soon). Build from source:
+
+```bash
+cargo install --git https://github.com/Chidi09/crush crush-cli
 ```
 
 ### Windows
@@ -187,7 +196,7 @@ crush update
 git clone https://github.com/Chidi09/crush.git
 cd crush
 cargo build --release -p crush-cli
-# Binary at target/release/crush (or crush-cli.exe on Windows — rename to crush)
+# Binary at target/release/crush-cli (crush-cli.exe on Windows) — rename to crush
 ```
 
 Cross-compiling for Windows from Linux (what CI does):
@@ -199,7 +208,15 @@ cargo build --release --target x86_64-pc-windows-gnu -p crush-cli
 
 > Note: `cargo build --all-features` is intentionally unsupported — the `ebpf` feature requires nightly + `bpf-linker`. Use `cargo build -p crush-cli` or `cargo check --workspace` (no `--all-features`).
 
-Homebrew, Scoop, and `cargo install crush-cli` are **not** published yet. They'll arrive once macOS / Linux are first-class.
+You can also install from source with Cargo (no clone needed):
+```bash
+cargo install --git https://github.com/Chidi09/crush crush-cli
+```
+
+Homebrew, Scoop, and Winget packages are **not** published yet — they'll arrive
+once macOS / Linux are first-class. A crates.io release (`cargo install crush-run`)
+is planned; the `crush` and `crush-cli` names are already taken by unrelated
+crates, so the published name will be `crush-run`.
 
 ### Optional: pgvector on Windows
 

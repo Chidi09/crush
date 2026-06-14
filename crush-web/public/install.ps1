@@ -1,40 +1,40 @@
 param(
     [string]$Version = "latest",
-    [string]$InstallDir = [System.IO.Path]::Combine($env:ProgramFiles, "Crush")
+    [string]$InstallDir = [System.IO.Path]::Combine($env:LOCALAPPDATA, "Crush")
 )
 
 $ErrorActionPreference = "Stop"
 
+# Crush installer. Downloads the prebuilt Windows x86_64 CLI binary from the
+# latest GitHub release and puts it on your user PATH. The release asset is a
+# raw .exe named  crush-<version>-windows-x86_64.exe  (version without the 'v'),
+# so we resolve the tag, strip the leading 'v', then fetch that exact asset.
+
 $repo = "Chidi09/crush"
-$arch = if ([Environment]::Is64BitOperatingSystem) { "x86_64" } else { "i686" }
 
 if ($Version -eq "latest") {
     $release = Invoke-RestMethod "https://api.github.com/repos/$repo/releases/latest"
     $Version = $release.tag_name
 }
+if (-not $Version) { throw "Could not resolve latest version." }
 
-$url = "https://github.com/$repo/releases/download/$Version/crush-windows-$arch.zip"
+$verNoV = $Version.TrimStart("v")
+$asset = "crush-$verNoV-windows-x86_64.exe"
+$url = "https://github.com/$repo/releases/download/$Version/$asset"
 
 Write-Host "Installing Crush $Version..." -ForegroundColor Green
 
-$tempDir = Join-Path $env:TEMP "crush-install"
-New-Item -ItemType Directory -Force -Path $tempDir | Out-Null
-$zipPath = Join-Path $tempDir "crush.zip"
-
-Invoke-WebRequest -Uri $url -OutFile $zipPath
-Expand-Archive -Path $zipPath -DestinationPath $tempDir -Force
 New-Item -ItemType Directory -Force -Path $InstallDir | Out-Null
+$dest = Join-Path $InstallDir "crush.exe"
+Invoke-WebRequest -Uri $url -OutFile $dest
 
-Move-Item -Path (Join-Path $tempDir "crush.exe") -Destination (Join-Path $InstallDir "crush.exe") -Force
-
-Remove-Item -Recurse -Force $tempDir -ErrorAction SilentlyContinue
-
+# Add to the user PATH (no admin needed).
 $userPath = [Environment]::GetEnvironmentVariable("Path", "User")
 if ($userPath -notlike "*$InstallDir*") {
     [Environment]::SetEnvironmentVariable("Path", "$userPath;$InstallDir", "User")
     $env:Path += ";$InstallDir"
 }
 
-Write-Host "Installed to $InstallDir\crush.exe" -ForegroundColor Green
+Write-Host "Installed to $dest" -ForegroundColor Green
 Write-Host ""
-Write-Host "Run 'crush --help' to get started." -ForegroundColor Green
+Write-Host "Run 'crush --help' to get started (open a new terminal first)." -ForegroundColor Green
