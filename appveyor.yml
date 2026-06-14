@@ -64,6 +64,10 @@ after_build:
       $rel = $all | Where-Object { $_.tag_name -eq $tag } | Select-Object -First 1
       if (-not $rel) { Write-Host "No GitHub release found for tag $tag (draft or published) — aborting upload"; exit 1 }
       Write-Host "Found release $($rel.tag_name) (id=$($rel.id), draft=$($rel.draft))"
+      # Track failures so a broken upload fails the build LOUDLY (non-zero exit)
+      # instead of slipping through green — a silent 404 once shipped a release
+      # with no Windows installer.
+      $failed = @()
       foreach ($f in $files) {
         Write-Host "Uploading $($f.Name)..."
         $up = "https://uploads.github.com/repos/Chidi09/crush/releases/$($rel.id)/assets?name=$($f.Name)"
@@ -73,7 +77,12 @@ after_build:
           Write-Host "  uploaded OK"
         } catch {
           Write-Host "  upload failed: $_"
+          $failed += $f.Name
         }
+      }
+      if ($failed.Count -gt 0) {
+        Write-Host "ERROR: $($failed.Count) installer upload(s) failed: $($failed -join ', ')"
+        exit 1
       }
 
 # Tauri writes bundles to the workspace-root target dir (the workspace shares
