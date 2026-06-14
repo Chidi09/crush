@@ -1,5 +1,6 @@
-import { Component } from '@angular/core';
-import { RouterLink, RouterLinkActive } from '@angular/router';
+import { Component, signal } from '@angular/core';
+import { RouterLink, RouterLinkActive, Router, NavigationEnd } from '@angular/router';
+import { filter } from 'rxjs/operators';
 
 interface DocLink {
   path: string;
@@ -100,6 +101,55 @@ const GROUPS: DocGroup[] = [
   standalone: true,
   imports: [RouterLink, RouterLinkActive],
   template: `
+    <!-- Mobile: collapsible dropdown nav (hidden on md+) -->
+    <div class="md:hidden mb-8 select-none">
+      <button
+        type="button"
+        (click)="toggle()"
+        [attr.aria-expanded]="open()"
+        class="flex w-full items-center justify-between gap-3 rounded-xl border border-crush-border/40 bg-crush-surface/30 px-4 py-3 text-sm font-semibold text-white"
+      >
+        <span class="flex items-center gap-2.5">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 text-crush-orange">
+            <line x1="3" y1="6" x2="21" y2="6" /><line x1="3" y1="12" x2="21" y2="12" /><line x1="3" y1="18" x2="21" y2="18" />
+          </svg>
+          <span>{{ activeLabel() }}</span>
+        </span>
+        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 text-crush-textMuted transition-transform duration-200" [class.rotate-180]="open()">
+          <polyline points="6 9 12 15 18 9" />
+        </svg>
+      </button>
+
+      @if (open()) {
+        <nav class="mt-2 space-y-6 rounded-xl border border-crush-border/40 bg-crush-black/60 p-4">
+          @for (group of groups; track group.title) {
+            <div>
+              <h4 class="text-xs font-bold text-crush-orange/80 uppercase tracking-wider px-2 mb-2">
+                {{ group.title }}
+              </h4>
+              <div class="space-y-1">
+                @for (link of group.links; track link.path) {
+                  <a
+                    [routerLink]="link.path"
+                    (click)="close()"
+                    routerLinkActive="bg-crush-orange/10 text-white font-semibold"
+                    [routerLinkActiveOptions]="{ exact: link.path === '/docs' }"
+                    class="flex items-center gap-3 px-2 py-2 text-sm text-crush-textMuted hover:text-white hover:bg-crush-surface/30 transition-all rounded-lg"
+                  >
+                    <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" class="h-4 w-4 shrink-0 opacity-70">
+                      <path [attr.d]="link.icon" />
+                    </svg>
+                    <span>{{ link.label }}</span>
+                  </a>
+                }
+              </div>
+            </div>
+          }
+        </nav>
+      }
+    </div>
+
+    <!-- Desktop: sticky sidebar (hidden below md) -->
     <aside class="w-64 shrink-0 hidden md:block select-none">
       <nav class="sticky top-24 space-y-8 pr-4">
         @for (group of groups; track group.title) {
@@ -138,4 +188,31 @@ const GROUPS: DocGroup[] = [
 })
 export class DocsSidebarComponent {
   groups = GROUPS;
+  open = signal(false);
+  activeLabel = signal('Documentation');
+
+  constructor(private router: Router) {
+    this.updateActiveLabel(this.router.url);
+    this.router.events
+      .pipe(filter((e): e is NavigationEnd => e instanceof NavigationEnd))
+      .subscribe((e) => this.updateActiveLabel(e.urlAfterRedirects));
+  }
+
+  toggle() {
+    this.open.update((v) => !v);
+  }
+
+  close() {
+    this.open.set(false);
+  }
+
+  private updateActiveLabel(url: string) {
+    const path = url.split('?')[0].split('#')[0];
+    const all = GROUPS.flatMap((g) => g.links);
+    // Prefer the longest matching path so /docs/services beats /docs.
+    const match = all
+      .filter((l) => path === l.path || (l.path !== '/docs' && path.startsWith(l.path)))
+      .sort((a, b) => b.path.length - a.path.length)[0];
+    this.activeLabel.set(match?.label ?? 'Documentation');
+  }
 }
