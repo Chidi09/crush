@@ -76,7 +76,10 @@ after_build:
         }
       }
 
+# Tauri writes bundles to the workspace-root target dir (the workspace shares
+# one target/), NOT crates\crush-gui\src-tauri\target. Glob the root path so
+# AppVeyor actually keeps a copy of the installer as a build artifact.
 artifacts:
-  - path: crates\crush-gui\src-tauri\target\release\bundle\**\*.msi
-  - path: crates\crush-gui\src-tauri\target\release\bundle\**\*.exe
+  - path: target\release\bundle\**\*.msi
+  - path: target\release\bundle\**\*.exe
     name: InstallerNSIS
