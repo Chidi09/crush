@@ -7,6 +7,8 @@ interface InstallMethod {
   filename: string;
   command: string;
   iconPath: string;
+  /** Not published yet — shown with a "soon" badge and a non-copyable notice. */
+  comingSoon?: boolean;
 }
 
 const METHODS: InstallMethod[] = [
@@ -26,30 +28,33 @@ const METHODS: InstallMethod[] = [
   {
     label: 'Homebrew',
     filename: 'brew-install.sh',
-    command: 'brew install crushcontainer/tap/crush',
+    command: 'brew install Chidi09/tap/crush',
     iconPath:
       'M2 21h18v-2H2v2zM20 8h-2V5h2V3h-2V1h-2v2h-2V1h-2v2h-2V1H8v2H6V1H4v2h2V5H4v3H2v10h18V8zM6 5h12v11H6V5z', // Brewery/Brew Mug
+    comingSoon: true,
   },
   {
-    label: 'Cargo',
+    label: 'Cargo (from source)',
     filename: 'Cargo.toml',
-    command: 'cargo install crush-cli',
+    command: 'cargo install --git https://github.com/Chidi09/crush crush-cli',
     iconPath:
       'M12 22c5.523 0 10-4.477 10-10S17.523 2 12 2 2 6.477 2 12s4.477 10 10 10zm0-3a7 7 0 1 1 0-14 7 7 0 0 1 0 14zm-1-10h2v4h-2V9zm0 5h2v2h-2v-2z', // Rust Gear SVG
   },
   {
     label: 'Winget',
     filename: 'winget.cmd',
-    command: 'winget install Crush.Crush',
+    command: 'winget install Chidi09.Crush',
     iconPath:
       'M22 19a2 2 0 0 1-2 2H4a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h5l2 3h9a2 2 0 0 1 2 2v9zM4 7v12h16V8h-9.5l-2-3H4v2z', // Package folder SVG
+    comingSoon: true,
   },
   {
     label: 'Scoop',
     filename: 'scoop.ps1',
     command:
-      'scoop bucket add crush https://github.com/crushcontainer/scoop-bucket\nscoop install crush',
+      'scoop bucket add crush https://github.com/Chidi09/scoop-bucket\nscoop install crush',
     iconPath: 'M12 2a10 10 0 1 0 10 10A10 10 0 0 0 12 2zm1 14h-2v-2h2zm0-4h-2V7h2z', // Scoop bucket SVG
+    comingSoon: true,
   },
 ];
 
@@ -86,6 +91,9 @@ const METHODS: InstallMethod[] = [
               <path [attr.d]="method.iconPath" />
             </svg>
             {{ method.label }}
+            @if (method.comingSoon) {
+              <span class="ml-1 px-1.5 py-0.5 rounded text-[9px] font-bold uppercase tracking-wide bg-amber-500/15 text-amber-400 border border-amber-500/25">soon</span>
+            }
           </button>
         }
       </div>
@@ -118,12 +126,21 @@ const METHODS: InstallMethod[] = [
         >
           <div class="flex items-start gap-3">
             <span class="text-crush-orange/60 font-semibold select-none">$</span>
-            <code class="text-crush-text font-medium select-text whitespace-pre-wrap break-all">{{
-              selectedMethod().command
-            }}</code>
+            <code
+              class="font-medium whitespace-pre-wrap break-all"
+              [ngClass]="selectedMethod().comingSoon ? 'text-crush-textMuted select-none' : 'text-crush-text select-text'"
+              >{{ selectedMethod().command }}</code
+            >
           </div>
 
-          <!-- Slick Floating Copy Button -->
+          <!-- Coming-soon notice OR copy button -->
+          @if (selectedMethod().comingSoon) {
+            <span
+              class="flex items-center gap-2 px-3.5 py-2 rounded-lg border border-amber-500/25 bg-amber-500/10 text-xs font-semibold tracking-wide text-amber-400 shrink-0 self-center whitespace-nowrap"
+            >
+              Coming soon — not published yet
+            </span>
+          } @else {
           <button
             (click)="copy()"
             class="flex items-center gap-2 px-3.5 py-2 rounded-lg border border-crush-border/60 bg-crush-surface/40 text-xs font-semibold tracking-wide transition-all duration-300 hover:text-white hover:border-crush-orange/50 hover:bg-crush-surface/80 active:scale-95 shrink-0 self-center group/btn"
@@ -147,6 +164,7 @@ const METHODS: InstallMethod[] = [
               <span class="text-crush-textMuted font-mono group-hover/btn:text-white">Copy</span>
             }
           </button>
+          }
         </div>
       </div>
 
