@@ -40,8 +40,6 @@ build_script:
 
 after_build:
   - ps: |
-      $tag = $env:APPVEYOR_REPO_TAG_NAME
-
       $searchPaths = @(
         "crates\crush-gui\src-tauri\target\release\bundle\msi",
         "crates\crush-gui\src-tauri\target\release\bundle\nsis",
@@ -54,6 +52,21 @@ after_build:
       }
 
       if (-not $files) { Write-Host "No installer artifacts found — build may have failed"; exit 1 }
+
+      # Resolve the release tag. Normal tag pushes set APPVEYOR_REPO_TAG_NAME, but
+      # manual builds / RE-BUILDs run against a branch and leave it EMPTY — so fall
+      # back to the version baked into the installer filename (e.g.
+      # Crush_0.8.4_x64-setup.exe -> v0.8.4). This makes re-runs work too.
+      $tag = $env:APPVEYOR_REPO_TAG_NAME
+      if (-not $tag) {
+        $sample = ($files | Select-Object -First 1).Name
+        if ($sample -match '(\d+\.\d+\.\d+)') {
+          $tag = "v$($matches[1])"
+          Write-Host "No tag env var (manual build?) — derived $tag from $sample"
+        } else {
+          Write-Host "No tag env var and could not derive version from '$sample' — aborting"; exit 1
+        }
+      }
 
       $headers = @{ Authorization = "token $env:GITHUB_TOKEN"; "User-Agent" = "appveyor-crush" }
 
