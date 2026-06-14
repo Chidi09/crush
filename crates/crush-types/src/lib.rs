@@ -167,6 +167,11 @@ pub struct Image {
     pub env: Vec<String>,
     #[serde(default)]
     pub config_digest: Option<String>,
+    /// Icon/stack hint for the UI (e.g. "node", "python", "redis") — derived from
+    /// the base image for crushed images, or the image name for pulled ones.
+    /// `None` falls back to a generated identicon.
+    #[serde(default)]
+    pub stack: Option<String>,
 }
 
 #[async_trait]
@@ -245,6 +250,7 @@ mod tests {
             cmd: vec!["/bin/bash".to_string()],
             env: vec!["PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin".to_string()],
             config_digest: Some("sha256:config123".to_string()),
+            stack: None,
         }
     }
 

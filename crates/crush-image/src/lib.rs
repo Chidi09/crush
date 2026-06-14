@@ -382,6 +382,13 @@ impl ImageStore {
         let size_bytes: u64 = layers.iter()
             .filter_map(|d| std::fs::metadata(self.blobs.path_for_digest(d)).ok().map(|m| m.len()))
             .sum();
+        // Icon hint for the UI: the base image's short name (e.g.
+        // "node:lts-alpine" -> "node", "ghcr.io/x/python:3" -> "python").
+        let stack_hint = base_ref
+            .split(':').next().unwrap_or(base_ref)
+            .rsplit('/').next()
+            .filter(|s| !s.is_empty())
+            .map(|s| s.to_string());
         let id = format!("sha256:{}", sha256_hex(&cfg_bytes));
         let image = Image {
             id: id.clone(),
@@ -396,6 +403,7 @@ impl ImageStore {
             cmd: image_cmd_from(&cfg),
             env,
             config_digest: Some(config_digest),
+            stack: stack_hint,
         };
         self.db.put_image(&image).await?;
         Ok(image)
@@ -745,6 +753,10 @@ impl ImageStore {
             cmd: cmd_vec,
             env: env_vec,
             config_digest: if config_digest.is_empty() { None } else { Some(config_digest) },
+            // Icon hint: the image's short name (e.g. "library/redis" -> "redis").
+            stack: image_name.rsplit('/').next()
+                .filter(|s| !s.is_empty())
+                .map(|s| s.to_string()),
         };
 
         self.db.put_image(&image).await?;

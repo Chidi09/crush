@@ -13,6 +13,8 @@ pub struct ImageSummary {
     pub layer_count: usize,
     pub os: String,
     pub arch: String,
+    /// Icon/stack hint (e.g. "node", "redis"); `None` → UI shows an identicon.
+    pub stack: Option<String>,
 }
 
 /// Full image config — the data behind the inspect drawer (like `docker inspect`).
@@ -42,6 +44,7 @@ pub async fn list_images(state: State<'_, AppState>) -> Result<Vec<ImageSummary>
         layer_count: img.layers.len(),
         os: img.os,
         arch: img.architecture,
+        stack: img.stack,
     }).collect();
     Ok(result)
 }

@@ -39,6 +39,7 @@ export interface ImageSummary {
   layer_count: number;
   os: string;
   arch: string;
+  stack?: string | null;
 }
 
 export interface ImageDetail {

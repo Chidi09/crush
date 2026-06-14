@@ -2355,6 +2355,7 @@ async fn main() -> anyhow::Result<()> {
                 cmd: vec![stack.entry_point.clone()],
                 env: vec![format!("PORT={}", stack.default_port)],
                 config_digest: None,
+                stack: Some(stack.language.clone()),
             };
             store.database().put_image(&img).await?;
 
@@ -2475,6 +2476,7 @@ async fn main() -> anyhow::Result<()> {
                     cmd: vec![stack.entry_point.clone()],
                     env: vec![format!("PORT={}", stack.default_port)],
                     config_digest: None,
+                stack: Some(stack.language.clone()),
                 };
                 if let Err(e) = store.database().put_image(&img).await {
                     eprintln!("[Watch] DB register failed: {}", e);

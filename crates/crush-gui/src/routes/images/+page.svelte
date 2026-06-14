@@ -4,6 +4,15 @@
   import EmptyState from '$lib/components/EmptyState.svelte';
   import Icon from '$lib/components/Icon.svelte';
   import Identicon from '$lib/components/Identicon.svelte';
+  import TechIcon, { lookupTech } from '$lib/components/TechIcon.svelte';
+
+  // Prefer a real stack/tech logo (from the image's stack hint, else its tag's
+  // repo name); fall back to a deterministic identicon when nothing resolves.
+  function iconName(img: { stack?: string | null; tag: string }): string | null {
+    const candidates = [img.stack, (img.tag || '').split(':')[0].split('/').pop()];
+    for (const c of candidates) { if (c && lookupTech(c)) return c; }
+    return null;
+  }
   import * as api from '$lib/tauri';
   import type { ImageDetail } from '$lib/tauri';
   import { toast } from '$lib/stores/toast.svelte.ts';
@@ -121,8 +130,15 @@
   {:else}
     <div class="image-list stagger">
       {#each filtered as img (img.id)}
+        {@const ic = iconName(img)}
         <div class="crush-card image-row">
-          <div class="img-ident"><Identicon seed={img.digest || img.id || img.tag} size={40} /></div>
+          <div class="img-ident">
+            {#if ic}
+              <TechIcon name={ic} size={26} />
+            {:else}
+              <Identicon seed={img.digest || img.id || img.tag} size={40} />
+            {/if}
+          </div>
           <div class="img-info">
             <span class="img-tag">{img.tag || '<untagged>'}</span>
             <span class="img-meta">
@@ -240,7 +256,7 @@
   .muted { color: var(--color-crush-text-muted); font-size: 13px; }
   .image-list { display: flex; flex-direction: column; gap: 8px; }
   .image-row { display: flex; align-items: center; gap: 14px; padding: 16px 20px; }
-  .img-ident { flex-shrink: 0; display: flex; line-height: 0; }
+  .img-ident { flex-shrink: 0; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; line-height: 0; }
   .img-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
   .img-tag { font-size: 14px; font-weight: 500; font-family: var(--font-mono); }
   .img-meta { font-size: 12px; color: var(--color-crush-text-muted); }
