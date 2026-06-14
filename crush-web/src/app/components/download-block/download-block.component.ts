@@ -19,14 +19,16 @@ interface DownloadLink {
   size?: number;
 }
 
-// Package-manager install commands for the CLI (always available, version-agnostic).
-const CLI_METHODS = [
-  { label: 'Linux / macOS', filename: 'install.sh', command: 'curl -fsSL https://crush-web-six.vercel.app/install.sh | sh' },
+// CLI install commands. The install scripts and the from-source Cargo path work
+// today; Homebrew/Winget/Scoop taps don't exist yet (marked comingSoon).
+interface CliMethod { label: string; filename: string; command: string; comingSoon?: boolean; }
+const CLI_METHODS: CliMethod[] = [
+  { label: 'Linux', filename: 'install.sh', command: 'curl -fsSL https://crush-web-six.vercel.app/install.sh | sh' },
   { label: 'Windows (PowerShell)', filename: 'install.ps1', command: 'irm https://crush-web-six.vercel.app/install.ps1 | iex' },
-  { label: 'Homebrew', filename: 'brew', command: 'brew install crushcontainer/tap/crush' },
-  { label: 'Cargo', filename: 'cargo', command: 'cargo install crush-cli' },
-  { label: 'Winget', filename: 'winget', command: 'winget install Crush.Crush' },
-  { label: 'Scoop', filename: 'scoop', command: 'scoop bucket add crush https://github.com/crushcontainer/scoop-bucket\nscoop install crush' },
+  { label: 'Cargo (from source)', filename: 'cargo', command: 'cargo install --git https://github.com/Chidi09/crush crush-cli' },
+  { label: 'Homebrew', filename: 'brew', command: 'brew install Chidi09/tap/crush', comingSoon: true },
+  { label: 'Winget', filename: 'winget', command: 'winget install Chidi09.Crush', comingSoon: true },
+  { label: 'Scoop', filename: 'scoop', command: 'scoop bucket add crush https://github.com/Chidi09/scoop-bucket\nscoop install crush', comingSoon: true },
 ];
 
 @Component({
@@ -173,15 +175,19 @@ const CLI_METHODS = [
                   [ngClass]="method().label === m.label
                     ? 'bg-crush-orange/15 text-crush-orange border border-crush-orange/30'
                     : 'text-crush-textMuted border border-crush-border/40 hover:text-white'"
-                >{{ m.label }}</button>
+                >{{ m.label }}@if (m.comingSoon) {<span class="ml-1 px-1 py-0.5 rounded text-[8px] font-bold uppercase bg-amber-500/15 text-amber-400 border border-amber-500/25">soon</span>}</button>
               }
             </div>
             <div class="always-dark rounded-lg border border-crush-border/50 bg-crush-black/80 px-4 py-3 flex items-center justify-between gap-4">
-              <code class="font-mono text-xs text-crush-text whitespace-pre-wrap break-all">{{ method().command }}</code>
-              <button
-                (click)="copy()"
-                class="shrink-0 px-2.5 py-1.5 rounded-md border border-crush-border/60 text-[11px] font-semibold text-crush-textMuted hover:text-white hover:border-crush-orange/50 transition-all"
-              >{{ isCopied() ? 'Copied!' : 'Copy' }}</button>
+              <code class="font-mono text-xs whitespace-pre-wrap break-all" [ngClass]="method().comingSoon ? 'text-crush-textMuted' : 'text-crush-text'">{{ method().command }}</code>
+              @if (method().comingSoon) {
+                <span class="shrink-0 px-2.5 py-1.5 rounded-md border border-amber-500/25 bg-amber-500/10 text-[11px] font-semibold text-amber-400 whitespace-nowrap">Not published yet</span>
+              } @else {
+                <button
+                  (click)="copy()"
+                  class="shrink-0 px-2.5 py-1.5 rounded-md border border-crush-border/60 text-[11px] font-semibold text-crush-textMuted hover:text-white hover:border-crush-orange/50 transition-all"
+                >{{ isCopied() ? 'Copied!' : 'Copy' }}</button>
+              }
             </div>
           </div>
         </div>

@@ -17,8 +17,7 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
             <span class="text-xs font-bold uppercase tracking-wider text-crush-orange">Guide</span>
             <h1 class="text-3xl font-extrabold text-white tracking-tight mt-1 mb-2">Security</h1>
             <p class="text-base text-crush-textMuted">
-              Secret scanning, cryptographically signed releases, and kernel runtime isolation
-              shields.
+              Secret scanning, checksum-verified releases, and kernel runtime isolation shields.
             </p>
           </div>
 
@@ -114,10 +113,11 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
 
           <!-- Section 3 -->
           <section class="mb-12">
-            <h2 class="text-xl font-bold text-white mb-4 select-none">Release Signature Audits</h2>
+            <h2 class="text-xl font-bold text-white mb-4 select-none">Release Integrity</h2>
             <p class="text-sm text-crush-textMuted leading-relaxed mb-4">
-              Every installation package is cryptographically signed at build time inside GitHub
-              Actions environments using keyless Sigstore / Cosign infrastructures.
+              Every release ships a <code class="text-crush-orange">SHA256SUMS</code> file covering
+              all artifacts, so you can verify a download wasn't tampered with in transit. Verify
+              before running:
             </p>
 
             <div
@@ -133,17 +133,16 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
                   <span class="text-[10px] text-crush-textMuted font-mono ml-2">Terminal</span>
                 </div>
                 <span class="text-[9px] text-crush-textMuted uppercase tracking-wider font-semibold"
-                  >signature check</span
+                  >checksum check</span
                 >
               </div>
               <div
                 class="p-4 font-mono text-sm overflow-x-auto text-crush-text leading-relaxed whitespace-pre"
               >
                 <span class="text-crush-textMuted"
-                  ># Verify signing blob integrity using public Cosign chains</span
+                  ># Download SHA256SUMS alongside the binary, then verify</span
                 >
-                cosign verify-blob crush-linux-amd64.tar.gz \\ --signature
-                crush-linux-amd64.tar.gz.sig \\ --certificate crush-linux-amd64.tar.gz.pem
+                sha256sum -c SHA256SUMS
               </div>
             </div>
           </section>

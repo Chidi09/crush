@@ -191,17 +191,16 @@ import { DownloadBlockComponent } from '../../components/download-block/download
                   <span class="text-[10px] text-crush-textMuted font-mono ml-2">Terminal</span>
                 </div>
                 <span class="text-[9px] text-crush-textMuted uppercase tracking-wider font-semibold"
-                  >cosign verification</span
+                  >checksum verification</span
                 >
               </div>
               <div
                 class="p-4 font-mono text-sm overflow-x-auto text-crush-text leading-relaxed whitespace-pre"
               >
                 <span class="text-crush-textMuted"
-                  ># Verify image or binary signature integrity using cosign</span
+                  ># Every release ships a SHA256SUMS file — verify your download</span
                 >
-                cosign verify-blob crush-$(uname -s)-$(uname -m).tar.gz \\ --signature crush-$(uname
-                -s)-$(uname -m).tar.gz.sig \\ --certificate crush-$(uname -s)-$(uname -m).tar.gz.pem
+                sha256sum -c SHA256SUMS
               </div>
             </div>
 

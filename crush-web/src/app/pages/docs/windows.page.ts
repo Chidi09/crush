@@ -578,7 +578,7 @@ import { DocsSidebarComponent } from '../../components/docs-sidebar/docs-sidebar
                   class="rounded-b-xl border border-crush-border/40 bg-crush-black/85 p-4 font-mono text-xs sm:text-sm text-crush-text overflow-x-auto"
                 >
                   <code class="text-crush-textMuted"
-                    ># Download from https://github.com/Chidi09/crush/releases/latest<br /># Place crush-windows-x86_64.exe on your PATH and rename to crush.exe</code
+                    ># Download from https://github.com/Chidi09/crush/releases/latest<br /># Place the downloaded crush-*-windows-x86_64.exe on your PATH and rename to crush.exe</code
                   >
                 </div>
               </div>
