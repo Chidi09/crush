@@ -1,5 +1,5 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, tick } from 'svelte';
   import StatusBadge from '$lib/components/StatusBadge.svelte';
   import CopyField from '$lib/components/CopyField.svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
@@ -41,6 +41,36 @@
   function svcKey(s: Svc) { return `${s.project}/${s.name}`; }
   function canInspect(kind: string) {
     return kind === 'postgres' || kind.startsWith('redis') || kind === 'mongodb' || kind === 'minio';
+  }
+
+  // ── Logs ──────────────────────────────────────────────────────────────────
+  // Every native service redirects stdout+stderr to a log file; surface it here
+  // so any service (not just the inspectable ones) is debuggable from the GUI.
+  let openLog = $state<string | null>(null);
+  let logText = $state('');
+  let logLoading = $state(false);
+  let logErr = $state<string | null>(null);
+  let logEl: HTMLPreElement | undefined = $state();
+
+  async function toggleLog(svc: Svc) {
+    const key = svcKey(svc);
+    if (openLog === key) { openLog = null; return; }
+    openLog = key; logText = ''; logErr = null; logLoading = true;
+    try {
+      logText = await api.readServiceLog(svc.project, svc.name, 800);
+      if (!logText) logText = '(log is empty — the service may have just started)';
+    } catch (e) { logErr = String(e); }
+    finally {
+      logLoading = false;
+      await tick();
+      logEl?.scrollTo({ top: logEl.scrollHeight });
+    }
+  }
+  async function refreshLog(svc: Svc) {
+    logLoading = true;
+    try { logText = await api.readServiceLog(svc.project, svc.name, 800) || '(log is empty)'; }
+    catch (e) { logErr = String(e); }
+    finally { logLoading = false; await tick(); logEl?.scrollTo({ top: logEl.scrollHeight }); }
   }
 
   async function toggleInspect(svc: Svc) {
@@ -111,11 +141,32 @@
             <div class="svc-actions">
               {#if canInspect(svc.kind)}
                 <button class="insp-btn" onclick={() => toggleInspect(svc)}>
-                  <Icon name="logs" size={12} /> {openInspect === svcKey(svc) ? 'Hide' : 'Inspect'}
+                  <Icon name="activity" size={12} /> {openInspect === svcKey(svc) ? 'Hide' : 'Inspect'}
                 </button>
               {/if}
+              <button class="insp-btn" onclick={() => toggleLog(svc)}>
+                <Icon name="logs" size={12} /> {openLog === svcKey(svc) ? 'Hide logs' : 'Logs'}
+              </button>
               <button class="stop-btn" onclick={() => stopService(svc.name, svc.project)}><Icon name="stop" size={12} fill /> Stop</button>
             </div>
+
+            {#if openLog === svcKey(svc)}
+              <div class="insp-panel">
+                <div class="log-head">
+                  <span class="insp-h">Service log</span>
+                  <button class="log-refresh" onclick={() => refreshLog(svc)} disabled={logLoading}>
+                    <Icon name="refresh" size={11} /> Refresh
+                  </button>
+                </div>
+                {#if logLoading && !logText}
+                  <p class="muted sm">Loading…</p>
+                {:else if logErr}
+                  <p class="insp-err">Couldn’t read log: {logErr}</p>
+                {:else}
+                  <pre class="log-body" bind:this={logEl}>{logText}</pre>
+                {/if}
+              </div>
+            {/if}
 
             {#if openInspect === svcKey(svc)}
               <div class="insp-panel">
@@ -240,4 +291,10 @@
   .cdot.idle { background: var(--color-crush-muted); }
   .rkind { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; padding: 1px 7px; border-radius: 9999px; border: 1px solid var(--color-crush-border); color: var(--color-crush-text); }
   .muted { color: var(--color-crush-text-muted); }
+
+  .log-head { display: flex; align-items: center; justify-content: space-between; }
+  .log-refresh { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--color-crush-text-muted); background: none; border: 1px solid var(--color-crush-border); border-radius: 6px; padding: 4px 10px; cursor: pointer; }
+  .log-refresh:hover:not(:disabled) { color: var(--color-crush-text); border-color: var(--color-crush-muted); }
+  .log-refresh:disabled { opacity: 0.5; cursor: default; }
+  .log-body { margin: 0; padding: 12px 14px; max-height: 320px; overflow: auto; background: rgba(9,9,11,0.97); border: 1px solid var(--color-crush-border); border-radius: 8px; font-family: var(--font-mono); font-size: 11.5px; line-height: 1.6; color: var(--color-crush-text); white-space: pre-wrap; word-break: break-word; }
 </style>

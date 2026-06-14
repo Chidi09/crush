@@ -1,39 +1,26 @@
 <script lang="ts">
-  import { onDestroy, tick } from 'svelte';
-  import * as api from '$lib/tauri';
-
-  let {
-    runId,
-    onStatus,
-    onPort,
-    onUrl,
-    onLog,
-  }: {
-    runId: string;
-    /** report run status up to the parent (Run Overview owns the actions) */
-    onStatus?: (s: 'running' | 'exited' | 'failed') => void;
-    /** report the bound port up so the parent can render a live preview */
-    onPort?: (p: number) => void;
-    /** report the best preview URL (prefers swagger/docs for backends) */
-    onUrl?: (url: string) => void;
-    /** stream each log line up so the parent can persist it per deployment */
-    onLog?: (phase: 'build' | 'runtime', text: string) => void;
-  } = $props();
+  import { tick } from 'svelte';
+  import { run } from '$lib/stores/run.svelte.ts';
 
   type Seg = { text: string; style: string };
   type Phase = 'build' | 'runtime';
-  type Line = { segs: Seg[]; kind: 'out' | 'err' | 'meta' | 'ok' | 'warn'; phase: Phase };
-  let lines = $state<Line[]>([]);
-  let status = $state<'running' | 'exited' | 'failed'>('running');
-  let unlisten: (() => void) | null = null;
+  // The run store owns the event listener + raw log buffer (so it survives
+  // navigation); this pane is now a pure view over `run.lines` / `run.status`.
+  let status = $derived(run.status);
   let el: HTMLDivElement | undefined = $state();
 
   // Vercel-style split: build/setup output vs the running app's runtime output.
   // Jamming both into one stream gets jumbled — keep them as separate tabs.
   let tab = $state<Phase>('build');
   let userPickedTab = $state(false);
-  let buildLines = $derived(lines.filter(l => l.phase === 'build'));
-  let runtimeLines = $derived(lines.filter(l => l.phase === 'runtime'));
+  type RenderLine = { segs: Seg[]; kind: 'out' | 'err' | 'meta' | 'ok' | 'warn'; phase: Phase };
+  let rendered = $derived<RenderLine[]>(run.lines.map((l) => ({
+    segs: l.kind === 'out' || l.kind === 'err' ? parseAnsi(l.text) : [{ text: l.text, style: '' }],
+    kind: l.kind,
+    phase: l.phase,
+  })));
+  let buildLines = $derived(rendered.filter(l => l.phase === 'build'));
+  let runtimeLines = $derived(rendered.filter(l => l.phase === 'runtime'));
   let shown = $derived(tab === 'build' ? buildLines : runtimeLines);
 
   // Minimal ANSI SGR → styled segments so program output (vite, etc.) renders
@@ -83,77 +70,19 @@
     return segs.length ? segs : [{ text: input, style: '' }];
   }
 
-  async function push(text: string, kind: Line['kind'], phase: Phase = 'build') {
-    const segs = kind === 'out' || kind === 'err' ? parseAnsi(text) : [{ text, style: '' }];
-    lines = [...lines.slice(-1500), { segs, kind, phase }];
-    onLog?.(phase, text);
-    if (tab === phase) { await tick(); el?.scrollTo({ top: el.scrollHeight }); }
-  }
-  // Once the app starts running, jump to the Runtime tab (unless the user
-  // has manually chosen a tab).
-  function enterRuntime() { if (!userPickedTab) tab = 'runtime'; }
   function pickTab(t: Phase) { tab = t; userPickedTab = true; }
 
-  function setStatus(s: 'running' | 'exited' | 'failed') { status = s; onStatus?.(s); }
-  function setPort(p: number | undefined) { if (p) onPort?.(p); }
-
-  // The detector emits the app's entry URLs (e.g. a backend's swagger-ui path).
-  // Prefer a docs/swagger URL, else the first URL — that's the meaningful preview.
-  function pickUrl(urls: [string, string][]): string | null {
-    if (!urls || !urls.length) return null;
-    const docs = urls.find(([, u]) => /swagger|\/docs|redoc|openapi|\/api-docs/i.test(u));
-    return (docs ?? urls[0])[1] ?? null;
-  }
-
-  // Dev servers (Vite, etc.) may bump to a free port (5173 → 5177). The detected
-  // port can be wrong, so scan stdout for the *actual* bound URL and trust that.
-  function scanPort(line: string) {
-    const clean = line.replace(/\x1b\[[0-9;]*[a-zA-Z]/g, '').replace(/\x1b\]8;;.*?\x1b\\/g, '');
-    const m = /https?:\/\/(?:localhost|127\.0\.0\.1|0\.0\.0\.0):(\d+)/i.exec(clean);
-    if (m) {
-      setPort(Number(m[1]));
-    }
-  }
-
-  function fmtMB(b: number): string {
-    return b < 1_000_000 ? `${(b / 1000).toFixed(0)} KB` : `${(b / 1_000_000).toFixed(0)} MB`;
-  }
-
+  // Once the app produces runtime output, jump to the Runtime tab (unless the
+  // user has manually chosen a tab). Driven by the store's buffer.
   $effect(() => {
-    api.onRunEvent(runId, (event) => {
-      const e = event as any;
-      switch (e.kind) {
-        case 'detected':
-          push(`↳ detected ${e.language}${e.framework ? ` · ${e.framework}` : ''} · :${e.port}${e.is_monorepo ? ` · monorepo (${e.dep_count} svc)` : ''}`, 'meta'); break;
-        case 'warm-run': push('warm run — launching', 'meta'); break;
-        case 'deps-fresh': push('dependencies fresh — node_modules up to date', 'meta'); break;
-        case 'dep-started': push(`✓ ${e.name} started${e.native ? ' (native)' : ` · ${e.image}`}`, 'ok'); break;
-        case 'dep-failed': push(`✗ ${e.name} failed: ${e.error}`, 'err'); break;
-        case 'image-fresh': push('image fresh — skipping pack', 'meta'); break;
-        case 'image-packed': push(`crushed to image${e.size_bytes ? ` (${fmtMB(e.size_bytes)})` : ''}`, 'ok'); break;
-        case 'build-started': push(`build: ${e.command ?? ''}`, 'meta'); break;
-        case 'build-output': scanPort(e.line); push(e.line, e.stream === 'stderr' ? 'err' : 'out'); break;
-        case 'build-finished': push(`build finished${e.duration_ms ? ` in ${(e.duration_ms / 1000).toFixed(1)}s` : ''}`, 'meta'); break;
-        case 'spawning': enterRuntime(); push(`spawning${e.command ? `: ${e.command}` : ''}${e.port ? ` on :${e.port}` : ''}`, 'meta', 'runtime'); break;
-        case 'app-output': scanPort(e.line); enterRuntime(); push(e.line, e.stream === 'stderr' ? 'err' : 'out', 'runtime'); break;
-        case 'port-bound': {
-          setPort(e.port);
-          enterRuntime();
-          const best = pickUrl(e.urls ?? []);
-          if (best) onUrl?.(best);
-          const urls = (e.urls ?? []).map((u: [string, string]) => u[1]).join('  ');
-          push(`✓ ready on :${e.port}${urls ? ` — ${urls}` : ''}`, 'ok', 'runtime'); break;
-        }
-        case 'warning': push(`! ${e.message ?? e.text ?? ''}`, 'warn', 'runtime'); break;
-        case 'exited':
-          setStatus(e.code === 0 ? 'exited' : 'failed');
-          push(`process exited (code ${e.code})`, e.code === 0 ? 'meta' : 'err', 'runtime'); break;
-        default: break;
-      }
-    }).then(fn => { unlisten = fn; });
+    if (!userPickedTab && runtimeLines.length > 0) tab = 'runtime';
   });
 
-  onDestroy(() => { unlisten?.(); });
+  // Auto-scroll the active tab to the bottom as new lines arrive.
+  $effect(() => {
+    shown.length; // track
+    tick().then(() => el?.scrollTo({ top: el.scrollHeight }));
+  });
 </script>
 
 <div class="terminal-pane">

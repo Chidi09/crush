@@ -21,7 +21,7 @@ import { BrandIconComponent } from '../../components/brand-icon/brand-icon.compo
               Native Services
             </h1>
             <p class="text-base text-crush-textMuted">
-              Run premium native services—Postgres, Redis, MongoDB, MinIO—directly on host processes
+              Run premium native services—Postgres, MySQL, MariaDB, Redis, MongoDB, SQLite, MinIO—directly on host processes
               without VM overhead.
             </p>
           </div>
@@ -49,7 +49,7 @@ import { BrandIconComponent } from '../../components/brand-icon/brand-icon.compo
                     <div class="min-w-0 flex-1">
                       <h4 class="font-bold text-white leading-tight">{{ s.name }}</h4>
                       <div class="flex items-center gap-2 mt-1">
-                        <code class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono">:{{ s.port }}</code>
+                        <code class="text-[10px] px-1.5 py-0.5 rounded bg-emerald-500/10 text-emerald-400 border border-emerald-500/20 font-mono">{{ s.port === 'file' ? 'file-based' : ':' + s.port }}</code>
                         <code class="text-[10px] text-crush-textMuted font-mono">{{ s.env }}</code>
                       </div>
                     </div>
@@ -110,6 +110,27 @@ export default class ServicesPageComponent implements OnInit {
       env: 'S3_ENDPOINT',
       desc: 'S3-compatible object storage for files and assets. Drop-in replacement for AWS S3 during local development.',
     },
+    {
+      name: 'MySQL',
+      icon: 'mysql',
+      port: '3306',
+      env: 'DATABASE_URL',
+      desc: 'The world’s most popular open-source relational database. Crush boots it natively with a per-project data directory and synthesizes the connection string.',
+    },
+    {
+      name: 'MariaDB',
+      icon: 'mariadb',
+      port: '3306',
+      env: 'DATABASE_URL',
+      desc: 'Community-driven MySQL fork. Detected from your Compose or Spring config and run as a host process — no container, no VM.',
+    },
+    {
+      name: 'SQLite',
+      icon: 'sqlite',
+      port: 'file',
+      env: 'DATABASE_URL',
+      desc: 'Zero-config embedded database — no server to run. Crush points your app at a per-project .db file, perfect for local dev and tests.',
+    },
   ];
 
   constructor(
@@ -122,7 +143,7 @@ export default class ServicesPageComponent implements OnInit {
     this.meta.updateTag({
       name: 'description',
       content:
-        'Run high-fidelity native services (Postgres, Redis, MongoDB, MinIO S3) with zero VM memory overhead.',
+        'Run high-fidelity native services (Postgres, MySQL, MariaDB, Redis, MongoDB, SQLite, MinIO S3) with zero VM memory overhead.',
     });
   }
 }

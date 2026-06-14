@@ -12,6 +12,7 @@
   import { containers, startPolling, stopPolling } from '$lib/stores/containers.svelte.ts';
   import { services, refreshServices } from '$lib/stores/services.svelte.ts';
   import { images, refreshImages } from '$lib/stores/images.svelte.ts';
+  import { run } from '$lib/stores/run.svelte.ts';
 
   const LAST_PROJECT = 'crush:lastProject';
 
@@ -22,17 +23,11 @@
   let sys = $state<SystemInfo | null>(null);
   let res = $state<ResourceUsage | null>(null);
   let builds = $state<BuildSummary[]>([]);
-  let activeRunId = $state<string | null>(null);
-  let runStatus = $state<'running' | 'exited' | 'failed'>('running');
-  let runPort = $state<number | null>(null);
-  let runUrl = $state<string | null>(null);
   let refreshing = $state(false);
   let devMode = $state(false);
 
-  // per-run deployment record state
-  let runStartMs = 0;
-  let buildLogBuf: string[] = [];
-  let runtimeLogBuf: string[] = [];
+  // The active run lives in the `run` store (module scope) so it survives route
+  // changes — leaving the dashboard no longer orphans the running process.
   function openProjectPage(name: string) { goto(`/projects/${encodeURIComponent(name)}`); }
 
   let runningCount = $derived($containers.filter(c => c.status === 'running').length);
@@ -73,8 +68,8 @@
   // Favicon: try to load from the running dev server once a port is known.
   let faviconUrl = $state<string | null>(null);
   $effect(() => {
-    if (runPort) {
-      faviconUrl = `http://localhost:${runPort}/favicon.ico`;
+    if (run.port) {
+      faviconUrl = `http://localhost:${run.port}/favicon.ico`;
     } else {
       faviconUrl = null;
     }
@@ -127,58 +122,12 @@
   }
   async function runProject() {
     if (!projectPath) { await openProject(); return; }
-    if (activeRunId) return;
-    runStatus = 'running';
-    runPort = null;
-    runUrl = null;
-    buildLogBuf = []; runtimeLogBuf = [];
-    runStartMs = Date.now();
-    try {
-      activeRunId = await api.runProject(projectPath, devMode);
-      saveDeployment();
-    } catch (e) { console.error('run failed', e); }
-  }
-  function stopRun() {
-    if (activeRunId) api.abortRun(activeRunId).catch(console.error);
-  }
-
-  function deployStatus(): 'running' | 'ready' | 'failed' {
-    return runStatus === 'running' ? 'running' : runStatus === 'failed' ? 'failed' : 'ready';
-  }
-  function saveDeployment() {
-    if (!activeRunId || !projectPath) return;
-    const name = project?.name ?? baseName(projectPath);
-    const ended = runStatus === 'running' ? null : Date.now();
-    api.saveDeployment({
-      id: activeRunId,
-      project: name,
-      project_path: projectPath,
-      created_ms: runStartMs,
-      ended_ms: ended,
-      duration_ms: ended ? ended - runStartMs : 0,
-      status: deployStatus(),
-      port: runPort,
-      runtime: project?.runtime ?? null,
-      framework: project?.framework ?? null,
-      build_log: buildLogBuf.join('\n'),
-      runtime_log: runtimeLogBuf.join('\n'),
-      has_screenshot: false,
-      branch: git?.branch ?? undefined,
-      commit_short: git?.head?.short ?? undefined,
-      commit_message: git?.head?.message ?? undefined,
-    }).catch(console.error);
-  }
-  function onRunStatus(s: 'running' | 'exited' | 'failed') {
-    runStatus = s;
-    saveDeployment();
-  }
-  function onRunLog(phase: 'build' | 'runtime', text: string) {
-    (phase === 'build' ? buildLogBuf : runtimeLogBuf).push(text);
+    if (run.activeRunId) return;
+    await run.start(projectPath, devMode, { project, git });
   }
   function revealData() { if (sys) api.revealInExplorer(sys.data_dir).catch(() => {}); }
   function go(path: string) { goto(path); }
   function goKey(e: KeyboardEvent, path: string) { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); goto(path); } }
-  function closeTerminal() { activeRunId = null; runPort = null; runStatus = 'running'; }
 
   function fmtSize(b: number): string {
     if (!b) return '0 B';
@@ -209,29 +158,23 @@
     </div>
   </header>
 
-  {#if activeRunId}
+  {#if run.activeRunId}
     <div class="run-stack animate-slide-up">
       <RunOverview
-        status={runStatus}
-        port={runPort}
-        url={runUrl}
-        framework={project?.framework ?? null}
-        runtime={project?.runtime ?? null}
-        projectName={project?.name ?? (projectPath ? baseName(projectPath) : 'project')}
-        projectPath={projectPath ?? ''}
-        deploymentId={activeRunId}
-        branch={git?.branch ?? null}
-        commit_short={git?.head?.short ?? null}
-        onStop={stopRun}
-        onClose={closeTerminal}
+        status={run.status}
+        port={run.port}
+        url={run.url}
+        framework={run.project?.framework ?? null}
+        runtime={run.project?.runtime ?? null}
+        projectName={run.project?.name ?? (run.projectPath ? baseName(run.projectPath) : 'project')}
+        projectPath={run.projectPath ?? ''}
+        deploymentId={run.activeRunId}
+        branch={run.git?.branch ?? null}
+        commit_short={run.git?.head?.short ?? null}
+        onStop={() => run.stop()}
+        onClose={() => run.close()}
       />
-      <TerminalPane
-        runId={activeRunId}
-        onStatus={onRunStatus}
-        onPort={(p) => { runPort = p; saveDeployment(); }}
-        onUrl={(u) => { runUrl = u; }}
-        onLog={onRunLog}
-      />
+      <TerminalPane />
     </div>
   {/if}
 
@@ -251,7 +194,7 @@
           <div class="proj-path">{projectPath}</div>
         </div>
         <div class="proj-actions">
-          {#if !activeRunId}
+          {#if !run.activeRunId}
             <button class="ghost-btn sm" onclick={openProject}>Change</button>
             <label style="font-size: 13px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer; color: var(--color-gray-400); margin-right: 8px;">
               <input type="checkbox" bind:checked={devMode} /> Dev mode
@@ -264,12 +207,12 @@
               onclick={runProject}
             >Run <Icon name="play" size={13} fill /></button>
           {:else}
-            <button class="ghost-btn sm danger" onclick={stopRun}>Stop</button>
+            <button class="ghost-btn sm danger" onclick={() => run.stop()}>Stop</button>
           {/if}
         </div>
       </div>
 
-      {#if !activeRunId}
+      {#if !run.activeRunId}
         {#if detecting}
           <div class="chips"><span class="chip skel">detecting stack…</span></div>
         {:else if project}

@@ -168,7 +168,38 @@ impl ImageStore {
         Ok(())
     }
 
+    /// Export a stored image as a **complete, valid OCI image layout tarball**
+    /// that `docker load` / `skopeo` / `podman` can ingest, then `docker run`.
+    ///
+    /// The previous version only wrote the layer blobs + an `index.json` with a
+    /// zero-size, dangling manifest reference (no manifest blob, no config blob)
+    /// — so nothing could load it. Here we write every blob the manifest points
+    /// at and rebuild the manifest from the stored image so all digests/sizes are
+    /// correct regardless of how the image was created (pulled OR locally
+    /// crushed). When an image has no config blob we synthesize a valid one
+    /// (computing each layer's `diff_id`), which `docker load` requires.
     pub async fn export_oci_tarball(&self, image_id: &str, dest: &Path) -> Result<()> {
+        use sha2::{Digest, Sha256};
+
+        fn sha256_hex(data: &[u8]) -> String { hex::encode(Sha256::digest(data)) }
+
+        // Read a blob straight from its content-addressed path. We avoid
+        // `Blobs::read_blob` here because its per-digest lock file requires a
+        // locks dir that may not exist, and export is a pure read.
+        let read_blob = |digest: &str| -> Result<Vec<u8>> {
+            std::fs::read(self.blobs.path_for_digest(digest))
+                .map_err(|e| CrushError::StorageError(format!("Failed to read blob {}: {}", digest, e)))
+        };
+
+        fn put<W: std::io::Write>(tar: &mut tar::Builder<W>, name: &str, data: &[u8]) -> Result<()> {
+            let mut h = tar::Header::new_gnu();
+            h.set_size(data.len() as u64);
+            h.set_mode(0o644);
+            h.set_cksum();
+            tar.append_data(&mut h, name, data)
+                .map_err(|e| CrushError::StorageError(e.to_string()))
+        }
+
         let image = match self.db.get_image_by_digest(image_id).await? {
             Some(img) => img,
             None => self.db.get_image_by_tag(image_id).await?
@@ -177,48 +208,204 @@ impl ImageStore {
 
         let file = std::fs::File::create(dest)
             .map_err(|e| CrushError::StorageError(e.to_string()))?;
-        let mut tar = tar::Builder::new(flate2::write::GzEncoder::new(file, flate2::Compression::default()));
+        let mut tar = tar::Builder::new(file);
 
-        // Write OCI layout marker
-        let layout = r#"{"imageLayoutVersion":"1.0.0"}"#;
-        let mut header = tar::Header::new_gnu();
-        header.set_size(layout.len() as u64);
-        header.set_mode(0o644);
-        header.set_cksum();
-        tar.append_data(&mut header, "oci-layout", layout.as_bytes())
-            .map_err(|e| CrushError::StorageError(e.to_string()))?;
-
-        // Write each blob
-        for layer_digest in &image.layers {
-            let blob_path = self.blobs.path_for_digest(layer_digest);
-            if blob_path.exists() {
-                tar.append_path_with_name(&blob_path, format!("blobs/sha256/{}", &layer_digest[7..]))
-                    .map_err(|e| CrushError::StorageError(e.to_string()))?;
-            }
+        // Docker-archive format (`docker save` layout): manifest.json + a config
+        // JSON + one *uncompressed* tar per layer. We decompress each stored
+        // layer blob so the layer file's sha256 equals its `diff_id` — which is
+        // exactly what `docker load` recomputes and matches against the config's
+        // `rootfs.diff_ids`. (OCI-layout archives load inconsistently across
+        // Docker versions and often fail to materialize the tag; docker-archive
+        // is the portable, reliably-runnable path.)
+        let mut diff_ids = Vec::new();
+        let mut layer_files = Vec::new();
+        for (i, layer_digest) in image.layers.iter().enumerate() {
+            let raw = read_blob(layer_digest)?;
+            let fmt = crate::compress::detect_format(&raw);
+            let plain = match fmt {
+                crate::compress::CompressionFormat::Uncompressed => raw,
+                _ => crate::compress::decompress_stream(&raw[..], fmt)?,
+            };
+            diff_ids.push(format!("sha256:{}", sha256_hex(&plain)));
+            let name = format!("layer_{}.tar", i);
+            put(&mut tar, &name, &plain)?;
+            layer_files.push(name);
         }
 
-        // Write index.json
-        let index = serde_json::json!({
-            "schemaVersion": 2,
-            "manifests": [{
-                "mediaType": "application/vnd.oci.image.manifest.v1+json",
-                "digest": image.digest,
-                "size": 0,
-                "annotations": { "org.opencontainers.image.ref.name": image.tag }
-            }]
-        });
-        let index_bytes = serde_json::to_vec_pretty(&index)
-            .map_err(|e| CrushError::StorageError(e.to_string()))?;
-        let mut header = tar::Header::new_gnu();
-        header.set_size(index_bytes.len() as u64);
-        header.set_mode(0o644);
-        header.set_cksum();
-        tar.append_data(&mut header, "index.json", index_bytes.as_slice())
-            .map_err(|e| CrushError::StorageError(e.to_string()))?;
+        // Config: start from the stored OCI/Docker config when present (keeps the
+        // real Env/Cmd/Entrypoint/WorkingDir), else synthesize a minimal one;
+        // then force `rootfs.diff_ids` to the layers we actually wrote.
+        let mut cfg: serde_json::Value = image.config_digest.as_ref()
+            .filter(|c| self.blobs.contains(c))
+            .and_then(|cd| read_blob(cd).ok())
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_else(|| serde_json::json!({
+                "architecture": image.architecture,
+                "os": image.os,
+                "config": {
+                    "Env": image.env,
+                    "Entrypoint": image.entrypoint,
+                    "Cmd": image.cmd,
+                },
+            }));
+        cfg["rootfs"] = serde_json::json!({ "type": "layers", "diff_ids": diff_ids });
+        if cfg.get("architecture").and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+            cfg["architecture"] = serde_json::json!(image.architecture);
+        }
+        if cfg.get("os").and_then(|v| v.as_str()).unwrap_or("").is_empty() {
+            cfg["os"] = serde_json::json!(image.os);
+        }
+        let config_bytes = serde_json::to_vec(&cfg)
+            .map_err(|e| CrushError::ImageError(e.to_string()))?;
+        let config_name = format!("{}.json", sha256_hex(&config_bytes));
+        put(&mut tar, &config_name, &config_bytes)?;
+
+        // manifest.json — the entry `docker load` reads to tag + assemble.
+        let repo_tags: Vec<String> = if image.tag.is_empty() {
+            Vec::new()
+        } else if image.tag.contains(':') {
+            vec![image.tag.clone()]
+        } else {
+            vec![format!("{}:latest", image.tag)]
+        };
+        let manifest = serde_json::json!([{
+            "Config": config_name,
+            "RepoTags": repo_tags,
+            "Layers": layer_files,
+        }]);
+        let manifest_bytes = serde_json::to_vec(&manifest)
+            .map_err(|e| CrushError::ImageError(e.to_string()))?;
+        put(&mut tar, "manifest.json", &manifest_bytes)?;
 
         tar.finish().map_err(|e| CrushError::StorageError(e.to_string()))?;
         Ok(())
     }
+
+    /// Assemble and register a **real, runnable OCI image** from a natively-built
+    /// project: pull `base_ref`, lay the project tree on top as one app layer
+    /// (Crush's native-first model — build on the host, then package the result,
+    /// `node_modules`/`dist` included), write a proper image config, and store it
+    /// via `put_image` so it shows up in `crush images`, can be run, and exports
+    /// to a `docker load`-able tarball.
+    ///
+    /// This replaces the old behaviour where a "crush"ed project only wrote a
+    /// zstd tar of the source into the build cache and never registered an image.
+    pub async fn commit_app_image(
+        &self,
+        tag: &str,
+        base_ref: &str,
+        project_root: &Path,
+        workdir: &str,
+        cmd: Vec<String>,
+        extra_env: Vec<String>,
+    ) -> Result<Image> {
+        use sha2::{Digest, Sha256};
+        fn sha256_hex(d: &[u8]) -> String { hex::encode(Sha256::digest(d)) }
+
+        // 1. Base image (pull if we don't already have it).
+        let base = match self.db.get_image_by_tag(base_ref).await? {
+            Some(b) => b,
+            None => self.pull_image(base_ref).await?,
+        };
+
+        let base_cfg: serde_json::Value = base.config_digest.as_ref()
+            .and_then(|c| std::fs::read(self.blobs.path_for_digest(c)).ok())
+            .and_then(|b| serde_json::from_slice(&b).ok())
+            .unwrap_or_else(|| serde_json::json!({}));
+        let mut diff_ids: Vec<String> = base_cfg["rootfs"]["diff_ids"].as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+
+        // 2. App layer: tar the project tree under `workdir` (skip VCS/build noise
+        //    that must never ship, but keep node_modules/dist so the image runs).
+        let prefix = workdir.trim_start_matches('/').trim_end_matches('/');
+        let mut builder = tar::Builder::new(Vec::new());
+        fn add_dir(b: &mut tar::Builder<Vec<u8>>, root: &Path, dir: &Path, prefix: &str) -> std::io::Result<()> {
+            const SKIP: &[&str] = &[".git", ".hg", ".svn", "target", ".crush", ".cache", ".DS_Store"];
+            for entry in std::fs::read_dir(dir)? {
+                let entry = entry?;
+                let path = entry.path();
+                let name = entry.file_name();
+                let name = name.to_string_lossy();
+                if SKIP.iter().any(|s| *s == name) { continue; }
+                let rel = path.strip_prefix(root).unwrap_or(&path);
+                let tar_name = format!("{}/{}", prefix, rel.to_string_lossy());
+                let ft = entry.file_type()?;
+                if ft.is_dir() {
+                    add_dir(b, root, &path, prefix)?;
+                } else if ft.is_file() {
+                    b.append_path_with_name(&path, &tar_name)?;
+                } else if ft.is_symlink() {
+                    // best-effort: dereference; skip if dangling
+                    if let Ok(meta) = std::fs::metadata(&path) {
+                        if meta.is_file() { let _ = b.append_path_with_name(&path, &tar_name); }
+                    }
+                }
+            }
+            Ok(())
+        }
+        add_dir(&mut builder, project_root, project_root, prefix)
+            .map_err(|e| CrushError::StorageError(format!("packing app layer: {}", e)))?;
+        let raw_tar = builder.into_inner()
+            .map_err(|e| CrushError::StorageError(e.to_string()))?;
+        diff_ids.push(format!("sha256:{}", sha256_hex(&raw_tar)));
+
+        // gzip the layer (OCI/Docker-standard layer compression).
+        let gz = {
+            let mut enc = flate2::write::GzEncoder::new(Vec::new(), flate2::Compression::default());
+            std::io::Write::write_all(&mut enc, &raw_tar)
+                .map_err(|e| CrushError::StorageError(e.to_string()))?;
+            enc.finish().map_err(|e| CrushError::StorageError(e.to_string()))?
+        };
+        let app_layer_digest = self.blobs.atomic_write(&gz)?;
+
+        // 3. Image config: inherit the base env, then layer the app on top.
+        let mut env: Vec<String> = base_cfg["config"]["Env"].as_array()
+            .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+            .unwrap_or_default();
+        for e in extra_env { if !env.iter().any(|x| x == &e) { env.push(e); } }
+        let arch = if base.architecture.is_empty() { "amd64".to_string() } else { base.architecture.clone() };
+        let os = if base.os.is_empty() { "linux".to_string() } else { base.os.clone() };
+        let cfg = serde_json::json!({
+            "architecture": arch,
+            "os": os,
+            "config": { "Env": env, "Cmd": cmd, "WorkingDir": workdir },
+            "rootfs": { "type": "layers", "diff_ids": diff_ids },
+        });
+        let cfg_bytes = serde_json::to_vec(&cfg)
+            .map_err(|e| CrushError::ImageError(e.to_string()))?;
+        let config_digest = self.blobs.atomic_write(&cfg_bytes)?;
+
+        // 4. Register the image (base layers + app layer).
+        let mut layers = base.layers.clone();
+        layers.push(app_layer_digest);
+        let size_bytes: u64 = layers.iter()
+            .filter_map(|d| std::fs::metadata(self.blobs.path_for_digest(d)).ok().map(|m| m.len()))
+            .sum();
+        let id = format!("sha256:{}", sha256_hex(&cfg_bytes));
+        let image = Image {
+            id: id.clone(),
+            tag: tag.to_string(),
+            digest: id,
+            size_bytes,
+            layers,
+            architecture: arch,
+            os,
+            os_version: base.os_version.clone(),
+            entrypoint: Vec::new(),
+            cmd: image_cmd_from(&cfg),
+            env,
+            config_digest: Some(config_digest),
+        };
+        self.db.put_image(&image).await?;
+        Ok(image)
+    }
+}
+
+fn image_cmd_from(cfg: &serde_json::Value) -> Vec<String> {
+    cfg["config"]["Cmd"].as_array()
+        .map(|a| a.iter().filter_map(|v| v.as_str().map(String::from)).collect())
+        .unwrap_or_default()
 }
 
 #[async_trait]

@@ -2309,7 +2309,7 @@ async fn main() -> anyhow::Result<()> {
             println!("  Port:       {}", stack.default_port);
         }
         Commands::Build(args) => {
-            commands::build::exec(&args, &data_dir).await?;
+            commands::build::exec(&args, &store).await?;
         }
         Commands::Watch(args) => {
             #[cfg(windows)]
@@ -2868,7 +2868,7 @@ async fn main() -> anyhow::Result<()> {
                 let engine = AiEngine::new(cfg_key, data_dir.clone());
                 match engine.active_provider() {
                     Some(p) => println!("AI provider: {}", p),
-                    None => println!("AI provider: offline patterns only (set GEMINI_API_KEY for full AI diagnosis)"),
+                    None => println!("AI provider: offline patterns only (set GEMINI_API_KEY for cloud AI, or CRUSH_AI_PROVIDER=ollama to run a local model — no key, fully on-device)"),
                 }
                 let project_root = std::env::current_dir().ok();
                 let full = engine.diagnose_stderr(

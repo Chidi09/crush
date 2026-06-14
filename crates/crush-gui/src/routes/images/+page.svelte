@@ -3,6 +3,7 @@
   import { images, refreshImages } from '$lib/stores/images.svelte.ts';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import Icon from '$lib/components/Icon.svelte';
+  import Identicon from '$lib/components/Identicon.svelte';
   import * as api from '$lib/tauri';
   import type { ImageDetail } from '$lib/tauri';
   import { toast } from '$lib/stores/toast.svelte.ts';
@@ -121,6 +122,7 @@
     <div class="image-list stagger">
       {#each filtered as img (img.id)}
         <div class="crush-card image-row">
+          <div class="img-ident"><Identicon seed={img.digest || img.id || img.tag} size={40} /></div>
           <div class="img-info">
             <span class="img-tag">{img.tag || '<untagged>'}</span>
             <span class="img-meta">
@@ -237,8 +239,9 @@
 
   .muted { color: var(--color-crush-text-muted); font-size: 13px; }
   .image-list { display: flex; flex-direction: column; gap: 8px; }
-  .image-row { display: flex; align-items: center; justify-content: space-between; padding: 16px 20px; }
-  .img-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; }
+  .image-row { display: flex; align-items: center; gap: 14px; padding: 16px 20px; }
+  .img-ident { flex-shrink: 0; display: flex; line-height: 0; }
+  .img-info { display: flex; flex-direction: column; gap: 4px; min-width: 0; flex: 1; }
   .img-tag { font-size: 14px; font-weight: 500; font-family: var(--font-mono); }
   .img-meta { font-size: 12px; color: var(--color-crush-text-muted); }
   .mono-dim { font-family: var(--font-mono); color: var(--color-crush-muted); }

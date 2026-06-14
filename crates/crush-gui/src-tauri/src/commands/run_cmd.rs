@@ -22,9 +22,42 @@ pub async fn run_project(
         assume_yes: true,
     };
 
-    let handle = crush_build::run::run_project(project_root, state.data_dir.clone(), options)
+    let handle = crush_build::run::run_project(project_root.clone(), state.data_dir.clone(), options)
         .await
         .map_err(|e| e.to_string())?;
+
+    // Best-effort: register a real, exportable OCI image for this project so the
+    // crush it just did actually shows up in the Images list (and can be run /
+    // `crush export`ed), mirroring `crush build`. Runs in the background so it
+    // never blocks the dev run; the base image is pulled at most once.
+    {
+        let store = state.store.clone();
+        let proj = project_root.clone();
+        tokio::spawn(async move {
+            let detector = crush_build::StackDetector::new();
+            if let Ok(stack) = detector.detect(&proj).await {
+                let name = proj.file_name().and_then(|n| n.to_str()).unwrap_or("app");
+                let tag = format!("{}:latest", name);
+                let entry = if !stack.entry_point.trim().is_empty() {
+                    stack.entry_point.clone()
+                } else {
+                    stack.build_command.clone()
+                };
+                let cmd = if entry.trim().is_empty() {
+                    Vec::new()
+                } else {
+                    vec!["sh".to_string(), "-c".to_string(), entry]
+                };
+                let env = vec![format!("PORT={}", stack.default_port)];
+                if let Err(e) = store
+                    .commit_app_image(&tag, &stack.base_image, &proj, "/app", cmd, env)
+                    .await
+                {
+                    eprintln!("crush: image registration failed for {}: {}", tag, e);
+                }
+            }
+        });
+    }
 
     let run_id = handle.run_id;
     let mut events = handle.events;
