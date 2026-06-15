@@ -43,26 +43,50 @@
   // ── Scrollspy: highlight the TOC entry for the section in view ──────────
   let activeId = $state(TOC[0].id);
 
+  // Scroll-position based (robust): IntersectionObserver was unreliable because
+  // the scroll happens on the window/main container, not a fixed root. We find
+  // the real scroll container, then on each scroll pick the last section whose
+  // top has crossed a probe line near the top of the viewport. getBounding
+  // ClientRect is viewport-relative, so this works whichever element scrolls.
   onMount(() => {
-    const sections = TOC
+    const els = TOC
       .map((t) => document.getElementById(t.id))
       .filter((el): el is HTMLElement => !!el);
-    const visible = new Set<string>();
-    const obs = new IntersectionObserver(
-      (entries) => {
-        for (const e of entries) {
-          if (e.isIntersecting) visible.add(e.target.id);
-          else visible.delete(e.target.id);
-        }
-        // The topmost section (in TOC order) that's currently near the top wins.
-        const first = TOC.find((t) => visible.has(t.id));
-        if (first) activeId = first.id;
-      },
-      // Trigger when a section reaches the top ~30% of the viewport.
-      { rootMargin: '0px 0px -70% 0px', threshold: 0 },
-    );
-    sections.forEach((s) => obs.observe(s));
-    return () => obs.disconnect();
+    if (!els.length) return;
+
+    function scrollParent(node: HTMLElement): HTMLElement | Window {
+      let el: HTMLElement | null = node.parentElement;
+      while (el) {
+        const oy = getComputedStyle(el).overflowY;
+        if ((oy === 'auto' || oy === 'scroll') && el.scrollHeight > el.clientHeight) return el;
+        el = el.parentElement;
+      }
+      return window;
+    }
+    const scroller = scrollParent(els[0]);
+
+    const PROBE = 120; // px from the top considered "current"
+    let ticking = false;
+    function update() {
+      ticking = false;
+      let current = els[0].id;
+      for (const el of els) {
+        if (el.getBoundingClientRect().top - PROBE <= 0) current = el.id;
+        else break;
+      }
+      activeId = current;
+    }
+    function onScroll() {
+      if (!ticking) { ticking = true; requestAnimationFrame(update); }
+    }
+
+    scroller.addEventListener('scroll', onScroll, { passive: true });
+    window.addEventListener('resize', onScroll, { passive: true });
+    update();
+    return () => {
+      scroller.removeEventListener('scroll', onScroll);
+      window.removeEventListener('resize', onScroll);
+    };
   });
 
   function goTo(e: MouseEvent, id: string) {
@@ -163,6 +187,7 @@
         { cmd: 'crush prune --all',      desc: 'Also remove all unused images and volumes — frees the most disk.' },
         { cmd: 'crush system',           desc: 'Show disk usage, data directory location, and daemon status.' },
         { cmd: 'crush health',           desc: 'Run a self-check: data dir writable, ports free, native service binaries present.' },
+        { cmd: 'crush ssh [host]',       desc: 'List servers from your ~/.ssh/config; `crush ssh <host>` opens a session via the system ssh client (honours your keys, ports, ProxyJump).' },
         { cmd: 'crush update',           desc: 'Self-update to the latest release. On Windows, installs to %LOCALAPPDATA%\\crush\\bin\\.' },
         { cmd: 'crush --version',        desc: 'Print the installed version, OS, and architecture.' },
       ],

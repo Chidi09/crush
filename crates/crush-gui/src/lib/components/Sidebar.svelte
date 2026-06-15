@@ -13,8 +13,10 @@
     { href: '/mailbox', icon: 'mail', label: 'Mailbox' },
   ];
 
+  // Containers is intentionally omitted from the nav: native runs don't create
+  // containers, so the page was permanently empty. The route still exists for
+  // the rare container workflow (compose / pulled images) — just not surfaced.
   const bottomLinks = [
-    { href: '/containers', icon: 'containers', label: 'Containers' },
     { href: '/docs', icon: 'docs', label: 'Docs' },
     { href: '/settings', icon: 'settings', label: 'Settings' },
   ];

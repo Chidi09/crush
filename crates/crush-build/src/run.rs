@@ -309,6 +309,31 @@ pub(crate) async fn kill_tree(child: &mut tokio::process::Child) {
     let _ = child.wait().await;
 }
 
+/// Kill a process tree by PID. Used to tear down build children on abort, where
+/// we only kept the PID (the `Child` is owned by a build task). No-op for pid 0.
+#[cfg(target_os = "windows")]
+pub(crate) async fn kill_pid_tree(pid: u32) {
+    if pid == 0 { return; }
+    let _ = tokio::process::Command::new("taskkill")
+        .args(["/F", "/T", "/PID", &pid.to_string()])
+        .output()
+        .await;
+}
+
+#[cfg(not(target_os = "windows"))]
+pub(crate) async fn kill_pid_tree(pid: u32) {
+    if pid == 0 { return; }
+    // Negative pid targets the process group; fall back to the bare pid.
+    let _ = tokio::process::Command::new("kill")
+        .args(["-TERM", &format!("-{pid}")])
+        .output()
+        .await;
+    let _ = tokio::process::Command::new("kill")
+        .args(["-KILL", &pid.to_string()])
+        .output()
+        .await;
+}
+
 // ── Process spawning ────────────────────────────────────────────────────
 
 /// Translate bash-style `$VAR` and `${VAR}` to cmd.exe-style `%VAR%`.
@@ -667,13 +692,16 @@ pub async fn probe_service_links_for(port: u16, framework: &str) -> Vec<(String,
 
 // ── Multi-service sub-build ─────────────────────────────────────────────
 
-/// Run a single sub-service build command and stream its output.
+/// Run a single sub-service build command and stream its output. The child's
+/// PID is registered in `kill_reg` so a Stop during a long build can tear the
+/// build tree down (builds can run minutes — e.g. a big `tsc`).
 pub async fn run_sub_build(
     sub: &crate::detect::SubService,
     cmdline: &str,
     cwd: &Path,
     dep_env: &[(String, String)],
     tx: &tokio::sync::mpsc::Sender<RunEvent>,
+    kill_reg: &std::sync::Arc<tokio::sync::Mutex<Vec<u32>>>,
 ) -> anyhow::Result<()> {
     let t0 = std::time::Instant::now();
     let _ = tx.send(RunEvent::BuildStarted {
@@ -689,6 +717,10 @@ pub async fn run_sub_build(
         .map_err(|e| anyhow::anyhow!("spawn build for {} failed: {}", sub.name, e))?;
 
     assign_to_job(&child);
+    // Register the PID so an abort during this build can kill the tree.
+    if let Some(pid) = child.id() {
+        kill_reg.lock().await.push(pid);
+    }
 
     if let Some(stdout) = child.stdout.take() {
         let n = sub.name.clone();
@@ -1123,6 +1155,8 @@ async fn run_project_inner(
         let sem = Arc::new(Semaphore::new(
             std::thread::available_parallelism().map(|p| p.get().min(4)).unwrap_or(2)
         ));
+        // PIDs of in-flight build children, so Stop can kill them mid-build.
+        let build_kill_reg: Arc<tokio::sync::Mutex<Vec<u32>>> = Arc::new(tokio::sync::Mutex::new(Vec::new()));
         let mut build_handles = Vec::new();
         for sub in &stack.services {
             let sub_path = PathBuf::from(&sub.path);
@@ -1131,10 +1165,17 @@ async fn run_project_inner(
                     None
                 } else {
                     let needs_install = match sub.runtime_type.as_str() {
-                        "node" => !sub_path.join("node_modules").exists(),
-                        "python" => !sub_path.join(".venv").exists(),
-                        "php" => !sub_path.join("vendor").exists(),
-                        "elixir" => !sub_path.join("deps").exists(),
+                        // In a workspace monorepo (npm/pnpm/yarn workspaces, turborepo)
+                        // node_modules is hoisted to the repo root, so the per-app dir
+                        // has none. Check freshness at the sub *and* the root, and only
+                        // reinstall when neither is fresh (or --rebuild forces it).
+                        "node" => options.rebuild
+                            || !(node_deps_fresh(&sub_path) || node_deps_fresh(project_root)
+                                 || sub_path.join("node_modules").exists()
+                                 || project_root.join("node_modules").exists()),
+                        "python" => options.rebuild || !sub_path.join(".venv").exists(),
+                        "php" => options.rebuild || !sub_path.join("vendor").exists(),
+                        "elixir" => options.rebuild || !sub_path.join("deps").exists(),
                         _ => true,
                     };
                     if needs_install { Some(sub.dev_install_command.clone()) } else { None }
@@ -1159,17 +1200,31 @@ async fn run_project_inner(
                 let sub_path = sub_path.clone();
                 let dep_env = dep_env.clone();
                 let tx_c = tx.clone();
+                let reg = build_kill_reg.clone();
                 build_handles.push(tokio::spawn(async move {
                     let _permit = sem.acquire().await.ok();
-                    run_sub_build(&sub, &icmd, &sub_path, &dep_env, &tx_c).await
+                    run_sub_build(&sub, &icmd, &sub_path, &dep_env, &tx_c, &reg).await
                 }));
             }
         }
 
         if !build_handles.is_empty() {
-            let results = futures::future::join_all(build_handles).await;
-            if results.iter().any(|r| matches!(r, Ok(Err(_)) | Err(_))) {
-                anyhow::bail!("one or more sub-service builds failed");
+            // Race the builds against Stop — a long `tsc`/`npm install` must stay
+            // killable. On abort, tear down every in-flight build tree by PID.
+            let joined = futures::future::join_all(build_handles);
+            tokio::select! {
+                results = joined => {
+                    if results.iter().any(|r| matches!(r, Ok(Err(_)) | Err(_))) {
+                        anyhow::bail!("one or more sub-service builds failed");
+                    }
+                }
+                _ = &mut *abort_rx => {
+                    for pid in build_kill_reg.lock().await.iter() {
+                        kill_pid_tree(*pid).await;
+                    }
+                    let _ = tx.send(RunEvent::Exited { code: 130 }).await;
+                    return Ok(());
+                }
             }
         }
 
@@ -1441,12 +1496,14 @@ async fn run_project_inner(
                             }
 
                             if !build_cmd.is_empty() {
+                                let reg = std::sync::Arc::new(tokio::sync::Mutex::new(Vec::new()));
                                 if let Err(e) = run_sub_build(
                                     &stack.services[idx],
                                     build_cmd,
                                     svc_path,
                                     &dep_env,
                                     tx,
+                                    &reg,
                                 ).await {
                                     let _ = tx.send(RunEvent::Warning {
                                         message: format!("{}: rebuild failed: {}", name, e),

@@ -4,10 +4,16 @@
   import Icon from '$lib/components/Icon.svelte';
   import TechIcon from '$lib/components/TechIcon.svelte';
   import * as api from '$lib/tauri';
-  import type { DeploymentRecord } from '$lib/tauri';
+  import type { DeploymentRecord, CloudDeployment } from '$lib/tauri';
 
   let all = $state<DeploymentRecord[]>([]);
+  let cloud = $state<Record<string, CloudDeployment>>({});
   let loading = $state(true);
+
+  // Normalize project names so cloud + local records match (crush deploy uses
+  // the Crushfile/dir name; runs may differ by case/separators).
+  function projKey(p: string): string { return p.toLowerCase().replace(/[\s_-]+/g, ''); }
+  function cloudFor(project: string): CloudDeployment | null { return cloud[projKey(project)] ?? null; }
 
   // Filters
   let query = $state('');
@@ -37,10 +43,18 @@
   onMount(load);
   async function load() {
     loading = true;
-    try { all = await api.listAllDeployments(); }
+    try {
+      all = await api.listAllDeployments();
+      const list = await api.listCloudDeployments().catch(() => []);
+      const map: Record<string, CloudDeployment> = {};
+      for (const c of list) map[projKey(c.project)] = c;
+      cloud = map;
+    }
     catch (e) { console.error(e); all = []; }
     finally { loading = false; }
   }
+
+  function openUrl(u: string) { if (u) api.openUrl(u).catch(console.error); }
 
   function toggle(project: string) {
     const next = new Set(expanded);
@@ -119,6 +133,7 @@
     {:else}
       {#each groups as g (g.project)}
         {@const isOpen = expanded.has(g.project)}
+        {@const cd = cloudFor(g.project)}
         <div class="crush-card group">
           <div class="group-head" role="button" tabindex="0"
                onclick={() => toggle(g.project)}
@@ -127,6 +142,19 @@
             <span class="gh-name">{g.project}</span>
             {#if g.latest?.framework || g.latest?.runtime}
               <span class="gh-stack"><TechIcon name={g.latest.framework ?? g.latest.runtime} size={13} />{g.latest.framework ?? g.latest.runtime}</span>
+            {/if}
+            {#if cd}
+              <span class="live-chip" title={`Deployed to ${cd.provider}`}>
+                <span class="rocket-glow"><Icon name="rocket" size={13} /></span>
+                <TechIcon name={cd.provider} size={13} />
+                <span class="live-provider">{cd.provider}</span>
+              </span>
+              {#if cd.url}
+                <button class="live-url" title={`Open ${cd.url}`}
+                        onclick={(e) => { e.stopPropagation(); openUrl(cd.url); }}>
+                  <Icon name="globe" size={12} /> {cd.domain ?? cd.url.replace(/^https?:\/\//, '')}
+                </button>
+              {/if}
             {/if}
             <!-- collapsed summary: latest status + when -->
             <span class="gh-summary">
@@ -193,6 +221,17 @@
   .chev.open { transform: rotate(90deg); }
   .gh-name { font-weight: 600; font-size: 14px; }
   .gh-stack { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-crush-text-muted); }
+  /* Live cloud deployment: glowing orange rocket + platform icon + name */
+  .live-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--color-crush-orange); background: rgba(224,85,64,0.08); border: 1px solid rgba(224,85,64,0.28); border-radius: 9999px; padding: 2px 10px; text-transform: capitalize; }
+  .live-provider { font-weight: 600; }
+  .rocket-glow { display: inline-flex; color: var(--color-crush-orange); filter: drop-shadow(0 0 5px rgba(224,85,64,0.85)); animation: rocket-pulse 1.8s ease-in-out infinite; }
+  @keyframes rocket-pulse {
+    0%, 100% { filter: drop-shadow(0 0 3px rgba(224,85,64,0.6)); transform: translateY(0); }
+    50% { filter: drop-shadow(0 0 8px rgba(224,85,64,1)); transform: translateY(-1px); }
+  }
+  @media (prefers-reduced-motion: reduce) { .rocket-glow { animation: none; } }
+  .live-url { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-family: var(--font-mono); color: var(--color-crush-orange); background: none; border: 1px solid rgba(224,85,64,0.28); border-radius: 7px; padding: 2px 8px; cursor: pointer; }
+  .live-url:hover { background: rgba(224,85,64,0.14); border-color: rgba(224,85,64,0.5); }
   .gh-summary { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--color-crush-text-muted); }
   .gh-count { font-size: 12px; color: var(--color-crush-muted); background: var(--color-crush-surface); border: 1px solid var(--color-crush-border); border-radius: 9999px; min-width: 22px; text-align: center; padding: 0 7px; line-height: 18px; }
   .open-btn { display: inline-flex; align-items: center; justify-content: center; background: none; border: 1px solid var(--color-crush-border); color: var(--color-crush-text-muted); border-radius: 6px; padding: 4px 6px; cursor: pointer; }

@@ -298,6 +298,11 @@ export function stopNativeService(name: string, project: string): Promise<void> 
   return invoke('stop_native_service', { name, project });
 }
 
+/** Spin up a native service (postgres, redis, mongodb, minio) with no project. */
+export function startNativeService(kind: string): Promise<NativeServiceSummary> {
+  return invoke('start_native_service', { kind });
+}
+
 export function getConnectionString(name: string, project: string): Promise<string | null> {
   return invoke('get_connection_string', { name, project });
 }
@@ -472,6 +477,20 @@ export function deleteDeployment(project: string, id: string): Promise<void> {
 }
 export function listAllDeployments(): Promise<DeploymentRecord[]> {
   return invoke('list_all_deployments');
+}
+
+export interface CloudDeployment {
+  project: string;
+  provider: string;
+  public_ip: string;
+  port: number;
+  domain: string | null;
+  deployed_at: string;
+  url: string;
+}
+/** Live cloud deployments (from `crush deploy`), keyed by project. */
+export function listCloudDeployments(): Promise<CloudDeployment[]> {
+  return invoke('list_cloud_deployments');
 }
 
 export interface EjectResult {

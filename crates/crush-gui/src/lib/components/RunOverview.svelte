@@ -8,6 +8,7 @@
     status = 'running',
     port = null,
     url = null,
+    endpoints = [],
     framework = null,
     runtime = null,
     projectName,
@@ -22,6 +23,8 @@
     port?: number | null;
     /** full preview URL from the detector (e.g. a swagger-ui path); preferred over port */
     url?: string | null;
+    /** every service that bound a port — rendered as individual links */
+    endpoints?: { name: string | null; port: number; url: string }[];
     framework?: string | null;
     runtime?: string | null;
     projectName: string;
@@ -33,6 +36,8 @@
     onStop?: () => void;
     onClose?: () => void;
   } = $props();
+
+  function openEndpoint(u: string) { api.openUrl(u).catch(console.error); }
 
   let frameEl: HTMLIFrameElement | undefined = $state();
   let captured = false;
@@ -85,6 +90,19 @@
       {/if}
     </div>
   </div>
+
+  {#if endpoints.length > 1}
+    <div class="endpoints">
+      <span class="ep-label">Open</span>
+      {#each endpoints as ep (ep.port)}
+        <button class="ep-link" onclick={() => openEndpoint(ep.url)} title={ep.url}>
+          <Icon name="globe" size={12} />
+          <span class="ep-name">{ep.name ?? 'service'}</span>
+          <span class="ep-port">:{ep.port}</span>
+        </button>
+      {/each}
+    </div>
+  {/if}
 
   <div class="run-body">
     <!-- Preview -->
@@ -150,6 +168,13 @@
   .run-card { padding: 0; overflow: hidden; }
   .run-head { display: flex; align-items: center; justify-content: space-between; padding: 14px 18px; border-bottom: 1px solid var(--color-crush-border); }
   .run-head h2 { font-size: 14px; font-weight: 600; margin: 0; }
+
+  .endpoints { display: flex; align-items: center; flex-wrap: wrap; gap: 8px; padding: 10px 18px; border-bottom: 1px solid var(--color-crush-border); }
+  .ep-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-crush-text-muted); font-weight: 600; }
+  .ep-link { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-crush-text); background: rgba(99,102,241,0.06); border: 1px solid rgba(99,102,241,0.2); border-radius: 7px; padding: 4px 10px; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+  .ep-link:hover { background: rgba(99,102,241,0.14); border-color: rgba(99,102,241,0.4); }
+  .ep-name { font-weight: 500; }
+  .ep-port { color: var(--color-crush-text-muted); font-family: var(--font-mono); }
   .run-actions { display: flex; align-items: center; gap: 8px; }
   .btn { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-crush-text-muted); background: none; border: 1px solid var(--color-crush-border); border-radius: 7px; padding: 6px 12px; cursor: pointer; transition: color 0.15s, border-color 0.15s; }
   .btn:hover { color: var(--color-crush-text); border-color: var(--color-crush-muted); }

@@ -1092,6 +1092,17 @@ impl CrushSpecDetector {
             (dev_entry, dev_install, entry_prod, final_build_cmd)
         };
 
+        // Prisma generates a client into node_modules from schema.prisma; without
+        // `prisma generate` the app crashes at runtime with "Cannot find module
+        // '.prisma/client'". Fold it into install/build so it runs once per install.
+        let (dev_install, final_build_cmd) = if Self::has_prisma(root) {
+            let gen = "npx prisma generate";
+            let join = |base: String| if base.is_empty() { gen.to_string() } else { format!("{base} && {gen}") };
+            (join(dev_install), join(final_build_cmd))
+        } else {
+            (dev_install, final_build_cmd)
+        };
+
         Some(Detection {
             project_name: pkg_name.to_string(),
             runtime_type: rt,
@@ -1283,6 +1294,27 @@ impl CrushSpecDetector {
     /// a non-dev Dockerfile at the root, or a compose file in one of the
     /// usual locations. Dev-shape compose (`docker-compose.dev.yml`,
     /// `compose.dev.yaml`) and `Dockerfile.dev` are ignored.
+    /// Whether this Node project uses Prisma — a schema in the standard location
+    /// or `@prisma/client`/`prisma` in package.json. Drives an automatic
+    /// `prisma generate` so the client exists before the app runs.
+    fn has_prisma(root: &Path) -> bool {
+        if root.join("prisma/schema.prisma").exists() || root.join("schema.prisma").exists() {
+            return true;
+        }
+        if let Ok(pkg) = fs::read_to_string(root.join("package.json")) {
+            if let Ok(v) = serde_json::from_str::<serde_json::Value>(&pkg) {
+                for sect in ["dependencies", "devDependencies"] {
+                    if let Some(deps) = v.get(sect).and_then(|d| d.as_object()) {
+                        if deps.contains_key("@prisma/client") || deps.contains_key("prisma") {
+                            return true;
+                        }
+                    }
+                }
+            }
+        }
+        false
+    }
+
     fn has_prod_docker_shape(root: &Path) -> bool {
         if Self::find_dockerfile(root).is_some() { return true; }
 
@@ -2143,6 +2175,30 @@ mod tests {
 
     fn node_project(dir: &Path) {
         fs::write(dir.join("package.json"), r#"{"name":"app","scripts":{"dev":"vite"}}"#).unwrap();
+    }
+
+    #[test]
+    fn prisma_generate_added_to_node_install() {
+        // schema in the standard location → install/build should run prisma generate
+        let dir = tempfile::TempDir::new().unwrap();
+        fs::write(dir.path().join("package.json"),
+            r#"{"name":"api","scripts":{"dev":"ts-node src","build":"tsc"},"dependencies":{"@prisma/client":"^5"}}"#).unwrap();
+        fs::create_dir(dir.path().join("prisma")).unwrap();
+        fs::write(dir.path().join("prisma/schema.prisma"), "generator client {}\n").unwrap();
+        let d = CrushSpecDetector::new().detect(&dir.path().to_path_buf());
+        assert!(d.dev_install_command.contains("prisma generate"),
+            "dev install should generate prisma client, got: {}", d.dev_install_command);
+        assert!(d.build_command.contains("prisma generate"),
+            "build should generate prisma client, got: {}", d.build_command);
+    }
+
+    #[test]
+    fn no_prisma_no_generate() {
+        let dir = tempfile::TempDir::new().unwrap();
+        node_project(dir.path());
+        let d = CrushSpecDetector::new().detect(&dir.path().to_path_buf());
+        assert!(!d.dev_install_command.contains("prisma"),
+            "non-prisma project must not get a generate step: {}", d.dev_install_command);
     }
 
     #[test]

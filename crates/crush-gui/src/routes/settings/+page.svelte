@@ -148,21 +148,25 @@
       <div class="form-group">
         <label for="ai-provider">AI Provider</label>
         <select id="ai-provider" class="input" bind:value={config.ai_provider} onchange={saveConfig}>
-          <option value="">None / Offline Patterns Only</option>
+          <option value="gemini">Google Gemini — free tier (default)</option>
           <option value="anthropic">Anthropic Claude</option>
+          <option value="ollama">Local (Ollama) — no key</option>
+          <option value="">None / Offline Patterns Only</option>
         </select>
       </div>
       <div class="form-group">
         <label for="ai-model">AI Model</label>
         <select id="ai-model" class="input" bind:value={config.ai_model} onchange={saveConfig}>
-          <option value="">Default (Claude 3.5 Sonnet)</option>
-          <option value="claude-3-5-sonnet-20241022">Claude 3.5 Sonnet</option>
-          <option value="claude-3-5-haiku-20241022">Claude 3.5 Haiku</option>
+          <option value="">Default (Gemini 2.5 Flash)</option>
+          <option value="gemini-2.5-flash">Gemini 2.5 Flash</option>
+          <option value="gemini-1.5-flash">Gemini 1.5 Flash</option>
+          <option value="claude-sonnet-4-6">Claude Sonnet (Anthropic)</option>
         </select>
       </div>
       <div class="form-group full-width">
         <label for="ai-key">API Key</label>
-        <input id="ai-key" type="password" class="input" bind:value={config.ai_api_key} onchange={saveConfig} placeholder="Enter your Anthropic Claude API Key" />
+        <input id="ai-key" type="password" class="input" bind:value={config.ai_api_key} onchange={saveConfig} placeholder="Paste your Google Gemini API key — free at aistudio.google.com/apikey" />
+        <span class="field-hint">Gemini is the default and has a generous free tier. An Anthropic <code>sk-ant-…</code> key auto-switches to Claude; leave blank to use a local Ollama model.</span>
       </div>
       <div class="form-checkbox full-width">
         <label class="checkbox-label">
@@ -372,6 +376,8 @@
   .tool-role { color: var(--color-crush-text-muted); font-size: 12px; }
   .tool-state { font-size: 11px; color: var(--color-crush-text-muted); text-transform: uppercase; letter-spacing: 0.04em; }
   .hint { font-size: 11.5px; color: var(--color-crush-text-muted); margin: 12px 0 0; line-height: 1.5; }
+  .field-hint { display: block; font-size: 11.5px; color: var(--color-crush-text-muted); margin-top: 6px; line-height: 1.5; }
+  .field-hint code { font-family: var(--font-mono); font-size: 11px; }
 
   /* Form Elements CSS */
   .form-grid { display: grid; grid-template-columns: 1fr 1fr; gap: 14px; margin-top: 8px; }

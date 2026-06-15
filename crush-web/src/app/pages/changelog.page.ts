@@ -60,6 +60,22 @@ import { HlmBadgeDirective } from '../ui/badge';
 export default class ChangelogPage implements OnInit {
   releases = [
     {
+      version: 'v1.0.1',
+      date: '2026-06-15',
+      headline: 'Post-1.0 stabilization: fixes from real-world monorepo runs, plus a few quality-of-life additions.',
+      items: [
+        '<strong>Stop now kills hung builds:</strong> clicking Stop during a long build (e.g. a multi-minute <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">tsc</code>) tears down the whole build process tree. Previously the build phase ignored the stop signal until it finished on its own.',
+        '<strong>Windows image pulls fall back to Linux:</strong> pulling a Linux-only image (e.g. <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">ghcr.io/flaresolverr/flaresolverr</code>) on Windows now resolves the <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">linux/amd64</code> manifest instead of failing with "no matching platform".',
+        '<strong>Prisma:</strong> Node projects using Prisma now run <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">prisma generate</code> automatically on install — no more <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">Cannot find module \'.prisma/client\'</code> in dev mode.',
+        '<strong>Monorepo no longer reinstalls every run:</strong> workspace <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">node_modules</code> is hoisted to the repo root, which the freshness check now understands — warm runs skip install.',
+        '<strong>Every service URL is clickable:</strong> multi-service runs surface a link per bound service (web, api, …) in the GUI, not just one.',
+        '<strong>Start a service from the GUI</strong> with no project open — Postgres, Redis, MongoDB or MinIO, natively.',
+        '<strong>Deployments show live status:</strong> projects with an active cloud deployment get a glowing rocket, the platform icon, and a clickable live URL.',
+        '<strong>New <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">crush ssh</code>:</strong> lists hosts from your <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">~/.ssh/config</code> and connects via the system ssh client.',
+        '<strong>AI copilot</strong> defaults to Google Gemini\'s free tier; the Settings panel now reflects Gemini, Anthropic, and local Ollama options. Docs page scrollspy fixed; Mailbox polished; the always-empty Containers tab removed from the sidebar on native setups.',
+      ],
+    },
+    {
       version: 'v1.0.0',
       date: '2026-06-15',
       headline: '1.0 — Crush is production-ready. The native dev loop now spans the full lifecycle: develop, integrate with managed services, expose, snapshot, deploy with zero downtime, and leave anytime.',

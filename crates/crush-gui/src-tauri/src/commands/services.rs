@@ -128,6 +128,87 @@ pub async fn stop_native_service(name: String, project: String, app: tauri::AppH
     Ok(())
 }
 
+/// Spin up a native service on demand, independent of any project — so the
+/// Services screen isn't a dead end when nothing is running. Started services
+/// are grouped under the synthetic "scratch" project so they persist and list.
+#[tauri::command]
+pub async fn start_native_service(
+    kind: String,
+    app: tauri::AppHandle,
+    state: State<'_, AppState>,
+) -> Result<NativeServiceSummary, String> {
+    use crush_build::{DepService, start_dep_service_smart, StartedService};
+    use crush_services::{load_native_state, save_native_state, NativeServiceState, ServiceKind};
+
+    const PROJECT: &str = "scratch";
+
+    // Map the chosen kind to an image + default port + minimal env.
+    let (image, port, env): (&str, u16, Vec<(String, String)>) = match kind.as_str() {
+        "postgres" => ("postgres:16", 5432, vec![
+            ("POSTGRES_USER".into(), "crush".into()),
+            ("POSTGRES_PASSWORD".into(), "crush".into()),
+            ("POSTGRES_DB".into(), "crush".into()),
+        ]),
+        "redis" | "redis-compat" => ("redis:7", 6379, vec![]),
+        "mongodb" | "mongo" => ("mongo:7", 27017, vec![]),
+        "minio" => ("minio/minio", 9000, vec![
+            ("MINIO_ROOT_USER".into(), "minioadmin".into()),
+            ("MINIO_ROOT_PASSWORD".into(), "minioadmin".into()),
+        ]),
+        other => return Err(format!("unknown service kind '{other}' (use postgres, redis, mongodb, minio)")),
+    };
+
+    let dep = DepService {
+        name: kind.clone(),
+        image: image.to_string(),
+        ports: vec![(port, port)],
+        env,
+        volumes: vec![],
+    };
+
+    let running = match start_dep_service_smart(&dep, PROJECT, &state.data_dir).await {
+        Ok(StartedService::Native(r)) => r,
+        Ok(StartedService::Container(_)) => return Err("service started as a container, not natively".into()),
+        Err(e) => return Err(format!("failed to start {kind}: {e}")),
+    };
+
+    // Persist into the "scratch" project's native state (upsert by name).
+    let state_dir = state.data_dir.join("services");
+    let mut data = load_native_state(&state_dir, PROJECT).unwrap_or(NativeServiceState {
+        project: PROJECT.to_string(),
+        services: vec![],
+        started_at: now_secs(),
+    });
+    data.services.retain(|s| s.name != running.name);
+    data.services.push(running.clone());
+    save_native_state(&state_dir, &data).map_err(|e| e.to_string())?;
+    crate::events::emit_service_state_changed(&app);
+
+    let kind_str = match running.kind {
+        ServiceKind::Postgres => "postgres",
+        ServiceKind::RedisCompat => "redis-compat",
+        ServiceKind::MySQL => "mysql",
+        ServiceKind::MongoDB => "mongodb",
+        ServiceKind::ObjectStore => "minio",
+    };
+    Ok(NativeServiceSummary {
+        project: PROJECT.to_string(),
+        name: running.name.clone(),
+        kind: kind_str.to_string(),
+        port: running.port,
+        pid: running.pid,
+        connection_string: connection_string_for(kind_str, running.port, PROJECT, &running.name),
+        data_dir: running.data_dir.to_string_lossy().to_string(),
+        started_at: data.started_at,
+        console_url: running.console_port.map(|p| format!("http://localhost:{p}")),
+    })
+}
+
+fn now_secs() -> u64 {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    SystemTime::now().duration_since(UNIX_EPOCH).unwrap_or_default().as_secs()
+}
+
 #[tauri::command]
 pub async fn get_connection_string(name: String, project: String, state: State<'_, AppState>) -> Result<Option<String>, String> {
     use crush_services::load_native_state;

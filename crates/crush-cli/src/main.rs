@@ -183,6 +183,8 @@ enum Commands {
     Mail(MailArgs),
     #[command(about = "Run the blue-green traffic gateway (or --set its upstream). Used by zero-downtime deploys.")]
     Gateway(GatewayArgs),
+    #[command(about = "List servers from your ~/.ssh/config and connect (crush ssh <host>)")]
+    Ssh(SshArgs),
     #[command(about = "Run health checks on a container")]
     Health(HealthArgs),
     #[command(about = "Deploy a project to cloud infrastructure defined in the Crushfile")]
@@ -489,6 +491,14 @@ struct LintArgs {
 struct MailArgs {
     #[arg(long, help = "Port to listen on", default_value_t = crush_build::mailbox::DEFAULT_PORT)]
     port: u16,
+}
+
+#[derive(Args, Debug)]
+struct SshArgs {
+    #[arg(help = "Host alias from ~/.ssh/config to connect to (omit to list)")]
+    host: Option<String>,
+    #[arg(long, help = "List configured hosts even when a host is given")]
+    list: bool,
 }
 
 #[derive(Args, Debug)]
@@ -2660,6 +2670,12 @@ async fn main() -> anyhow::Result<()> {
         return run_gateway_cmd(args).await;
     }
 
+    // `ssh` reads ~/.ssh/config and execs the system ssh — no store needed.
+    if matches!(&command, Commands::Ssh(_)) {
+        let Commands::Ssh(args) = command else { unreachable!() };
+        return commands::ssh::exec(args.host, args.list);
+    }
+
     // `db` wraps native dump/restore tools — no image store needed.
     if matches!(&command, Commands::Db(_)) {
         let Commands::Db(args) = command else { unreachable!() };
@@ -3997,6 +4013,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Lint(_) => unreachable!("lint is handled before the image store opens"),
         Commands::Mail(_) => unreachable!("mail is handled before the image store opens"),
         Commands::Gateway(_) => unreachable!("gateway is handled before the image store opens"),
+        Commands::Ssh(_) => unreachable!("ssh is handled before the image store opens"),
         Commands::Scan(args) => {
             if args.fix || args.image.is_none() {
                 let root = std::env::current_dir()?;

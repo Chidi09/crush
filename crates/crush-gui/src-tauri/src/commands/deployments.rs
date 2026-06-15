@@ -115,6 +115,58 @@ pub async fn list_all_deployments(state: State<'_, AppState>) -> Result<Vec<Depl
     Ok(out)
 }
 
+/// A *live cloud* deployment (created by `crush deploy`), distinct from the
+/// local-run records above. Read straight from `~/.crush/deployments/*.json`
+/// (crush_deploy::DeploymentState) so the GUI doesn't need the deploy crate.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct CloudDeployment {
+    pub project: String,
+    pub provider: String,
+    #[serde(default)]
+    pub public_ip: String,
+    #[serde(default)]
+    pub port: u16,
+    #[serde(default)]
+    pub domain: Option<String>,
+    #[serde(default)]
+    pub deployed_at: String,
+    /// Computed best URL to visit (domain over ip:port).
+    pub url: String,
+}
+
+/// List live cloud deployments, keyed by project. The Deployments view overlays
+/// these onto its project rows (platform badge + clickable live URL).
+#[tauri::command]
+pub async fn list_cloud_deployments() -> Result<Vec<CloudDeployment>, String> {
+    // Mirror crush_deploy::DeploymentState::new(): ~/.crush/deployments/.
+    let dir = dirs::home_dir().unwrap_or_default().join(".crush").join("deployments");
+    let mut out = Vec::new();
+    let Ok(entries) = std::fs::read_dir(&dir) else { return Ok(out) };
+    for e in entries.flatten() {
+        let p = e.path();
+        if p.extension().map(|x| x == "json").unwrap_or(false) {
+            if let Ok(text) = std::fs::read_to_string(&p) {
+                if let Ok(v) = serde_json::from_str::<serde_json::Value>(&text) {
+                    let project = v["project"].as_str().unwrap_or("").to_string();
+                    if project.is_empty() { continue; }
+                    let provider = v["provider"].as_str().unwrap_or("").to_string();
+                    let public_ip = v["public_ip"].as_str().unwrap_or("").to_string();
+                    let port = v["port"].as_u64().unwrap_or(0) as u16;
+                    let domain = v["domain"].as_str().filter(|s| !s.is_empty()).map(|s| s.to_string());
+                    let deployed_at = v["deployed_at"].as_str().unwrap_or("").to_string();
+                    let url = match &domain {
+                        Some(d) => format!("https://{d}"),
+                        None if !public_ip.is_empty() => format!("http://{public_ip}:{}", if port > 0 { port } else { 80 }),
+                        None => String::new(),
+                    };
+                    out.push(CloudDeployment { project, provider, public_ip, port, domain, deployed_at, url });
+                }
+            }
+        }
+    }
+    Ok(out)
+}
+
 #[derive(Debug, Clone, Serialize)]
 pub struct DeploymentDetail {
     #[serde(flatten)]

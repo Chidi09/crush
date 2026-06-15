@@ -207,6 +207,7 @@
         status={run.status}
         port={run.port}
         url={run.url}
+        endpoints={run.endpoints}
         framework={run.project?.framework ?? null}
         runtime={run.project?.runtime ?? null}
         projectName={run.project?.name ?? (run.projectPath ? baseName(run.projectPath) : 'project')}

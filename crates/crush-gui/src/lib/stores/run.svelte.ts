@@ -24,6 +24,9 @@ class RunStore {
   status = $state<RunStatus>('running');
   port = $state<number | null>(null);
   url = $state<string | null>(null);
+  /** One entry per service that has bound a port — drives the clickable
+   *  "open" links so multi-service runs surface every URL, not just one. */
+  endpoints = $state<{ name: string | null; port: number; url: string }[]>([]);
   lines = $state<RunLine[]>([]);
   /** Detected stack language (e.g. "flutter", "react-native", "node") — set on Detected. */
   language = $state<string | null>(null);
@@ -74,6 +77,7 @@ class RunStore {
     this.activeRunId = null;
     this.port = null;
     this.url = null;
+    this.endpoints = [];
     this.status = 'running';
     this.lines = [];
     this.language = null;
@@ -87,6 +91,7 @@ class RunStore {
     this.status = 'running';
     this.port = null;
     this.url = null;
+    this.endpoints = [];
     this.lines = [];
     this.language = null;
     this.buildLog = [];
@@ -139,6 +144,14 @@ class RunStore {
           if (e.port) this.port = e.port;
           const best = this.pickUrl(e.urls ?? []);
           if (best) this.url = best;
+          // Record this service's endpoint so every bound service gets a link.
+          if (e.port) {
+            const link = best ?? `http://localhost:${e.port}`;
+            const ep = { name: e.service_name ?? null, port: e.port, url: link };
+            const i = this.endpoints.findIndex((x) => x.port === e.port);
+            if (i >= 0) this.endpoints[i] = ep;
+            else this.endpoints = [...this.endpoints, ep];
+          }
           const urls = (e.urls ?? []).map((u: [string, string]) => u[1]).join('  ');
           this.push(`✓ ready on :${e.port}${urls ? ` — ${urls}` : ''}`, 'ok', 'runtime'); break;
         }

@@ -28,6 +28,27 @@
     }
   }
 
+  // ── Start a service on demand (no project required) ──────────────────────
+  const STARTABLE = [
+    { kind: 'postgres', label: 'PostgreSQL', tech: 'postgres' },
+    { kind: 'redis',    label: 'Redis',      tech: 'redis' },
+    { kind: 'mongodb',  label: 'MongoDB',    tech: 'mongodb' },
+    { kind: 'minio',    label: 'MinIO',      tech: 'minio' },
+  ];
+  let starting = $state<string | null>(null);
+  let startErr = $state<string | null>(null);
+  async function startService(kind: string) {
+    starting = kind; startErr = null;
+    try {
+      await api.startNativeService(kind);
+      await refreshServices();
+    } catch (e) {
+      startErr = String(e);
+    } finally {
+      starting = null;
+    }
+  }
+
   // ── Inspector (tables / connections / keys) ──────────────────────────────
   let openInspect = $state<string | null>(null);
   let pg = $state<api.PgInspect | null>(null);
@@ -106,8 +127,20 @@
     <h1>Native Services</h1>
   </header>
 
+  <!-- Start any native service on demand — no project needed. -->
+  <div class="start-bar">
+    <span class="start-label">Start a service</span>
+    {#each STARTABLE as s}
+      <button class="start-btn" disabled={starting !== null} onclick={() => startService(s.kind)}>
+        <TechIcon name={s.tech} size={15} />
+        {starting === s.kind ? 'starting…' : s.label}
+      </button>
+    {/each}
+  </div>
+  {#if startErr}<div class="start-err">{startErr}</div>{/if}
+
   {#if $services.length === 0}
-    <EmptyState title="No services running" description="Start a project with native service dependencies" />
+    <EmptyState title="No services running" description="Pick a service above to spin one up — Postgres, Redis, MongoDB or MinIO, running natively with no project or Docker." />
   {:else}
     {#each [...grouped.entries()] as [project, svcs]}
       <div class="service-group">
@@ -247,6 +280,13 @@
 <style>
   .page-header { display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px; }
   .page-header h1 { font-size: 20px; font-weight: 600; margin: 0; }
+
+  .start-bar { display: flex; align-items: center; flex-wrap: wrap; gap: 10px; margin-bottom: 18px; padding: 12px 14px; border: 1px solid var(--color-crush-border); border-radius: 12px; background: var(--color-crush-surface); }
+  .start-label { font-size: 12px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-crush-text-muted); font-weight: 600; margin-right: 4px; }
+  .start-btn { display: inline-flex; align-items: center; gap: 7px; font-size: 13px; color: var(--color-crush-text); background: rgba(99,102,241,0.06); border: 1px solid rgba(99,102,241,0.2); border-radius: 8px; padding: 6px 12px; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+  .start-btn:hover:not(:disabled) { background: rgba(99,102,241,0.14); border-color: rgba(99,102,241,0.45); }
+  .start-btn:disabled { opacity: 0.5; cursor: default; }
+  .start-err { color: var(--color-crush-red); font-size: 13px; margin: -8px 0 16px; }
 
   .service-group { margin-bottom: 24px; }
   .group-title { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-crush-text-muted); margin: 0 0 12px; }

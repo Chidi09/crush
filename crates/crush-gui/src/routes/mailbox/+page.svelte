@@ -30,6 +30,27 @@
   function fmtTime(ms: number): string {
     try { return new Date(ms).toLocaleString(); } catch { return ''; }
   }
+  function relTime(ms: number): string {
+    const s = Math.floor((Date.now() - ms) / 1000);
+    if (s < 60) return `${s}s`;
+    if (s < 3600) return `${Math.floor(s / 60)}m`;
+    if (s < 86400) return `${Math.floor(s / 3600)}h`;
+    return `${Math.floor(s / 86400)}d`;
+  }
+  // Deterministic avatar from the sender address.
+  function sender(addr: string): string {
+    const m = /<([^>]+)>/.exec(addr); // strip "Name <a@b>"
+    return (m ? m[1] : addr).trim();
+  }
+  function initial(addr: string): string {
+    return (sender(addr).replace(/^["']/, '').charAt(0) || '?').toUpperCase();
+  }
+  function avatarColor(addr: string): string {
+    let h = 0;
+    const s = sender(addr);
+    for (let i = 0; i < s.length; i++) h = (h * 31 + s.charCodeAt(i)) >>> 0;
+    return `hsl(${h % 360} 50% 45%)`;
+  }
 
   onMount(async () => {
     await refresh();
@@ -66,14 +87,17 @@
             class:active={m.id === selectedId}
             onclick={() => { selectedId = m.id; showRaw = false; }}
           >
-            <div class="row-top">
-              <span class="subj">{m.subject || '(no subject)'}</span>
-              <span class="time">{fmtTime(m.received_ms)}</span>
-            </div>
-            <div class="row-meta">
-              <span class="from">{m.from}</span>
-              <span class="arrow">→</span>
-              <span class="to">{m.to.join(', ')}</span>
+            <span class="avatar" style="background:{avatarColor(m.from)}">{initial(m.from)}</span>
+            <div class="row-body">
+              <div class="row-top">
+                <span class="subj">{m.subject || '(no subject)'}</span>
+                <span class="time" title={fmtTime(m.received_ms)}>{relTime(m.received_ms)}</span>
+              </div>
+              <div class="row-meta">
+                <span class="from">{sender(m.from)}</span>
+                <span class="arrow">→</span>
+                <span class="to">{m.to.join(', ')}</span>
+              </div>
             </div>
           </button>
         {/each}
@@ -118,9 +142,11 @@
 
   .split { display: grid; grid-template-columns: 340px 1fr; gap: 14px; height: calc(100vh - 130px); }
   .list { overflow-y: auto; display: flex; flex-direction: column; gap: 6px; padding-right: 4px; }
-  .row { text-align: left; background: var(--color-crush-surface); border: 1px solid var(--color-crush-border); border-radius: 10px; padding: 10px 12px; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
+  .row { display: flex; align-items: flex-start; gap: 10px; text-align: left; background: var(--color-crush-surface); border: 1px solid var(--color-crush-border); border-radius: 10px; padding: 10px 12px; cursor: pointer; transition: border-color 0.15s, background 0.15s; }
   .row:hover { border-color: var(--color-crush-muted); }
   .row.active { border-color: #6366f1; background: rgba(99,102,241,0.06); }
+  .avatar { flex-shrink: 0; width: 30px; height: 30px; border-radius: 50%; display: inline-flex; align-items: center; justify-content: center; color: #fff; font-weight: 700; font-size: 13px; margin-top: 1px; }
+  .row-body { flex: 1; min-width: 0; }
   .row-top { display: flex; justify-content: space-between; gap: 8px; align-items: baseline; }
   .subj { font-weight: 600; font-size: 13.5px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
   .time { font-size: 11px; color: var(--color-crush-text-muted); flex-shrink: 0; }
