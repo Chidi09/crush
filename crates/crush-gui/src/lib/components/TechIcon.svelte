@@ -12,6 +12,8 @@
     // runtimes
     siNodedotjs, siBun, siDeno, siPython, siGo, siRust, siPhp, siRuby,
     siTypescript, siJavascript, siDocker, siDotnet, siSwift, siElixir,
+    // mobile / app frameworks
+    siFlutter, siDart, siExpo,
     // node frameworks
     siFastify, siExpress, siNestjs, siHono, siTrpc,
     siVite, siNextdotjs, siNuxt, siRemix, siReact, siSvelte, siVuedotjs,
@@ -72,6 +74,10 @@
     dotnet: siDotnet, '.net': siDotnet,
     swift: siSwift, elixir: siElixir,
     docker: siDocker,
+
+    // ── mobile / app stacks ──
+    flutter: siFlutter, dart: siDart,
+    reactnative: siReact, 'react-native': siReact, expo: siExpo,
 
     // ── node frameworks ──
     fastify: siFastify, express: siExpress, expressjs: siExpress,
