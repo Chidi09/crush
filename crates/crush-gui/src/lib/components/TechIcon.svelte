@@ -40,6 +40,11 @@
     siSupabase, siFirebase, siPlanetscale, siNeon, siTurso, siUpstash,
     siCockroachlabs, siClerk, siAuth0, siPrisma, siDrizzle,
     siGraphql, siApollographql, siSocketdotio,
+    siAppwrite, siPocketbase, siNhost,
+    // payments / email / observability / AI / edge
+    siStripe, siCloudflare, siCloudinary,
+    siSentry, siPosthog, siAnthropic,
+    siMailgun, siResend,
     // deploy providers
     siRailway, siFlydotio, siDigitalocean, siRender, siGooglecloud,
     siVercel, siNetlify, siHetzner,
@@ -155,6 +160,23 @@
     upstash: siUpstash,
     cockroachdb: siCockroachlabs, cockroach: siCockroachlabs,
     clerk: siClerk, auth0: siAuth0,
+    appwrite: siAppwrite, pocketbase: siPocketbase, nhost: siNhost,
+    mongodbatlas: siMongodb, xata: siPostgresql,
+
+    // ── payments ──
+    stripe: siStripe,
+
+    // ── email ──
+    mailgun: siMailgun, resend: siResend,
+
+    // ── observability / AI ──
+    sentry: siSentry, posthog: siPosthog,
+    anthropic: siAnthropic,
+
+    // ── edge / storage providers ──
+    cloudflare: siCloudflare, cloudflarer2: siCloudflare,
+    cloudinary: siCloudinary,
+    awss3: siMinio,
 
     // ── deploy providers ──
     railway: siRailway,

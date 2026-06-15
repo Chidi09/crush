@@ -80,6 +80,55 @@ export interface ExternalService {
   source_var: string;
 }
 
+/** Mirrors `ExternalService::needs_tunnel` in crush-build: webhook senders that
+ *  require a public URL in local dev. */
+export function needsTunnel(s: ExternalService): boolean {
+  return s.kind === 'payments' || s.name === 'Clerk' || s.name === 'Auth0';
+}
+
+/** The detected external services that imply this project wants a tunnel. */
+export function tunnelProviders(services: ExternalService[] | undefined): ExternalService[] {
+  return (services ?? []).filter(needsTunnel);
+}
+
+export interface TunnelInfo {
+  url: string;
+  provider: string;
+  port: number;
+}
+
+export interface CapturedMail {
+  id: number;
+  from: string;
+  to: string[];
+  subject: string;
+  date: string;
+  body: string;
+  raw: string;
+  received_ms: number;
+}
+
+export function listMail(): Promise<CapturedMail[]> {
+  return invoke('list_mail');
+}
+export function clearMail(): Promise<void> {
+  return invoke('clear_mail');
+}
+/** Fires whenever the SMTP sink captures a new message. */
+export function onMailReceived(cb: () => void): Promise<UnlistenFn> {
+  return listen('mail-received', () => cb());
+}
+
+export function startTunnel(port: number, provider?: string): Promise<TunnelInfo> {
+  return invoke('start_tunnel', { port, provider: provider ?? null });
+}
+export function stopTunnel(port: number): Promise<void> {
+  return invoke('stop_tunnel', { port });
+}
+export function listTunnels(): Promise<TunnelInfo[]> {
+  return invoke('list_tunnels');
+}
+
 export interface ProjectInfo {
   name: string;
   runtime: string;

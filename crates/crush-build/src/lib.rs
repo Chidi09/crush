@@ -18,6 +18,10 @@ pub mod progress;
 pub mod analysis;
 pub mod service_orchestrator;
 pub mod proxy;
+pub mod tunnel;
+pub mod lint;
+pub mod mailbox;
+pub mod gateway;
 
 use std::path::{Path, PathBuf};
 use std::fs;
@@ -62,6 +66,10 @@ pub struct InferredStack {
     pub services: Vec<crate::detect::SubService>,
     #[serde(default)]
     pub generic_subdir_hint: Vec<String>,
+    /// Managed/BaaS providers (Supabase, Firebase, Appwrite, Neon, Upstash, …)
+    /// detected from env files — surfaced so the UI can show what the app talks to.
+    #[serde(default)]
+    pub external_services: Vec<crate::env::ExternalService>,
 }
 
 pub struct BuildOutcome {
@@ -163,6 +171,7 @@ impl From<Detection> for InferredStack {
             is_monorepo: d.is_monorepo,
             services: d.services,
             generic_subdir_hint: d.generic_subdir_hint,
+            external_services: d.external_services,
         }
     }
 }

@@ -87,6 +87,14 @@ struct Cli {
     #[arg(long, help = "Disable the built-in reverse proxy")]
     no_proxy: bool,
 
+    #[arg(long, help = "Expose the app's port to the public internet (webhooks) once it binds")]
+    tunnel: bool,
+    #[arg(long, help = "Tunnel provider: cloudflared (default), ngrok, or outray")]
+    tunnel_provider: Option<String>,
+
+    #[arg(long, help = "Capture the app's outgoing email into a local SMTP sink on :1025 (run `crush mail` to view)")]
+    mail: bool,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -165,6 +173,16 @@ enum Commands {
     Ci(CiArgs),
     #[command(about = "Browse a curated catalog of popular images you can pull")]
     Catalog(CatalogArgs),
+    #[command(about = "Expose a local port to the public internet (webhooks/Paystack/Stripe) via a free tunnel")]
+    Tunnel(TunnelArgs),
+    #[command(about = "Snapshot & restore database state (Postgres/MySQL) — a Time Machine for your data")]
+    Db(DbArgs),
+    #[command(about = "Check for cross-OS landmines (case-sensitive import paths) before deploying to Linux")]
+    Lint(LintArgs),
+    #[command(about = "Run a local mail catcher (SMTP sink on :1025) that captures dev emails instead of sending them")]
+    Mail(MailArgs),
+    #[command(about = "Run the blue-green traffic gateway (or --set its upstream). Used by zero-downtime deploys.")]
+    Gateway(GatewayArgs),
     #[command(about = "Run health checks on a container")]
     Health(HealthArgs),
     #[command(about = "Deploy a project to cloud infrastructure defined in the Crushfile")]
@@ -448,6 +466,69 @@ struct CatalogArgs {
 }
 
 #[derive(Args, Debug)]
+struct TunnelArgs {
+    #[arg(help = "Local port to expose (e.g. 8000). Defaults to the detected project port.")]
+    port: Option<u16>,
+    #[arg(long, help = "Force a provider: cloudflared (default), ngrok, or outray")]
+    provider: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct DbArgs {
+    #[command(subcommand)]
+    cmd: DbSubcommand,
+}
+
+#[derive(Args, Debug)]
+struct LintArgs {
+    #[arg(help = "Project directory to lint (default: current directory)")]
+    path: Option<String>,
+}
+
+#[derive(Args, Debug)]
+struct MailArgs {
+    #[arg(long, help = "Port to listen on", default_value_t = crush_build::mailbox::DEFAULT_PORT)]
+    port: u16,
+}
+
+#[derive(Args, Debug)]
+struct GatewayArgs {
+    #[arg(long, help = "Public port the gateway listens on")]
+    listen: Option<u16>,
+    #[arg(long, help = "File holding the current upstream port (read per-connection)")]
+    target_file: String,
+    #[arg(long, help = "Flip the upstream to this port and exit (the zero-downtime switch)")]
+    set: Option<u16>,
+}
+
+#[derive(Subcommand, Debug)]
+enum DbSubcommand {
+    #[command(about = "Save the current database state under a name")]
+    Snapshot {
+        #[arg(help = "Snapshot name (e.g. cart-populated)")]
+        name: String,
+        #[arg(long, help = "Database URL (defaults to DATABASE_URL / crush-managed service)")]
+        url: Option<String>,
+    },
+    #[command(about = "Restore the database to a saved snapshot")]
+    Restore {
+        #[arg(help = "Snapshot name to restore")]
+        name: String,
+        #[arg(long, help = "Database URL (defaults to DATABASE_URL / crush-managed service)")]
+        url: Option<String>,
+        #[arg(long, short = 'y', help = "Skip the overwrite confirmation")]
+        yes: bool,
+    },
+    #[command(about = "List saved snapshots for this project")]
+    Ls,
+    #[command(about = "Delete a saved snapshot")]
+    Rm {
+        #[arg(help = "Snapshot name to delete")]
+        name: String,
+    },
+}
+
+#[derive(Args, Debug)]
 struct CiArgs {
     #[arg(help = "CI system: github, appveyor, or codemagic (default: auto from stack)")]
     system: Option<String>,
@@ -609,6 +690,10 @@ pub struct DeployArgs {
     status: bool,
     #[arg(long, help = "Destroy the deployment and remove the server")]
     destroy: bool,
+    #[arg(long, default_value = "rolling", help = "Rollout strategy: rolling (default) or blue-green (zero-downtime, SSH/VPS)")]
+    strategy: String,
+    #[arg(long, help = "Blue-green health check path", default_value = "/")]
+    health_path: String,
 }
 
 fn format_mem(bytes: u64) -> String {
@@ -1875,9 +1960,122 @@ async fn run_eject(args: EjectArgs) -> anyhow::Result<()> {
 
     println!(" {} wrote {}", "✓".green().bold(), dockerfile_path.display().to_string().bold());
     println!(" {} wrote {}", "✓".green().bold(), compose_path.display().to_string().bold());
+
+    // Cross-OS pre-flight: catch Windows→Linux landmines (case-sensitive import
+    // paths) before they break the container build. Eject is exactly the moment
+    // a project crosses from NTFS to ext4, so lint here.
+    print_cross_os_lint(&crush_build::lint::lint_cross_os(&project_root));
+
     println!("   {} review and edit, then deploy: {}",
         "↳".cyan(),
         "docker compose up --build".dimmed());
+    Ok(())
+}
+
+/// Print cross-OS lint findings. Returns true when the project is clean.
+fn print_cross_os_lint(findings: &[crush_build::lint::LintFinding]) -> bool {
+    if findings.is_empty() {
+        println!(" {} cross-OS lint: no case-sensitivity issues found", "✓".green().bold());
+        return true;
+    }
+    println!("\n {} cross-OS lint found {} issue{} that will break the Linux build:",
+        "⚠".yellow().bold(),
+        findings.len(),
+        if findings.len() == 1 { "" } else { "s" });
+    for f in findings {
+        if f.line > 0 {
+            println!("   {} {}:{}  {}", "•".yellow(), f.file.bold(), f.line, f.message);
+            println!("       {} change {} → {}", "↳".cyan(), f.specifier.red(), f.suggestion.green());
+        } else {
+            println!("   {} {}  {}", "•".yellow(), f.file.bold(), f.message);
+        }
+    }
+    println!("   {} these resolve on Windows (NTFS) but fail in the container (ext4).", "↳".dimmed());
+    false
+}
+
+/// `crush lint` — standalone cross-OS pre-flight. Exits non-zero on findings so
+/// it's usable as a CI gate.
+fn run_lint(args: LintArgs) -> anyhow::Result<()> {
+    let root = match &args.path {
+        Some(p) => std::path::PathBuf::from(p),
+        None => std::env::current_dir()?,
+    };
+    if !root.is_dir() {
+        anyhow::bail!("not a directory: {}", root.display());
+    }
+    let clean = print_cross_os_lint(&crush_build::lint::lint_cross_os(&root));
+    if !clean {
+        std::process::exit(1);
+    }
+    Ok(())
+}
+
+/// `crush mail` — run the local SMTP sink and print captured mail as it arrives.
+/// Point an app at SMTP_HOST=localhost / SMTP_PORT=<port> and its outgoing email
+/// lands here instead of being delivered.
+async fn run_mail_cmd(args: MailArgs) -> anyhow::Result<()> {
+    use crush_build::mailbox::{self, MailStore};
+    let store = MailStore::new();
+    println!("{} mail catcher listening on {}", "→".cyan(), format!("localhost:{}", args.port).bold());
+    println!("   {} set {} and {} in your app to capture its email here",
+        "↳".cyan(),
+        format!("SMTP_HOST=localhost").bold(),
+        format!("SMTP_PORT={}", args.port).bold());
+    println!("   {} press {} to stop\n", "↳".cyan(), "Ctrl-C".bold());
+
+    let on_new = |m: &mailbox::CapturedMail| {
+        println!("{} {}  {}",
+            "✉".green().bold(),
+            m.subject.bold(),
+            format!("from {} → {}", m.from, m.to.join(", ")).dimmed());
+        let preview: String = m.body.lines().take(3).collect::<Vec<_>>().join("\n");
+        if !preview.trim().is_empty() {
+            for line in preview.lines() {
+                println!("   {} {}", "│".dimmed(), line.dimmed());
+            }
+        }
+    };
+
+    tokio::select! {
+        r = mailbox::serve(args.port, store, on_new) => {
+            r.map_err(|e| anyhow::anyhow!("mail catcher failed to bind :{} — {e} (is one already running?)", args.port))?;
+        }
+        _ = tokio::signal::ctrl_c() => {
+            println!("\n{} mail catcher stopped", "↳".cyan());
+        }
+    }
+    Ok(())
+}
+
+/// `crush gateway` — the blue-green traffic director. With `--set` it atomically
+/// flips the upstream and exits; otherwise it runs the forwarder on `--listen`.
+async fn run_gateway_cmd(args: GatewayArgs) -> anyhow::Result<()> {
+    use crush_build::gateway;
+    let target_file = std::path::PathBuf::from(&args.target_file);
+
+    if let Some(port) = args.set {
+        gateway::write_target(&target_file, port)
+            .map_err(|e| anyhow::anyhow!("failed to write target file {}: {e}", args.target_file))?;
+        println!("{} gateway upstream → :{}", "✓".green().bold(), port);
+        return Ok(());
+    }
+
+    let listen = args.listen.ok_or_else(|| anyhow::anyhow!("--listen <port> is required to run the gateway"))?;
+    let current = gateway::read_target(&target_file)
+        .map(|p| p.to_string())
+        .unwrap_or_else(|| "(none yet)".into());
+    println!("{} gateway listening on :{} → upstream :{} {}",
+        "→".cyan(), listen, current, format!("(target: {})", args.target_file).dimmed());
+
+    tokio::select! {
+        r = gateway::run_gateway(listen, target_file) => {
+            r.map_err(|e| anyhow::anyhow!("gateway failed to bind :{} — {e}", listen))?;
+        }
+        _ = tokio::signal::ctrl_c() => {
+            println!("\n{} gateway stopped", "↳".cyan());
+        }
+    }
     Ok(())
 }
 
@@ -2057,6 +2255,89 @@ fn run_catalog(args: CatalogArgs) -> anyhow::Result<()> {
     println!("\n{} pull one with: {}", "↳".cyan(), "crush pull <reference>".bold());
     println!("{} entries tagged {} also run as managed services: {}",
         "↳".cyan(), "(native)".green(), "crush services".bold());
+    Ok(())
+}
+
+async fn run_tunnel_cmd(args: TunnelArgs) -> anyhow::Result<()> {
+    use crush_build::tunnel::{self, TunnelEvent};
+
+    // Resolve the port: explicit flag wins, else fall back to the detected
+    // project port so `crush tunnel` "just works" inside a project dir.
+    let root = std::env::current_dir()?;
+    let detection = crush_build::CrushSpecDetector::new().detect(&root);
+    let port = match args.port {
+        Some(p) => p,
+        None => {
+            let p = detection.port;
+            if p == 0 {
+                anyhow::bail!(
+                    "couldn't infer a port for this project — pass one explicitly: {}",
+                    "crush tunnel <port>".bold()
+                );
+            }
+            println!("{} no port given — using detected port {}", "↳".cyan(), p.to_string().bold());
+            p
+        }
+    };
+
+    // If the project talks to webhook senders, say which ones this tunnel serves.
+    let webhook = crush_build::env::tunnel_providers(&detection.external_services);
+    if !webhook.is_empty() {
+        let names = webhook.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ");
+        println!("{} webhook providers detected: {}", "↳".cyan(), names.bold());
+    }
+
+    println!("{} opening tunnel to localhost:{}\u{2026}", "→".cyan(), port);
+
+    let (tx, mut rx) = tokio::sync::mpsc::channel::<TunnelEvent>(256);
+    // Drain log/exit events in the background; `open` returns once the URL is up.
+    let printer = tokio::spawn(async move {
+        while let Some(ev) = rx.recv().await {
+            match ev {
+                TunnelEvent::Log { line } => eprintln!("  {}", line.dimmed()),
+                TunnelEvent::Exited { code } => {
+                    eprintln!("{} tunnel process exited ({code})", "✗".red());
+                }
+                TunnelEvent::Ready { .. } => {} // handled on the return value
+            }
+        }
+    });
+
+    let mut handle = match tunnel::open(port, args.provider.as_deref(), tx).await {
+        Ok(h) => h,
+        Err(e) => {
+            printer.abort();
+            anyhow::bail!(
+                "{e}\n   {} cloudflared is downloaded automatically; ngrok/outray need to be installed \
+                 and a token set (NGROK_AUTHTOKEN / OUTRAY_TOKEN)",
+                "↳".cyan()
+            );
+        }
+    };
+
+    println!();
+    println!("  {}  {}", "Public URL:".dimmed(), handle.url().green().bold());
+    println!("  {}  {}", "Provider:  ".dimmed(), handle.provider().as_str());
+    println!("  {}  http://localhost:{}", "Forwards → ".dimmed(), port);
+    if !webhook.is_empty() {
+        println!(
+            "\n  {} point your provider's webhook/callback URL at the public URL above.",
+            "tip:".yellow()
+        );
+    }
+    println!("\n{} tunnel is live — press {} to stop", "✓".green(), "Ctrl-C".bold());
+
+    // Stay up until the user interrupts or the tunnel process dies on its own.
+    tokio::select! {
+        _ = tokio::signal::ctrl_c() => {
+            println!("\n{} closing tunnel\u{2026}", "↳".cyan());
+            handle.shutdown().await;
+        }
+        code = handle.wait() => {
+            eprintln!("{} tunnel exited unexpectedly ({code})", "✗".red());
+        }
+    }
+    printer.abort();
     Ok(())
 }
 
@@ -2355,6 +2636,42 @@ async fn main() -> anyhow::Result<()> {
         return run_catalog(args);
     }
 
+    // `tunnel` just spawns a tunnel process for a local port — no store needed.
+    if matches!(&command, Commands::Tunnel(_)) {
+        let Commands::Tunnel(args) = command else { unreachable!() };
+        return run_tunnel_cmd(args).await;
+    }
+
+    // `lint` only reads the project tree — no store needed.
+    if matches!(&command, Commands::Lint(_)) {
+        let Commands::Lint(args) = command else { unreachable!() };
+        return run_lint(args);
+    }
+
+    // `mail` runs a standalone SMTP sink — no store needed.
+    if matches!(&command, Commands::Mail(_)) {
+        let Commands::Mail(args) = command else { unreachable!() };
+        return run_mail_cmd(args).await;
+    }
+
+    // `gateway` is the blue-green traffic director — no store needed.
+    if matches!(&command, Commands::Gateway(_)) {
+        let Commands::Gateway(args) = command else { unreachable!() };
+        return run_gateway_cmd(args).await;
+    }
+
+    // `db` wraps native dump/restore tools — no image store needed.
+    if matches!(&command, Commands::Db(_)) {
+        let Commands::Db(args) = command else { unreachable!() };
+        let (action, name, url, yes) = match args.cmd {
+            DbSubcommand::Snapshot { name, url } => ("snapshot", Some(name), url, false),
+            DbSubcommand::Restore { name, url, yes } => ("restore", Some(name), url, yes),
+            DbSubcommand::Ls => ("ls", None, None, false),
+            DbSubcommand::Rm { name } => ("rm", Some(name), None, false),
+        };
+        return commands::db::exec(action, name, url, yes, data_dir).await;
+    }
+
     let store = ImageStore::new(data_dir.join("images")).await?;
 
     match command {
@@ -2374,6 +2691,7 @@ async fn main() -> anyhow::Result<()> {
                 cpu_fraction: cli.cpus,
                 priority: cli.priority.clone(),
                 assume_yes: cli.no_interactive,
+                smtp_capture_port: if cli.mail { Some(crush_build::mailbox::DEFAULT_PORT) } else { None },
             };
 
             let handle = crush_build::run::run_project(project_root.clone(), data_dir.clone(), options).await?;
@@ -2385,6 +2703,9 @@ async fn main() -> anyhow::Result<()> {
             let mut dep_count = 0usize;
             let mut per_service_color: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
             let mut next_color = 0usize;
+            // Holds the live tunnel when `--tunnel` is set; opened once the app
+            // binds its port, torn down when the run ends.
+            let mut tunnel_handle: Option<crush_build::tunnel::Tunnel> = None;
             let filter: std::sync::Arc<tokio::sync::RwLock<FilterMode>> = std::sync::Arc::new(tokio::sync::RwLock::new(FilterMode::All));
             let multi_service: std::sync::Arc<std::sync::atomic::AtomicBool> = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
             let mut any_output = false;
@@ -2559,6 +2880,24 @@ async fn main() -> anyhow::Result<()> {
                                     }
                                 }
                             }
+                            // `--tunnel`: expose this primary port publicly, once.
+                            if cli.tunnel && tunnel_handle.is_none() {
+                                println!("   {} opening public tunnel\u{2026}", "→".cyan());
+                                let (ttx, mut trx) = tokio::sync::mpsc::channel::<crush_build::tunnel::TunnelEvent>(64);
+                                tokio::spawn(async move { while trx.recv().await.is_some() {} });
+                                match crush_build::tunnel::open(port, cli.tunnel_provider.as_deref(), ttx).await {
+                                    Ok(h) => {
+                                        println!("   {} public URL: {}  {}",
+                                            "✓".green().bold(),
+                                            h.url().green().bold(),
+                                            format!("(via {})", h.provider().as_str()).dimmed());
+                                        tunnel_handle = Some(h);
+                                    }
+                                    Err(e) => {
+                                        eprintln!("   {} tunnel failed: {}", "⚠".yellow().bold(), e);
+                                    }
+                                }
+                            }
                         }
                     }
 
@@ -2602,6 +2941,23 @@ async fn main() -> anyhow::Result<()> {
             println!("  Build cmd:  {}", stack.build_command);
             println!("  Entrypoint: {}", stack.entry_point);
             println!("  Port:       {}", stack.default_port);
+            if !stack.services.is_empty() {
+                println!("  Services:   {}", stack.services.iter()
+                    .map(|s| format!("{} (:{})", s.name, s.port)).collect::<Vec<_>>().join(", "));
+            }
+            if !stack.external_services.is_empty() {
+                println!("  External:   {}", stack.external_services.iter()
+                    .map(|s| format!("{} [{}]", s.name, s.kind)).collect::<Vec<_>>().join(", "));
+            }
+            // Tunnel hint: webhook senders (Paystack/Stripe/Clerk/…) can't reach
+            // localhost, so flag that this project wants a public URL in dev.
+            let webhook = crush_build::env::tunnel_providers(&stack.external_services);
+            if !webhook.is_empty() {
+                let names = webhook.iter().map(|s| s.name.as_str()).collect::<Vec<_>>().join(", ");
+                println!("  Tunnel:     {} need a public URL for webhooks", names.yellow());
+                println!("              {} {}", "↳".cyan(),
+                    format!("crush tunnel {}  (or  crush run --tunnel)", stack.default_port).bold());
+            }
         }
         Commands::Build(args) => {
             commands::build::exec(&args, &store).await?;
@@ -3636,6 +3992,11 @@ async fn main() -> anyhow::Result<()> {
         Commands::Clean(_) => unreachable!("clean is handled before the image store opens"),
         Commands::Ci(_) => unreachable!("ci is handled before the image store opens"),
         Commands::Catalog(_) => unreachable!("catalog is handled before the image store opens"),
+        Commands::Tunnel(_) => unreachable!("tunnel is handled before the image store opens"),
+        Commands::Db(_) => unreachable!("db is handled before the image store opens"),
+        Commands::Lint(_) => unreachable!("lint is handled before the image store opens"),
+        Commands::Mail(_) => unreachable!("mail is handled before the image store opens"),
+        Commands::Gateway(_) => unreachable!("gateway is handled before the image store opens"),
         Commands::Scan(args) => {
             if args.fix || args.image.is_none() {
                 let root = std::env::current_dir()?;
@@ -4591,6 +4952,64 @@ async fn main() -> anyhow::Result<()> {
             let tar_path = std::env::temp_dir().join(format!("{}-deploy.tar", project));
             store.export_oci_tarball(&digest, &tar_path).await
                 .map_err(|e| anyhow::anyhow!("Export failed: {}", e))?;
+
+            // Zero-downtime path: drive a blue-green rollout over SSH (crush
+            // controls the host). Cloud PaaS providers do their own rollout, so
+            // for those we note it and fall through to the standard deploy.
+            if args.strategy == "blue-green" {
+                if provider_name == "ssh" {
+                    use crush_deploy::bluegreen::{self, Outcome};
+                    use crush_deploy::ssh::SshBlueGreen;
+                    use crush_deploy::SshProvider;
+
+                    let s = deploy_config.ssh.as_ref()
+                        .ok_or_else(|| anyhow::anyhow!("Missing [deploy.ssh] section"))?;
+                    let public_port = stack.default_port;
+                    println!("[3/3] Blue-green rollout to {} (public :{})...", s.host, public_port);
+
+                    let ssh = SshProvider::new(
+                        &s.host,
+                        s.port.unwrap_or(22),
+                        s.user.as_deref().unwrap_or("root"),
+                        s.key.as_deref(),
+                    );
+                    let bg = SshBlueGreen::new(ssh, &project, public_port);
+                    let env = deploy_config.env.clone().unwrap_or_default();
+                    let opts = bluegreen::Options { health_path: args.health_path.clone(), ..Default::default() };
+
+                    println!("  {} bringing up the idle color & health-checking before any traffic flips\u{2026}", "↳".cyan());
+                    let Outcome { new_color, retired, .. } =
+                        bluegreen::execute(&bg, &project, public_port, &tar_path, &env, &opts).await?;
+
+                    println!("\n{} live on {} {}",
+                        "✓".green().bold(),
+                        new_color.as_str().bold(),
+                        format!("(zero-downtime — gateway flipped on :{})", public_port).dimmed());
+                    if let Some(r) = retired {
+                        println!("   {} drained & retired {}", "↳".cyan(), r);
+                    }
+
+                    let info = crush_deploy::DeploymentInfo {
+                        provider: "ssh".to_string(),
+                        project: project.clone(),
+                        server_id: s.host.clone(),
+                        public_ip: s.host.clone(),
+                        region: "custom".to_string(),
+                        deployed_at: chrono::Utc::now().to_rfc3339(),
+                        image_digest: digest.clone(),
+                        port: public_port,
+                        domain: deploy_config.domain.clone(),
+                        status: crush_deploy::DeployStatus::Running,
+                    };
+                    state.save(&info)?;
+                    let _ = std::fs::remove_file(&tar_path);
+                    println!("\n  URL: http://{}:{}", s.host, public_port);
+                    println!("  tail logs with: {}", "crush deploy --logs -f".dimmed());
+                    return Ok(());
+                }
+                println!("  {} --strategy blue-green is implemented for the `ssh` provider; {} manages its own rollout — doing a standard deploy.",
+                    "⚠".yellow(), provider_name.bold());
+            }
 
             // Provision infra
             println!("[3/4] Provisioning {}...", provider_name);

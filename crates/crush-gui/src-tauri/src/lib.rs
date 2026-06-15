@@ -5,7 +5,7 @@ pub mod platform;
 
 use state::AppState;
 use std::sync::Arc;
-use tauri::Manager;
+use tauri::{Manager, Emitter};
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
@@ -32,13 +32,34 @@ pub fn run() {
 
             let ai = crush_ai::AiEngine::new(None, data_dir.clone());
 
+            let mailbox = crush_build::mailbox::MailStore::new();
+
             app.manage(AppState {
                 data_dir,
                 store: Arc::new(store),
                 ai: Arc::new(ai),
                 runs: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
                 log_tailers: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+                tunnels: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+                mailbox: mailbox.clone(),
             });
+
+            // Start the local mail catcher (SMTP sink on :1025). It captures any
+            // mail an app sends while developing and notifies the UI on arrival.
+            // Bind failures (port taken) are non-fatal — the app still runs.
+            {
+                let handle = app.handle().clone();
+                tauri::async_runtime::spawn(async move {
+                    let on_new = move |_m: &crush_build::mailbox::CapturedMail| {
+                        let _ = handle.emit("mail-received", ());
+                    };
+                    if let Err(e) = crush_build::mailbox::serve(
+                        crush_build::mailbox::DEFAULT_PORT, mailbox, on_new).await
+                    {
+                        eprintln!("mail catcher not started: {e}");
+                    }
+                });
+            }
 
             Ok(())
         })
@@ -93,6 +114,11 @@ pub fn run() {
             commands::device::device_tap,
             commands::device::device_swipe,
             commands::device::device_key,
+            commands::tunnel::start_tunnel,
+            commands::tunnel::stop_tunnel,
+            commands::tunnel::list_tunnels,
+            commands::mailbox::list_mail,
+            commands::mailbox::clear_mail,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running Crush GUI");

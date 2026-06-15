@@ -513,6 +513,11 @@ impl CrushSpecDetector {
             best.services = services;
         }
 
+        // Surface managed/BaaS providers (Supabase, Firebase, Appwrite, Neon,
+        // Upstash, …) found in env files. Previously scanned but never attached,
+        // so they never showed up — wire it here.
+        best.external_services = crate::env::scan_external_services(root);
+
         let mut env = if best.is_monorepo {
             crate::env::EnvScanResult {
                 required: Vec::new(),

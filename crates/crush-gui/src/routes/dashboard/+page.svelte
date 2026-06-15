@@ -35,6 +35,48 @@
   // Stack-aware glow for the Run buttons (rainbow for turbo/fast, brand for fullstack)
   let fx = $derived(stackEffect(project?.stack_kind, project?.framework));
 
+  // ── Public tunnel ────────────────────────────────────────────────────────
+  // Webhook-class providers (Paystack/Stripe/Clerk) need a public URL in dev.
+  let webhookProviders = $derived(api.tunnelProviders(project?.external_services));
+  // Prefer the live bound port; fall back to the detected project port.
+  let tunnelPort = $derived(run.port ?? project?.port ?? null);
+  let tunnel = $state<api.TunnelInfo | null>(null);
+  let tunnelBusy = $state(false);
+  let tunnelError = $state<string | null>(null);
+  let copied = $state(false);
+
+  async function startTunnel() {
+    if (!tunnelPort) return;
+    tunnelBusy = true; tunnelError = null;
+    try {
+      tunnel = await api.startTunnel(tunnelPort);
+    } catch (e) {
+      tunnelError = String(e);
+    } finally {
+      tunnelBusy = false;
+    }
+  }
+  async function stopTunnel() {
+    if (!tunnel) return;
+    tunnelBusy = true;
+    try {
+      await api.stopTunnel(tunnel.port);
+      tunnel = null;
+    } catch (e) {
+      tunnelError = String(e);
+    } finally {
+      tunnelBusy = false;
+    }
+  }
+  async function copyTunnel() {
+    if (!tunnel) return;
+    try {
+      await navigator.clipboard.writeText(tunnel.url);
+      copied = true;
+      setTimeout(() => { copied = false; }, 1500);
+    } catch { /* clipboard unavailable */ }
+  }
+
   // Summary-card previews (top few items per resource).
   let runningContainers = $derived($containers.filter(c => c.status === 'running'));
   let topImages = $derived([...$images].sort((a, b) => b.size_bytes - a.size_bytes).slice(0, 3));
@@ -247,6 +289,34 @@
                   </span>
                 {/each}
               </div>
+            </div>
+          {/if}
+
+          {#if webhookProviders.length > 0 || tunnel}
+            <div class="tunnel-row">
+              <span class="uses-label">Tunnel</span>
+              <div class="tunnel-body">
+                {#if tunnel}
+                  <a class="tunnel-url" href={tunnel.url} onclick={(e) => { e.preventDefault(); api.openUrl(tunnel!.url); }} title="Open public URL">
+                    <Icon name="globe" size={13} /> {tunnel.url}
+                  </a>
+                  <span class="tunnel-via">via {tunnel.provider}</span>
+                  <button class="ghost-btn sm" onclick={() => copyTunnel()} title="Copy URL">
+                    <Icon name={copied ? 'check' : 'copy'} size={13} /> {copied ? 'copied' : 'copy'}
+                  </button>
+                  <button class="ghost-btn sm danger" onclick={() => stopTunnel()} disabled={tunnelBusy}>
+                    <Icon name="x" size={13} /> stop
+                  </button>
+                {:else}
+                  <span class="tunnel-hint">
+                    {webhookProviders.map((p) => p.name).join(', ')} need a public URL for webhooks
+                  </span>
+                  <button class="ghost-btn sm accent" onclick={() => startTunnel()} disabled={tunnelBusy || !tunnelPort}>
+                    <Icon name="globe" size={13} /> {tunnelBusy ? 'opening…' : 'expose publicly'}
+                  </button>
+                {/if}
+              </div>
+              {#if tunnelError}<div class="tunnel-err">{tunnelError}</div>{/if}
             </div>
           {/if}
         {/if}
@@ -558,4 +628,15 @@
   .uses-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-crush-text-muted); font-weight: 600; flex-shrink: 0; }
   .inline-chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .ext-chip { background: rgba(99,102,241,0.06) !important; border-color: rgba(99,102,241,0.18) !important; color: #a5b4fc !important; font-weight: 500; }
+
+  /* ── tunnel ── */
+  .tunnel-row { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; padding-top: 10px; flex-wrap: wrap; }
+  .tunnel-body { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; }
+  .tunnel-hint { font-size: 12.5px; color: var(--color-crush-text-muted); }
+  .tunnel-url { display: inline-flex; align-items: center; gap: 6px; font-family: var(--font-mono); font-size: 12.5px; color: #4ade80; text-decoration: none; padding: 4px 9px; border-radius: 0.6rem; background: rgba(74,222,128,0.08); border: 1px solid rgba(74,222,128,0.22); }
+  .tunnel-url:hover { background: rgba(74,222,128,0.14); }
+  .tunnel-via { font-size: 11.5px; color: var(--color-crush-text-muted); }
+  .tunnel-err { flex-basis: 100%; font-size: 12px; color: var(--color-crush-red); margin-top: 2px; }
+  .ghost-btn.accent { color: #4ade80; border-color: rgba(74,222,128,0.3); }
+  .ghost-btn.accent:hover { background: rgba(74,222,128,0.08); border-color: rgba(74,222,128,0.55); }
 </style>

@@ -10,6 +10,7 @@
     { href: '/services', icon: 'services', label: 'Services' },
     { href: '/images', icon: 'images', label: 'Images' },
     { href: '/logs', icon: 'logs', label: 'Logs' },
+    { href: '/mailbox', icon: 'mail', label: 'Mailbox' },
   ];
 
   const bottomLinks = [

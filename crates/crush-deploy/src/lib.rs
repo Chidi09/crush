@@ -1,5 +1,6 @@
 pub mod provider;
 pub mod state;
+pub mod bluegreen;
 pub mod ssh;
 pub mod hetzner;
 pub mod digitalocean;

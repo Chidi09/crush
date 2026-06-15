@@ -23,6 +23,10 @@ pub struct AppState {
     pub ai: Arc<AiEngine>,
     pub runs: Arc<RwLock<HashMap<RunId, RunProcess>>>,
     pub log_tailers: Arc<RwLock<HashMap<String, LogTailer>>>,
+    /// Live public tunnels, keyed by the local port they expose.
+    pub tunnels: Arc<RwLock<HashMap<u16, crush_build::tunnel::Tunnel>>>,
+    /// Captured dev emails from the embedded SMTP sink (:1025).
+    pub mailbox: crush_build::mailbox::MailStore,
 }
 
 impl AppState {

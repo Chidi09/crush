@@ -144,6 +144,11 @@ pub struct RunOptions {
     /// own warm-run heuristic).
     #[serde(default)]
     pub assume_yes: bool,
+    /// When set, inject `SMTP_HOST=localhost` / `SMTP_PORT=<this>` into the app
+    /// so its outgoing mail is captured by the local catcher (GUI sets this; the
+    /// user's own SMTP_* env still wins).
+    #[serde(default)]
+    pub smtp_capture_port: Option<u16>,
 }
 
 /// Handle to an in-progress run, returned by `run_project()`. The caller
@@ -343,6 +348,21 @@ pub fn translate_env_refs_for_cmd(s: &str) -> String {
 
 /// Spawns a command line through the OS shell so PATH lookups resolve `.cmd`,
 /// `.bat`, and `.ps1` shims. On Unix, executes directly via the program parts.
+/// Point the app at the local mail catcher unless the developer already set
+/// SMTP env themselves (their value wins). Injects the common variable spellings
+/// so most mailer libraries pick it up.
+fn inject_smtp_capture(cmd: &mut tokio::process::Command, env: &[(String, String)], port: Option<u16>) {
+    let Some(port) = port else { return };
+    let already = |k: &str| env.iter().any(|(ek, _)| ek == k) || std::env::var(k).is_ok();
+    if !already("SMTP_HOST") { cmd.env("SMTP_HOST", "localhost"); }
+    if !already("SMTP_PORT") { cmd.env("SMTP_PORT", port.to_string()); }
+    // Common alternates so Nodemailer/Django/Rails-style configs also catch.
+    if !already("MAIL_HOST") { cmd.env("MAIL_HOST", "localhost"); }
+    if !already("MAIL_PORT") { cmd.env("MAIL_PORT", port.to_string()); }
+    if !already("EMAIL_HOST") { cmd.env("EMAIL_HOST", "localhost"); }
+    if !already("EMAIL_PORT") { cmd.env("EMAIL_PORT", port.to_string()); }
+}
+
 pub fn spawn_shell(cmdline: &str, cwd: &Path, env: &[(String, String)]) -> tokio::process::Command {
     let cmdline = if cmdline.starts_with("java ") {
         if let Ok(jh) = std::env::var("JAVA_HOME") {
@@ -1208,6 +1228,7 @@ async fn run_project_inner(
 
             let mut cmd = spawn_shell(&run, &sub_path, &sub_env);
             cmd.env("PORT", sub.port.to_string());
+            inject_smtp_capture(&mut cmd, &sub_env, options.smtp_capture_port);
             cmd.stdout(std::process::Stdio::piped());
             cmd.stderr(std::process::Stdio::piped());
             match cmd.spawn() {
@@ -1656,6 +1677,7 @@ async fn run_project_inner(
 
     let mut cmd = spawn_shell(entry_str, project_root, &dep_env);
     cmd.env("PORT", port.to_string());
+    inject_smtp_capture(&mut cmd, &dep_env, options.smtp_capture_port);
     if matches!(lang.as_str(), "python") {
         cmd.env("PYTHONUTF8", "1");
         cmd.env("PYTHONUNBUFFERED", "1");

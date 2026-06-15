@@ -24,6 +24,7 @@
     { id: 'compose',      label: 'Docker Compose' },
     { id: 'commands',     label: 'Command reference' },
     { id: 'services',     label: 'Native services' },
+    { id: 'integrations', label: 'Integrations & tunnels' },
     { id: 'networking',   label: 'Networking' },
     { id: 'volumes',      label: 'Volumes & data' },
     { id: 'images',       label: 'Images & registries' },
@@ -117,6 +118,24 @@
         { cmd: 'crush services stop <svc>',  desc: 'Stop a native service. Data persists in its volume unless you remove it.' },
         { cmd: 'crush network ls',       desc: 'List virtual networks. Each project gets an isolated network so services resolve each other by name.' },
         { cmd: 'crush volume ls',        desc: 'List persistent volumes. Volumes survive restarts and removals; bind mounts point straight at host paths.' },
+        { cmd: 'crush tunnel [port]',    desc: 'Expose a local port to the public internet for webhooks (Paystack, Stripe, Clerk). Defaults to the detected port. Free cloudflared tunnel by default.' },
+        { cmd: 'crush run --tunnel',     desc: 'Run the app and open a public tunnel automatically once its port binds. Add --tunnel-provider ngrok|outray to switch backends.' },
+      ],
+    },
+    {
+      group: 'Mail catcher',
+      items: [
+        { cmd: 'crush mail',          desc: 'Run a local SMTP sink on :1025 that captures outgoing dev email (signup, reset, receipts) instead of delivering it, and prints each message.' },
+        { cmd: 'crush run --mail',    desc: 'Inject SMTP_HOST=localhost / SMTP_PORT=1025 (and MAIL_*/EMAIL_* variants) so the app sends into the catcher. The GUI does this automatically and shows mail under the Mailbox tab.' },
+      ],
+    },
+    {
+      group: 'Database snapshots',
+      items: [
+        { cmd: 'crush db snapshot <name>', desc: 'Freeze the current database state under a name (e.g. cart-populated). Wraps pg_dump / mysqldump. Reads DATABASE_URL or a crush-managed service.' },
+        { cmd: 'crush db restore <name>',  desc: 'Jump the database back to a saved snapshot — a true replacement (drops existing objects first). Add -y to skip the confirmation.' },
+        { cmd: 'crush db ls',              desc: 'List saved snapshots for the current project with engine, size, and age.' },
+        { cmd: 'crush db rm <name>',       desc: 'Delete a saved snapshot.' },
       ],
     },
     {
@@ -132,7 +151,9 @@
       items: [
         { cmd: 'crush deploy',           desc: 'Build and deploy to a cloud target. Crush suggests one from your stack; pass --target to choose.' },
         { cmd: 'crush deploy --target railway', desc: 'Deploy to a specific provider (railway, fly, gcp, aws, digitalocean, hetzner, ssh, …).' },
-        { cmd: 'crush eject',            desc: 'Write a Dockerfile + docker-compose.yml for the detected stack so you can leave Crush anytime — zero lock-in.' },
+        { cmd: 'crush deploy --strategy blue-green', desc: 'Zero-downtime rollout on an SSH/VPS host: crush brings the idle color up beside the live one, health-checks it, then atomically flips the gateway and retires the old release. Rolls back automatically if the new release is unhealthy.' },
+        { cmd: 'crush eject',            desc: 'Write a Dockerfile + docker-compose.yml for the detected stack so you can leave Crush anytime — zero lock-in. Runs the cross-OS lint automatically.' },
+        { cmd: 'crush lint',             desc: 'Cross-OS pre-flight: flag case-sensitive import paths that work on Windows (NTFS) but break in a Linux container. Exits non-zero on findings — usable as a CI gate.' },
       ],
     },
     {
@@ -168,6 +189,36 @@
     { tech: 'redis',    name: 'Redis',      env: 'REDIS_URL',    port: '6379', desc: 'A Redis-wire-compatible server (Garnet/Redis). Injected as REDIS_URL. Inspect keys live in the Services tab; works with redis-cli and every Redis SDK.' },
     { tech: 'mongodb',  name: 'MongoDB',    env: 'MONGO_URL',    port: '27017', desc: 'A portable mongod. Injected as MONGO_URL. The Services tab shows database stats and collection counts; use mongosh or Compass to browse.' },
     { tech: 'minio',    name: 'MinIO (S3)', env: 'S3_ENDPOINT',  port: '9000/9001', desc: 'S3-compatible object storage. Injects S3_ENDPOINT, S3_ACCESS_KEY, S3_SECRET_KEY. The web console runs on :9001; the S3 API on :9000. Works with the AWS SDK and aws-cli.' },
+  ];
+
+  // External / managed providers Crush recognises from your env files and code.
+  // `tunnel: true` marks webhook senders that need a public URL in local dev.
+  const PROVIDERS = [
+    { tech: 'Supabase',    name: 'Supabase',     kind: 'BaaS' },
+    { tech: 'Firebase',    name: 'Firebase',     kind: 'BaaS' },
+    { tech: 'Appwrite',    name: 'Appwrite',     kind: 'BaaS' },
+    { tech: 'Pocketbase',  name: 'PocketBase',   kind: 'BaaS' },
+    { tech: 'Nhost',       name: 'Nhost',        kind: 'BaaS' },
+    { tech: 'Neon',        name: 'Neon',         kind: 'Database' },
+    { tech: 'PlanetScale', name: 'PlanetScale',  kind: 'Database' },
+    { tech: 'Turso',       name: 'Turso',        kind: 'Database' },
+    { tech: 'CockroachDB', name: 'CockroachDB',  kind: 'Database' },
+    { tech: 'mongodb',     name: 'MongoDB Atlas',kind: 'Database' },
+    { tech: 'Upstash',     name: 'Upstash',      kind: 'Cache / KV' },
+    { tech: 'Cloudflare',  name: 'Cloudflare R2',kind: 'Storage' },
+    { tech: 'awss3',       name: 'AWS S3',       kind: 'Storage' },
+    { tech: 'Cloudinary',  name: 'Cloudinary',   kind: 'Storage' },
+    { tech: 'Clerk',       name: 'Clerk',        kind: 'Auth', tunnel: true },
+    { tech: 'Auth0',       name: 'Auth0',        kind: 'Auth', tunnel: true },
+    { tech: 'Stripe',      name: 'Stripe',       kind: 'Payments', tunnel: true },
+    { tech: 'Paystack',    name: 'Paystack',     kind: 'Payments', tunnel: true },
+    { tech: 'Flutterwave', name: 'Flutterwave',  kind: 'Payments', tunnel: true },
+    { tech: 'Resend',      name: 'Resend',       kind: 'Email' },
+    { tech: 'Mailgun',     name: 'Mailgun',      kind: 'Email' },
+    { tech: 'Sentry',      name: 'Sentry',       kind: 'Observability' },
+    { tech: 'Posthog',     name: 'PostHog',      kind: 'Observability' },
+    { tech: 'OpenAI',      name: 'OpenAI',       kind: 'AI' },
+    { tech: 'Anthropic',   name: 'Anthropic',    kind: 'AI' },
   ];
 
   const DEPLOY_TARGETS = [
@@ -452,6 +503,39 @@ healthcheck: curl -f http://localhost:3000/health`}</code>
       <p class="note">List a service in your <code class="inline-code">Crushfile</code> (or compose file) and Crush starts it automatically on <code class="inline-code">crush run</code> — no separate command needed.</p>
     </section>
 
+    <!-- Integrations & tunnels -->
+    <section id="integrations" class="crush-card sec">
+      <div class="sec-head"><Icon name="globe" size={15} /><h2>Integrations &amp; tunnels</h2></div>
+      <p class="sec-desc">Beyond the services it runs for you, Crush recognises the managed/BaaS providers your app talks to — read from your <code class="inline-code">.env</code> files and source. <code class="inline-code">crush detect</code> lists them under <strong>External</strong>, and the dashboard shows them under <strong>Uses</strong>.</p>
+      <div class="prov-grid">
+        {#each PROVIDERS as p}
+          <div class="prov-row">
+            <TechIcon name={p.tech} size={18} />
+            <div class="prov-text">
+              <span class="prov-name">{p.name}</span>
+              <span class="prov-kind">{p.kind}</span>
+            </div>
+            {#if p.tunnel}<span class="prov-tag" title="Needs a public URL for webhooks in local dev">webhook</span>{/if}
+          </div>
+        {/each}
+      </div>
+
+      <h3 class="sub">Tunneling for webhooks</h3>
+      <p class="sec-desc">Webhook senders — Paystack, Stripe, Flutterwave, Clerk — can’t reach <code class="inline-code">localhost</code>. When Crush spots one, it flags that your project needs a public URL and offers to open one. No account or domain required: the default backend is a free <strong>cloudflared</strong> quick tunnel, auto-downloaded on first use.</p>
+      <div class="cmd-block">
+        <div class="cmd"><code>crush tunnel 8000</code><button class="copy" onclick={() => copy('crush tunnel 8000', 'tun1')}>{copied === 'tun1' ? 'Copied' : 'Copy'}</button></div>
+        <div class="cmd"><code>crush run --tunnel</code><button class="copy" onclick={() => copy('crush run --tunnel', 'tun2')}>{copied === 'tun2' ? 'Copied' : 'Copy'}</button></div>
+        <div class="cmd"><code>crush tunnel 8000 --provider ngrok</code><button class="copy" onclick={() => copy('crush tunnel 8000 --provider ngrok', 'tun3')}>{copied === 'tun3' ? 'Copied' : 'Copy'}</button></div>
+      </div>
+      <div class="table mt">
+        <div class="trow thead"><span>Provider</span><span>Setup</span><span>Notes</span></div>
+        <div class="trow"><span class="mono">cloudflared</span><span><span class="pill full">default</span></span><span>Free, no account, no domain. Auto-provisioned. Gives a <code class="inline-code">*.trycloudflare.com</code> HTTPS URL.</span></div>
+        <div class="trow"><span class="mono">ngrok</span><span><span class="pill partial">token</span></span><span>Used when <code class="inline-code">NGROK_AUTHTOKEN</code> is set and ngrok is installed.</span></div>
+        <div class="trow"><span class="mono">outray</span><span><span class="pill partial">token</span></span><span>Used when <code class="inline-code">OUTRAY_TOKEN</code> is set and outray is installed.</span></div>
+      </div>
+      <p class="note">Point your provider’s webhook/callback URL at the public URL Crush prints. In the GUI, the dashboard shows an <strong>expose publicly</strong> button next to detected webhook providers and the live URL once it’s up.</p>
+    </section>
+
     <!-- Networking -->
     <section id="networking" class="crush-card sec">
       <div class="sec-head"><Icon name="branch" size={15} /><h2>Networking</h2></div>
@@ -667,6 +751,16 @@ healthcheck: curl -f http://localhost:3000/health`}</code>
   .dim { color: var(--color-crush-text-muted); }
   .pill { font-size: 11px; padding: 1px 8px; border-radius: 9999px; }
   .pill.full { background: rgba(80,200,120,0.12); color: #6fcf97; border: 1px solid rgba(80,200,120,0.25); }
+  .pill.partial { background: rgba(234,179,8,0.12); color: #eab308; border: 1px solid rgba(234,179,8,0.28); }
+
+  /* integrations / providers */
+  .prov-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(190px, 1fr)); gap: 8px; margin-bottom: 8px; }
+  .prov-row { display: flex; align-items: center; gap: 10px; padding: 8px 10px; border: 1px solid var(--color-crush-border); border-radius: 8px; }
+  .prov-row :global(svg) { flex-shrink: 0; }
+  .prov-text { display: flex; flex-direction: column; min-width: 0; flex: 1; }
+  .prov-name { font-size: 13px; font-weight: 500; }
+  .prov-kind { font-size: 11px; color: var(--color-crush-text-muted); }
+  .prov-tag { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: #eab308; background: rgba(234,179,8,0.1); border: 1px solid rgba(234,179,8,0.25); border-radius: 9999px; padding: 1px 7px; flex-shrink: 0; }
 
   /* vs-docker table uses 3 even-ish columns */
   #vs-docker .trow { grid-template-columns: 130px 1fr 1fr; }

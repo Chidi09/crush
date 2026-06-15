@@ -14,3 +14,5 @@ pub mod deploy;
 pub mod config;
 pub mod inspect;
 pub mod device;
+pub mod tunnel;
+pub mod mailbox;

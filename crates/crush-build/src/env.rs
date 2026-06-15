@@ -9,89 +9,128 @@ pub struct ExternalService {
     pub source_var: String,
 }
 
+impl ExternalService {
+    /// Whether this provider calls *back* into the app via webhooks, meaning a
+    /// local dev server has to be reachable from the public internet (a tunnel)
+    /// to receive those callbacks. Payment processors always do; a couple of
+    /// auth providers send lifecycle webhooks too.
+    pub fn needs_tunnel(&self) -> bool {
+        if self.kind == "payments" {
+            return true;
+        }
+        matches!(self.name.as_str(), "Clerk" | "Auth0")
+    }
+}
+
+/// The detected external services that imply this project wants a tunnel in
+/// local dev (webhook senders such as Paystack/Stripe/Flutterwave/Clerk).
+/// Empty when none apply.
+pub fn tunnel_providers(services: &[ExternalService]) -> Vec<&ExternalService> {
+    services.iter().filter(|s| s.needs_tunnel()).collect()
+}
+
+/// (provider name, kind, &[env-var key patterns]). A pattern matches when the
+/// uppercased key starts with it OR contains it (for `*FIREBASE*`-style vars).
+/// `kind`: "baas" | "database" | "auth" | "cache" | "storage" | "email" |
+/// "payments" | "observability" | "ai" | "hosted".
+const PROVIDERS: &[(&str, &str, &[&str])] = &[
+    // BaaS / hosted backends
+    ("Supabase",    "baas",          &["SUPABASE_", "NEXT_PUBLIC_SUPABASE_"]),
+    ("Firebase",    "baas",          &["FIREBASE", "NEXT_PUBLIC_FIREBASE_", "GOOGLE_APPLICATION_CREDENTIALS"]),
+    ("Appwrite",    "baas",          &["APPWRITE_", "NEXT_PUBLIC_APPWRITE_", "VITE_APPWRITE_"]),
+    ("Pocketbase",  "baas",          &["POCKETBASE_"]),
+    ("Nhost",       "baas",          &["NHOST_"]),
+    // serverless databases
+    ("Neon",        "database",      &["NEON_", "NEON_DATABASE_URL"]),
+    ("PlanetScale", "database",      &["PLANETSCALE_", "PSCALE_", "DATABASE_HOST"]),
+    ("Turso",       "database",      &["TURSO_", "LIBSQL_"]),
+    ("CockroachDB", "database",      &["COCKROACH_", "COCKROACHDB_"]),
+    ("Xata",        "database",      &["XATA_"]),
+    ("MongoDB Atlas","database",     &["MONGODB_ATLAS_", "ATLAS_URI"]),
+    // cache / kv / queue
+    ("Upstash",     "cache",         &["UPSTASH_"]),
+    // storage
+    ("Cloudflare R2","storage",      &["R2_", "CLOUDFLARE_R2_"]),
+    ("Cloudflare",  "hosted",        &["CLOUDFLARE_", "CF_ACCOUNT_ID", "CF_API_TOKEN"]),
+    ("AWS S3",      "storage",       &["AWS_S3_", "S3_BUCKET"]),
+    ("Cloudinary",  "storage",       &["CLOUDINARY_"]),
+    // auth
+    ("Clerk",       "auth",          &["CLERK_", "NEXT_PUBLIC_CLERK_"]),
+    ("Auth0",       "auth",          &["AUTH0_"]),
+    ("NextAuth",    "auth",          &["NEXTAUTH_"]),
+    ("Kinde",       "auth",          &["KINDE_"]),
+    // payments
+    ("Stripe",      "payments",      &["STRIPE_"]),
+    ("Paystack",    "payments",      &["PAYSTACK_"]),
+    ("Flutterwave", "payments",      &["FLUTTERWAVE_", "FLW_"]),
+    // email
+    ("Resend",      "email",         &["RESEND_"]),
+    ("SendGrid",    "email",         &["SENDGRID_"]),
+    ("Postmark",    "email",         &["POSTMARK_"]),
+    ("Mailgun",     "email",         &["MAILGUN_"]),
+    // observability / AI
+    ("Sentry",      "observability", &["SENTRY_DSN", "SENTRY_"]),
+    ("PostHog",     "observability", &["POSTHOG_", "NEXT_PUBLIC_POSTHOG_"]),
+    ("OpenAI",      "ai",            &["OPENAI_API_KEY", "OPENAI_"]),
+    ("Anthropic",   "ai",            &["ANTHROPIC_API_KEY", "ANTHROPIC_"]),
+];
+
+/// Detect a managed provider from a `DATABASE_URL`-style value by its host.
+fn provider_from_url(value: &str) -> Option<(&'static str, &'static str)> {
+    let v = value.to_lowercase();
+    if v.contains("neon.tech") { Some(("Neon", "database")) }
+    else if v.contains("supabase.co") || v.contains("supabase.com") { Some(("Supabase", "baas")) }
+    else if v.contains("planetscale") || v.contains("psdb.cloud") { Some(("PlanetScale", "database")) }
+    else if v.starts_with("libsql://") || v.contains("turso.io") { Some(("Turso", "database")) }
+    else if v.contains("upstash.io") { Some(("Upstash", "cache")) }
+    else if v.contains("mongodb.net") { Some(("MongoDB Atlas", "database")) }
+    else if v.contains("cockroachlabs.cloud") { Some(("CockroachDB", "database")) }
+    else if v.contains("render.com") { Some(("Render", "hosted")) }
+    else if v.starts_with("postgres") || v.starts_with("postgresql") { Some(("PostgreSQL", "database")) }
+    else if v.starts_with("mongodb") { Some(("MongoDB", "database")) }
+    else if v.starts_with("redis") || v.starts_with("rediss") { Some(("Redis", "cache")) }
+    else if v.starts_with("mysql") { Some(("MySQL", "database")) }
+    else { None }
+}
+
 pub fn scan_external_services(root: &Path) -> Vec<ExternalService> {
-    let mut services = Vec::new();
-    let env_files = [".env", ".env.local", ".env.development", ".env.production", ".env.staging", ".env.example"];
+    let mut services: Vec<ExternalService> = Vec::new();
+    let mut add = |name: &str, kind: &str, key: &str, services: &mut Vec<ExternalService>| {
+        if !services.iter().any(|s| s.name == name) {
+            services.push(ExternalService { name: name.to_string(), kind: kind.to_string(), source_var: key.to_string() });
+        }
+    };
+
+    let env_files = [".env", ".env.local", ".env.development", ".env.production", ".env.staging", ".env.example", ".env.sample", ".env.template"];
     for file in &env_files {
         let path = root.join(file);
-        if !path.exists() {
-            continue;
-        }
-        if let Ok(content) = fs::read_to_string(&path) {
-            for line in content.lines() {
-                let line = line.trim();
-                if line.is_empty() || line.starts_with('#') {
-                    continue;
+        if !path.exists() { continue; }
+        let Ok(content) = fs::read_to_string(&path) else { continue };
+        for line in content.lines() {
+            let line = line.trim().trim_start_matches("export ").trim_start();
+            if line.is_empty() || line.starts_with('#') { continue; }
+            let mut parts = line.splitn(2, '=');
+            let key = parts.next().unwrap_or("").trim();
+            let value = parts.next().unwrap_or("").trim().trim_matches(['"', '\'']);
+            if key.is_empty() { continue; }
+            let ku = key.to_uppercase();
+
+            // 1) Provider by env-var key pattern.
+            let mut matched = false;
+            for (name, kind, patterns) in PROVIDERS {
+                if patterns.iter().any(|p| ku.starts_with(p) || ku.contains(p)) {
+                    add(name, kind, key, &mut services);
+                    matched = true;
+                    break;
                 }
-                let mut parts = line.split('=');
-                let key = parts.next().unwrap_or("").trim();
-                let value = parts.next().unwrap_or("").trim();
-                if key.is_empty() {
-                    continue;
-                }
-                
-                let key_upper = key.to_uppercase();
-                if key_upper == "SUPABASE_URL" || key_upper.starts_with("NEXT_PUBLIC_SUPABASE_") {
-                    if !services.iter().any(|s: &ExternalService| s.name == "Supabase") {
-                        services.push(ExternalService {
-                            name: "Supabase".to_string(),
-                            kind: "hosted".to_string(),
-                            source_var: key.to_string(),
-                        });
-                    }
-                } else if key_upper.starts_with("UPSTASH_") {
-                    if !services.iter().any(|s: &ExternalService| s.name == "Upstash") {
-                        services.push(ExternalService {
-                            name: "Upstash".to_string(),
-                            kind: "hosted".to_string(),
-                            source_var: key.to_string(),
-                        });
-                    }
-                } else if key_upper.contains("FIREBASE") {
-                    if !services.iter().any(|s: &ExternalService| s.name == "Firebase") {
-                        services.push(ExternalService {
-                            name: "Firebase".to_string(),
-                            kind: "hosted".to_string(),
-                            source_var: key.to_string(),
-                        });
-                    }
-                } else if key_upper.starts_with("CLERK_") || key_upper.starts_with("NEXT_PUBLIC_CLERK_") {
-                    if !services.iter().any(|s: &ExternalService| s.name == "Clerk") {
-                        services.push(ExternalService {
-                            name: "Clerk".to_string(),
-                            kind: "hosted".to_string(),
-                            source_var: key.to_string(),
-                        });
-                    }
-                } else if key_upper.starts_with("AUTH0_") {
-                    if !services.iter().any(|s: &ExternalService| s.name == "Auth0") {
-                        services.push(ExternalService {
-                            name: "Auth0".to_string(),
-                            kind: "hosted".to_string(),
-                            source_var: key.to_string(),
-                        });
-                    }
-                } else if key_upper == "DATABASE_URL" || key_upper == "MONGODB_URI" || key_upper == "REDIS_URL" || key_upper == "MYSQL_URL" {
-                    let val_lower = value.to_lowercase();
-                    let (name, kind) = if val_lower.starts_with("postgres") || val_lower.starts_with("postgresql") {
-                        ("PostgreSQL".to_string(), "external".to_string())
-                    } else if val_lower.starts_with("mongodb") {
-                        ("MongoDB".to_string(), "external".to_string())
-                    } else if val_lower.starts_with("redis") {
-                        ("Redis".to_string(), "external".to_string())
-                    } else if val_lower.starts_with("mysql") {
-                        ("MySQL".to_string(), "external".to_string())
-                    } else {
-                        continue;
-                    };
-                    
-                    if !services.iter().any(|s: &ExternalService| s.name == name) {
-                        services.push(ExternalService {
-                            name,
-                            kind,
-                            source_var: key.to_string(),
-                        });
-                    }
+            }
+            if matched { continue; }
+
+            // 2) Connection-string vars: identify the managed host.
+            if ku.ends_with("DATABASE_URL") || ku.ends_with("_URL") && (ku.contains("DB") || ku.contains("REDIS") || ku.contains("MONGO") || ku.contains("DATABASE"))
+                || matches!(ku.as_str(), "DATABASE_URL" | "MONGODB_URI" | "MONGO_URI" | "REDIS_URL" | "MYSQL_URL" | "POSTGRES_URL") {
+                if let Some((name, kind)) = provider_from_url(value) {
+                    add(name, kind, key, &mut services);
                 }
             }
         }

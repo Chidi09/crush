@@ -113,6 +113,47 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
       </div>
     </section>
 
+    <!-- New in 1.0 -->
+    <section class="py-20 sm:py-24 border-b border-crush-border/30 relative overflow-hidden">
+      <div class="mx-auto max-w-7xl px-4 sm:px-6 lg:px-8 relative">
+        <div class="mx-auto max-w-3xl text-center mb-14 select-none">
+          <div
+            class="mb-4 inline-flex items-center gap-1.5 rounded-full border border-crush-orange/20 bg-crush-orange/5 px-3 py-1 text-xs font-semibold text-crush-orange uppercase tracking-wider"
+          >
+            New in 1.0
+          </div>
+          <h2 class="text-4xl font-extrabold tracking-tight text-white sm:text-5xl">
+            The full lifecycle, natively
+          </h2>
+          <p class="mt-4 text-lg text-crush-textMuted max-w-2xl mx-auto text-balance">
+            Develop, integrate, expose, snapshot, and ship with zero downtime — without a single
+            container in your dev loop.
+          </p>
+        </div>
+
+        <div class="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">
+          @for (f of whatsNew; track f.title) {
+            <div
+              class="rounded-2xl border border-crush-border/60 bg-card p-6 hover:border-crush-orange/30 transition-colors duration-300"
+            >
+              <div class="text-xs font-mono text-crush-orange mb-2">{{ f.cmd }}</div>
+              <h3 class="text-lg font-bold text-white mb-2">{{ f.title }}</h3>
+              <p class="text-sm text-crush-textMuted leading-relaxed">{{ f.body }}</p>
+            </div>
+          }
+        </div>
+
+        <div class="mt-10 text-center">
+          <a
+            routerLink="/changelog"
+            class="inline-flex items-center gap-1.5 text-sm font-semibold text-crush-orange hover:text-crush-orangeLight transition-colors"
+          >
+            See the full 1.0 changelog →
+          </a>
+        </div>
+      </div>
+    </section>
+
     <!-- Features -->
     <section class="py-24 sm:py-32 relative overflow-hidden">
       <!-- Ambient light gradients background -->
@@ -1035,6 +1076,40 @@ import { ComparisonTableComponent } from '../components/comparison-table/compari
 export default class IndexPage implements OnInit {
   activeFaq = signal<number | null>(null);
   selectedStack = signal<number>(0);
+
+  // Headline capabilities introduced in 1.0 (full list lives in /changelog).
+  whatsNew = [
+    {
+      cmd: 'crush deploy --strategy blue-green',
+      title: 'Zero-downtime deploys',
+      body: 'Crush brings the new release up beside the old, health-checks it, then atomically flips traffic and drains the old one. Auto-rolls back if the new release is unhealthy.',
+    },
+    {
+      cmd: 'crush tunnel  ·  crush run --tunnel',
+      title: 'Localhost tunneling',
+      body: 'Expose a local port for webhooks (Paystack, Stripe, Clerk) over a free cloudflared tunnel — no account, no domain. Crush detects when your project needs one.',
+    },
+    {
+      cmd: 'crush db snapshot  ·  crush db restore',
+      title: 'Database time machine',
+      body: 'Freeze and restore exact Postgres/MySQL state in one command. Wraps native pg_dump/mysqldump and finds your connection automatically.',
+    },
+    {
+      cmd: 'crush mail',
+      title: 'Local mail catcher',
+      body: 'An embedded SMTP sink on :1025 captures every dev email instead of sending it, and renders it in the GUI Mailbox tab. SMTP env injected for you.',
+    },
+    {
+      cmd: 'crush lint',
+      title: 'Cross-OS eject linter',
+      body: 'Catches case-sensitive import paths that pass on Windows but break in a Linux container — before CI does. Runs automatically on crush eject.',
+    },
+    {
+      cmd: 'crush detect',
+      title: 'Managed service detection',
+      body: 'Surfaces the BaaS/managed services your app talks to — Supabase, Firebase, Neon, Clerk, Stripe, Paystack, Sentry and more — read from your env files.',
+    },
+  ];
 
   toggleFaq(idx: number): void {
     this.activeFaq.set(this.activeFaq() === idx ? null : idx);

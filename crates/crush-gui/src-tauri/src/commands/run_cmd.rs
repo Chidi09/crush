@@ -20,6 +20,8 @@ pub async fn run_project(
         cpu_fraction: None,
         priority: None,
         assume_yes: true,
+        // The GUI always runs the mail catcher, so capture outgoing dev mail.
+        smtp_capture_port: Some(crush_build::mailbox::DEFAULT_PORT),
     };
 
     let handle = crush_build::run::run_project(project_root.clone(), state.data_dir.clone(), options)
