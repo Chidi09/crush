@@ -133,7 +133,12 @@ pub async fn run_pg_dump() -> Result<(), String> {
 }
 
 pub fn spawn_backup_task() {
-    tokio::spawn(async move {
+    // NOTE: called from the Tauri `setup` closure, which does NOT run inside a
+    // Tokio runtime context — raw `tokio::spawn` here calls `Handle::current()`
+    // internally and panics ("must be called from the context of a Tokio
+    // runtime"), crashing the GUI on launch. Use Tauri's managed runtime, same
+    // as the mail-catcher spawn in lib.rs.
+    tauri::async_runtime::spawn(async move {
         loop {
             // Run every 24h
             sleep(Duration::from_secs(24 * 3600)).await;
