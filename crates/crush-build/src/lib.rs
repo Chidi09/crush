@@ -24,6 +24,9 @@ pub mod mailbox;
 pub mod gateway;
 pub mod ssh;
 pub mod deploy_targets;
+pub mod depstate;
+pub mod portcheck;
+pub mod dbsnapshot;
 
 use std::path::{Path, PathBuf};
 use std::fs;

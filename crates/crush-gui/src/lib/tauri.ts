@@ -264,6 +264,32 @@ export interface RunEventPortBound {
   service_name: string | null;
 }
 
+export interface RunEventPortConflict {
+  kind: 'port-conflict';
+  port: number;
+  pid: number;
+  process: string;
+}
+
+export interface RunEventPortReassigned {
+  kind: 'port-reassigned';
+  from: number;
+  to: number;
+}
+
+export interface RunEventRestarting {
+  kind: 'restarting';
+  reason: string;
+  attempt: number;
+  delay_ms: number;
+}
+
+export interface RunEventDbSnapshot {
+  kind: 'db-snapshot';
+  tool: string;
+  path: string;
+}
+
 export type RunEvent =
   | RunEventDetected
   | RunEventDepStarted
@@ -280,6 +306,10 @@ export type RunEvent =
   | RunEventWarning
   | RunEventWarmRun
   | RunEventDepsFresh
+  | RunEventPortConflict
+  | RunEventPortReassigned
+  | RunEventRestarting
+  | RunEventDbSnapshot
   | RunEventAborted;
 // Tauri commands
 export function listContainers(): Promise<ContainerSummary[]> {

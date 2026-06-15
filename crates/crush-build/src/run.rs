@@ -116,6 +116,33 @@ pub enum RunEvent {
     /// project's lockfile, so the install step was skipped. CLI prints
     /// `✓ dependencies fresh — node_modules newer than lockfile (--rebuild to force)`.
     DepsFresh,
+
+    // ── R1.1: EADDRINUSE port takeover ──────────────────────────────────
+
+    /// The target port is already bound. Emitted before spawn so the caller
+    /// can apply the configured `PortConflictPolicy`.
+    PortConflict {
+        port: u16,
+        pid: u32,
+        process: String,
+    },
+
+    /// The runner chose a different port because the preferred one was busy
+    /// (`PortConflictPolicy::Reassign`).
+    PortReassigned { from: u16, to: u16 },
+
+    // ── R1.2: RestartManager ────────────────────────────────────────────
+
+    /// The app crashed and the restart manager is about to relaunch it.
+    /// The GUI shows a "restarting…" chip; the CLI logs a warning line.
+    Restarting { reason: String, attempt: u32, delay_ms: u64 },
+
+    // ── R3.3: auto-snapshot before migrations ───────────────────────────
+
+    /// A schema-migration command was detected; we took a `pg_dump` safety
+    /// snapshot first. `tool` is the detected ORM (prisma/drizzle/…), `path`
+    /// is the backup file (empty if the snapshot was skipped/failed).
+    DbSnapshot { tool: String, path: String },
 }
 
 /// Options that change the run flow's behaviour. Maps onto the CLI's
@@ -149,6 +176,27 @@ pub struct RunOptions {
     /// user's own SMTP_* env still wins).
     #[serde(default)]
     pub smtp_capture_port: Option<u16>,
+    /// What to do when the target port is already bound (R1.1).
+    /// Defaults to `PortConflictPolicy::Fail` so existing behaviour is preserved.
+    #[serde(default)]
+    pub on_port_conflict: PortConflictPolicy,
+    /// Enable auto-restart with exponential backoff on non-zero exit (R1.2).
+    /// Defaults to `None` (no restart) to preserve existing behaviour.
+    #[serde(default)]
+    pub restart_policy: Option<crush_reliability::restart::RestartPolicy>,
+}
+
+/// How the run-loop should react when the desired port is already bound.
+#[derive(Debug, Clone, Default, Serialize, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "kebab-case")]
+pub enum PortConflictPolicy {
+    /// Emit `PortConflict` and abort the run (safe default for non-interactive use).
+    #[default]
+    Fail,
+    /// Kill the holder process and take the port.
+    Kill,
+    /// Bind the next free port instead and emit `PortReassigned`.
+    Reassign,
 }
 
 /// Handle to an in-progress run, returned by `run_project()`. The caller
@@ -513,25 +561,41 @@ pub async fn record_urls(line: &str, sink: &UrlSink) {
 }
 
 /// Check whether a path's build artifacts are up-to-date compared to sources.
+///
+/// For lockfile-managed stacks (Node, Python, PHP, Elixir) this delegates to
+/// the SHA-256 hash tracker in `depstate` (R1.3). For compiled stacks (Rust,
+/// Go, Java) the source-vs-artifact mtime comparison is kept because those
+/// stacks don't have a lockfile that drives the install decision.
 pub fn build_freshness(root: &Path, language: &str) -> Option<String> {
     let lang = language.split(' ').next().unwrap_or("").to_lowercase();
     match lang.as_str() {
         "node" | "typescript" | "bun" | "deno" => {
-            let lock = root.join("pnpm-lock.yaml");
-            let nm = root.join("node_modules");
-            if !nm.exists() { return None; }
-            let lock_time = std::fs::metadata(&lock).and_then(|m| m.modified()).ok()?;
-            let nm_time = std::fs::metadata(&nm).and_then(|m| m.modified()).ok()?;
-            if nm_time >= lock_time { Some("node_modules newer than lockfile".into()) } else { None }
+            if crate::depstate::check_deps_fresh(root, &lang) {
+                Some("dependencies hash matches recorded state".into())
+            } else {
+                None
+            }
         }
         "python" => {
-            let lock = if root.join("uv.lock").exists() { root.join("uv.lock") }
-                       else { return None };
-            let venv = root.join(".venv");
-            if !venv.exists() { return None; }
-            let lock_time = std::fs::metadata(&lock).and_then(|m| m.modified()).ok()?;
-            let venv_time = std::fs::metadata(&venv).and_then(|m| m.modified()).ok()?;
-            if venv_time >= lock_time { Some(".venv newer than lockfile".into()) } else { None }
+            if crate::depstate::check_deps_fresh(root, "python") {
+                Some("virtualenv hash matches recorded state".into())
+            } else {
+                None
+            }
+        }
+        "php" => {
+            if crate::depstate::check_deps_fresh(root, "php") {
+                Some("vendor hash matches recorded state".into())
+            } else {
+                None
+            }
+        }
+        "elixir" => {
+            if crate::depstate::check_deps_fresh(root, "elixir") {
+                Some("deps hash matches recorded state".into())
+            } else {
+                None
+            }
         }
         "rust" => {
             let target = root.join("target");
@@ -600,21 +664,36 @@ fn latest_mtime_any(root: &Path, pred: &dyn Fn(&Path) -> bool) -> Option<std::ti
     latest
 }
 
-/// Check whether node_modules exists and is newer than the lockfile.
+/// Check whether node_modules exists AND the lockfile hashes match the persisted
+/// state. Replaces the old mtime comparison which was unreliable after git
+/// pull/checkout (R1.3). Falls back gracefully when no state is recorded yet.
 pub fn node_deps_fresh(root: &Path) -> bool {
-    let nm = root.join("node_modules");
-    if !nm.exists() { return false; }
-    let nm_mtime = match std::fs::metadata(&nm).and_then(|m| m.modified()) {
-        Ok(t) => t,
-        Err(_) => return false,
-    };
-    for lock_name in &["pnpm-lock.yaml", "yarn.lock", "package-lock.json"] {
-        let lock = root.join(lock_name);
-        if let Ok(lock_t) = std::fs::metadata(&lock).and_then(|m| m.modified()) {
-            if nm_mtime >= lock_t { return true; }
+    crate::depstate::check_deps_fresh(root, "node")
+}
+
+/// R3.3: If `cmd` is a schema-migration command, take a `pg_dump` of the
+/// crush-managed Postgres first so a corrupting migration can be undone.
+/// Best-effort — never blocks the migration: emits `DbSnapshot` on success or a
+/// `Warning` if the snapshot was attempted but failed; silent no-op otherwise.
+async fn maybe_snapshot_before_migration(cmd: &str, tx: &tokio::sync::mpsc::Sender<RunEvent>) {
+    let Some(tool) = crate::dbsnapshot::is_migration_command(cmd) else { return };
+    if !crate::dbsnapshot::postgres_reachable().await {
+        return; // no crush-managed Postgres reachable — nothing to snapshot
+    }
+    let tag = format!("auto-pre-migrate-{}", tool);
+    match crate::dbsnapshot::snapshot_postgres(&tag).await {
+        Ok(path) => {
+            let _ = tx.send(RunEvent::DbSnapshot {
+                tool: tool.to_string(),
+                path: path.to_string_lossy().to_string(),
+            }).await;
+        }
+        Err(e) => {
+            let _ = tx.send(RunEvent::Warning {
+                message: format!("pre-migration snapshot skipped: {e}"),
+            }).await;
         }
     }
-    false
 }
 
 /// Probe well-known doc/health URLs on a port. Framework-narrowed to
@@ -1653,6 +1732,8 @@ async fn run_project_inner(
     };
 
     if let Some(ref icmd) = install_cmd {
+        // R3.3: snapshot before a migration baked into the install/build step.
+        maybe_snapshot_before_migration(icmd, &tx).await;
         let _ = tx.send(RunEvent::BuildStarted {
             command: icmd.clone(),
             service_name: None,
@@ -1719,10 +1800,58 @@ async fn run_project_inner(
                     service_name: None,
                 }).await;
                 if !ok { anyhow::bail!("Build failed: `{}`", icmd); }
+                // Record lockfile hashes after a successful install (R1.3).
+                crate::depstate::record_install(project_root);
             }
             Err(e) => anyhow::bail!("Failed to spawn `{}`: {}", icmd, e),
         }
     }
+
+    // ── R1.1: Port-conflict preflight ────────────────────────────────────
+    // Check whether the target port is already bound before spawning. Handle
+    // according to options.on_port_conflict: Fail / Kill / Reassign.
+    let port = {
+        let mut effective_port = port;
+        if let Some(holder) = crate::portcheck::probe_port(port) {
+            let _ = tx.send(RunEvent::PortConflict {
+                port,
+                pid: holder.pid,
+                process: holder.process.clone(),
+            }).await;
+            match options.on_port_conflict {
+                PortConflictPolicy::Fail => {
+                    anyhow::bail!(
+                        "Port {} is already bound by {} (pid {}). Pass --port-conflict=kill or --port-conflict=reassign to proceed.",
+                        port, holder.process, holder.pid
+                    );
+                }
+                PortConflictPolicy::Kill => {
+                    #[cfg(unix)]
+                    unsafe { libc::kill(holder.pid as i32, libc::SIGKILL); }
+                    #[cfg(windows)]
+                    {
+                        use windows_sys::Win32::System::Threading::{OpenProcess, TerminateProcess, PROCESS_TERMINATE};
+                        use windows_sys::Win32::Foundation::CloseHandle;
+                        let h = unsafe { OpenProcess(PROCESS_TERMINATE, 0, holder.pid) };
+                        if h != 0 {
+                            unsafe { TerminateProcess(h, 1); CloseHandle(h); }
+                        }
+                    }
+                    // Give the OS a moment to release the port.
+                    tokio::time::sleep(std::time::Duration::from_millis(300)).await;
+                }
+                PortConflictPolicy::Reassign => {
+                    let next = crate::portcheck::next_free_port(port + 1);
+                    let _ = tx.send(RunEvent::PortReassigned { from: port, to: next }).await;
+                    effective_port = next;
+                }
+            }
+        }
+        effective_port
+    };
+
+    // R3.3: snapshot before a migration used as the entry command itself.
+    maybe_snapshot_before_migration(entry_str, &tx).await;
 
     // Spawn
     let spawn_start = std::time::Instant::now();
@@ -1833,15 +1962,116 @@ async fn run_project_inner(
 
     // Wait for exit OR abort. On abort, kill the whole tree (npm → node/vite)
     // so the dev server doesn't orphan and keep holding the port.
-    tokio::select! {
-        status = child.wait() => {
-            let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
-            let _ = tx.send(RunEvent::Exited { code }).await;
+    //
+    // R1.2: If a RestartPolicy is configured, wrap the wait in a loop that
+    // respects the RestartManager backoff and crash-loop guard.
+    let mut restart_mgr = options.restart_policy.clone().map(
+        |p| crush_reliability::restart::RestartManager::new(p)
+    );
+    let mut explicitly_stopped = false;
+
+    loop {
+        let (exit_code, was_aborted) = tokio::select! {
+            status = child.wait() => {
+                let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
+                (code, false)
+            }
+            _ = &mut *abort_rx => {
+                kill_tree(&mut child).await;
+                explicitly_stopped = true;
+                (130, true)
+            }
+        };
+
+        if was_aborted {
+            let _ = tx.send(RunEvent::Exited { code: exit_code }).await;
+            break;
         }
-        _ = &mut *abort_rx => {
-            kill_tree(&mut child).await;
-            let _ = tx.send(RunEvent::Exited { code: 130 }).await;
+
+        // Check whether we should restart.
+        if let Some(ref mut mgr) = restart_mgr {
+            if mgr.should_restart(exit_code, explicitly_stopped) {
+                mgr.record_attempt();
+                let delay = mgr.backoff_delay();
+                let _ = tx.send(RunEvent::Restarting {
+                    reason: format!("exited with code {}", exit_code),
+                    attempt: mgr.attempt(),
+                    delay_ms: delay.as_millis() as u64,
+                }).await;
+
+                // Sleep the backoff delay, but allow abort to cancel it.
+                tokio::select! {
+                    _ = tokio::time::sleep(delay) => {}
+                    _ = &mut *abort_rx => {
+                        explicitly_stopped = true;
+                        let _ = tx.send(RunEvent::Exited { code: 130 }).await;
+                        return Ok(());
+                    }
+                }
+
+                // Re-spawn
+                let mut new_cmd = spawn_shell(entry_str, project_root, &dep_env);
+                new_cmd.env("PORT", port.to_string());
+                inject_smtp_capture(&mut new_cmd, &dep_env, options.smtp_capture_port);
+                if matches!(lang.as_str(), "python") {
+                    new_cmd.env("PYTHONUTF8", "1");
+                    new_cmd.env("PYTHONUNBUFFERED", "1");
+                }
+                new_cmd.stdout(std::process::Stdio::piped());
+                new_cmd.stderr(std::process::Stdio::piped());
+
+                match new_cmd.spawn() {
+                    Ok(new_child) => {
+                        child = new_child;
+                        assign_to_job(&child);
+                        // Wire up stdio for the restarted process.
+                        if let Some(stdout) = child.stdout.take() {
+                            let tx_c = tx.clone();
+                            tokio::spawn(async move {
+                                use tokio::io::AsyncBufReadExt;
+                                let reader = tokio::io::BufReader::new(stdout);
+                                let mut lines = reader.lines();
+                                while let Ok(Some(line)) = lines.next_line().await {
+                                    let _ = tx_c.send(RunEvent::AppOutput { line, stream: Stream::Stdout, service_name: None }).await;
+                                }
+                            });
+                        }
+                        if let Some(stderr) = child.stderr.take() {
+                            let tx_c = tx.clone();
+                            tokio::spawn(async move {
+                                use tokio::io::AsyncBufReadExt;
+                                let reader = tokio::io::BufReader::new(stderr);
+                                let mut lines = reader.lines();
+                                while let Ok(Some(line)) = lines.next_line().await {
+                                    let _ = tx_c.send(RunEvent::AppOutput { line, stream: Stream::Stderr, service_name: None }).await;
+                                }
+                            });
+                        }
+                        continue; // loop back to wait
+                    }
+                    Err(e) => {
+                        let _ = tx.send(RunEvent::Warning {
+                            message: format!("restart failed to spawn: {}", e),
+                        }).await;
+                        let _ = tx.send(RunEvent::Exited { code: exit_code }).await;
+                        break;
+                    }
+                }
+            } else if !explicitly_stopped {
+                // Crash-loop guard hit or clean exit — surface a clear message.
+                if exit_code != 0 {
+                    let _ = tx.send(RunEvent::Warning {
+                        message: format!(
+                            "app crashed {} time(s) — stopping; check logs for the root cause",
+                            mgr.attempt()
+                        ),
+                    }).await;
+                }
+            }
         }
+
+        let _ = tx.send(RunEvent::Exited { code: exit_code }).await;
+        break;
     }
 
     Ok(())

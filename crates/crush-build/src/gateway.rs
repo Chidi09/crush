@@ -292,10 +292,64 @@ async fn handle_port80(req: Request<hyper::body::Incoming>, state: L7State) -> R
         .unwrap())
 }
 
+// ── R4.1: ACME circuit breaker ──────────────────────────────────────────────
+
+/// Per-domain ACME failure state, persisted to `certs_dir/acme-state.json`.
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, Default)]
+struct AcmeDomainState {
+    failures: u32,
+    next_attempt_at: u64, // Unix seconds; 0 = may attempt immediately
+}
+
+type AcmeStateMap = std::collections::HashMap<String, AcmeDomainState>;
+
+fn acme_state_path(certs_dir: &std::path::Path) -> std::path::PathBuf {
+    certs_dir.join("acme-state.json")
+}
+
+fn load_acme_state(certs_dir: &std::path::Path) -> AcmeStateMap {
+    std::fs::read_to_string(acme_state_path(certs_dir))
+        .ok()
+        .and_then(|s| serde_json::from_str(&s).ok())
+        .unwrap_or_default()
+}
+
+fn save_acme_state(certs_dir: &std::path::Path, state: &AcmeStateMap) {
+    if let Ok(json) = serde_json::to_string_pretty(state) {
+        let _ = std::fs::write(acme_state_path(certs_dir), json);
+    }
+}
+
+/// Compute the cooldown duration for `failures` attempts using exponential
+/// back-off capped at 24 hours.
+fn acme_cooldown(failures: u32) -> Duration {
+    // 15 min, 1 h, 6 h, 24 h (max)
+    let minutes: u64 = match failures {
+        0 => 0,
+        1 => 15,
+        2 => 60,
+        3 => 360,
+        _ => 1440,
+    };
+    Duration::from_secs(minutes * 60)
+}
+
+/// Do a cheap DNS A/AAAA probe for `domain`. Returns `true` if the domain
+/// resolves at all — we don't check whether it resolves to *us* (that would
+/// require knowing our public IP), but at least avoid spending an ACME order
+/// on a domain that has no DNS record at all.
+fn domain_resolves(domain: &str) -> bool {
+    use std::net::ToSocketAddrs;
+    (domain, 443u16).to_socket_addrs().map(|mut i| i.next().is_some()).unwrap_or(false)
+}
+
 /// ACME worker: for each public FQDN without a real (non-self-signed, fresh)
 /// certificate, obtain one from Let's Encrypt over HTTP-01 and swap it into the
 /// live resolver. Self-signed local domains are skipped. Resilient: failures are
 /// logged and retried next pass; the self-signed cert keeps serving meanwhile.
+///
+/// R4.1: Circuit breaker — exponential cooldown on failures; pre-flight DNS
+/// check; state persisted to `certs_dir/acme-state.json`.
 async fn acme_worker(state: L7State) {
     // ~/.crush/certs/acme-account.json — reuse one ACME account across runs.
     let account_path = state.certs_dir.join("acme-account.json");
@@ -303,22 +357,58 @@ async fn acme_worker(state: L7State) {
         let hosts: Vec<String> = {
             state.domains.read().await.keys().filter(|h| is_public_fqdn(h)).cloned().collect()
         };
+
+        let now_secs = SystemTime::now()
+            .duration_since(SystemTime::UNIX_EPOCH)
+            .map(|d| d.as_secs())
+            .unwrap_or(0);
+
+        let mut acme_state = load_acme_state(&state.certs_dir);
+
         for host in hosts {
             // Skip if we already hold an ACME cert younger than 60 days (LE = 90d).
             let (cp, _) = cert_paths(&state.certs_dir, &host);
             let marker = state.certs_dir.join(format!("{}.acme", host));
-            let fresh = marker.exists()
+            let cert_fresh = marker.exists()
                 && std::fs::metadata(&cp).and_then(|m| m.modified()).map(|t| {
                     SystemTime::now().duration_since(t).map(|d| d < Duration::from_secs(60 * 24 * 3600)).unwrap_or(false)
                 }).unwrap_or(false);
-            if fresh { continue; }
+            if cert_fresh { continue; }
+
+            // R4.1: Check the per-domain circuit-breaker cooldown.
+            let domain_state = acme_state.entry(host.clone()).or_default();
+            if domain_state.next_attempt_at > now_secs {
+                let wait = domain_state.next_attempt_at - now_secs;
+                eprintln!("gateway: ACME for {host} in cooldown ({wait}s remaining); self-signed still serving");
+                continue;
+            }
+
+            // R4.1: Pre-flight DNS probe — don't burn an ACME order if DNS isn't set.
+            if !domain_resolves(&host) {
+                eprintln!("gateway: ACME for {host}: domain does not resolve, skipping order");
+                domain_state.failures += 1;
+                domain_state.next_attempt_at = now_secs + acme_cooldown(domain_state.failures).as_secs();
+                save_acme_state(&state.certs_dir, &acme_state);
+                continue;
+            }
 
             match obtain_acme_cert(&host, &account_path, &state).await {
                 Ok(()) => {
                     let _ = std::fs::write(&marker, b"1");
                     println!("gateway: issued Let's Encrypt cert for {host}");
+                    // Reset failure counter on success.
+                    domain_state.failures = 0;
+                    domain_state.next_attempt_at = 0;
+                    save_acme_state(&state.certs_dir, &acme_state);
                 }
-                Err(e) => eprintln!("gateway: ACME for {host} failed (will retry; self-signed still serving): {e}"),
+                Err(e) => {
+                    eprintln!("gateway: ACME for {host} failed (self-signed still serving): {e}");
+                    domain_state.failures += 1;
+                    let cooldown = acme_cooldown(domain_state.failures);
+                    domain_state.next_attempt_at = now_secs + cooldown.as_secs();
+                    save_acme_state(&state.certs_dir, &acme_state);
+                    eprintln!("gateway: next ACME attempt for {host} in {}min", cooldown.as_secs() / 60);
+                }
             }
         }
         tokio::time::sleep(Duration::from_secs(3600)).await; // re-check hourly

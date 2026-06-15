@@ -155,6 +155,16 @@ class RunStore {
           const urls = (e.urls ?? []).map((u: [string, string]) => u[1]).join('  ');
           this.push(`✓ ready on :${e.port}${urls ? ` — ${urls}` : ''}`, 'ok', 'runtime'); break;
         }
+        case 'port-conflict':
+          this.push(`port :${e.port} is held by ${e.process || 'another process'} (pid ${e.pid})`, 'warn', 'runtime'); break;
+        case 'port-reassigned':
+          this.port = e.to;
+          this.push(`port :${e.from} was busy — using :${e.to} instead`, 'meta', 'runtime'); break;
+        case 'restarting':
+          this.status = 'running';
+          this.push(`restarting (attempt ${e.attempt}, in ${(e.delay_ms / 1000).toFixed(1)}s) — ${e.reason}`, 'warn', 'runtime'); break;
+        case 'db-snapshot':
+          this.push(`📸 ${e.tool} migration detected — saved a DB snapshot first`, 'ok'); break;
         case 'warning': this.push(`! ${e.message ?? e.text ?? ''}`, 'warn', 'runtime'); break;
         case 'aborted':
           this.status = 'exited';

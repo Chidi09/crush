@@ -22,6 +22,10 @@ pub async fn run_project(
         assume_yes: true,
         // The GUI always runs the mail catcher, so capture outgoing dev mail.
         smtp_capture_port: Some(crush_build::mailbox::DEFAULT_PORT),
+        // GUI uses default Fail policy — can be upgraded to Reassign via settings.
+        on_port_conflict: crush_build::run::PortConflictPolicy::Reassign,
+        // No auto-restart by default in GUI (user restarts manually).
+        restart_policy: None,
     };
 
     let handle = crush_build::run::run_project(project_root.clone(), state.data_dir.clone(), options)

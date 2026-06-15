@@ -558,3 +558,173 @@ pub async fn mongo_delete_doc(
     Ok(res.deleted_count)
 }
 
+// ── R5.1: Capped table browsing ───────────────────────────────────────────────
+// Separate from db_run_query so grid views can never accidentally load a full
+// 10 M-row table. Raw SQL editor still uses db_run_query with no forced cap.
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct BrowseResult {
+    pub columns: Vec<String>,
+    pub rows: Vec<Vec<serde_json::Value>>,
+    /// True when exactly `page_size + 1` rows were returned internally,
+    /// meaning there are more rows beyond the current page.
+    pub has_more: bool,
+    pub duration_ms: u64,
+}
+
+const BROWSE_MAX_PAGE: u32 = 1000;
+
+/// Grid-safe table browse: wraps the SQL in a LIMIT+1 subquery so we can
+/// detect "more rows exist" without loading the whole table.
+#[command]
+pub async fn db_browse_table(
+    engine: String,
+    url: String,
+    sql: String,
+    page: u32,
+    #[allow(unused_mut)] mut page_size: u32,
+) -> Result<BrowseResult, String> {
+    if page_size == 0 || page_size > BROWSE_MAX_PAGE {
+        page_size = BROWSE_MAX_PAGE;
+    }
+    let sentinel = page_size + 1; // one extra to detect "has more"
+    let offset = page * page_size;
+
+    if engine == "postgres" {
+        browse_postgres(&url, &sql, sentinel, offset).await
+    } else if engine == "mysql" {
+        browse_mysql(&url, &sql, sentinel, offset).await
+    } else {
+        Err(format!("unsupported engine '{}'", engine))
+    }
+}
+
+async fn browse_postgres(url: &str, sql: &str, sentinel: u32, offset: u32) -> Result<BrowseResult, String> {
+    // Wrap in a subquery so arbitrary SELECT works (CTEs, JOINs, etc.)
+    let wrapped = format!(
+        "SELECT * FROM ({}) _crush_browse LIMIT {} OFFSET {}",
+        sql.trim_end_matches(';'),
+        sentinel,
+        offset
+    );
+    let (client, connection) = tokio_postgres::connect(url, tokio_postgres::NoTls)
+        .await
+        .map_err(|e| format!("connection failed: {e}"))?;
+    let handle = tokio::spawn(async move { let _ = connection.await; });
+
+    let start = Instant::now();
+    let res = client.simple_query(&wrapped).await;
+    let duration_ms = start.elapsed().as_millis() as u64;
+    handle.abort();
+
+    match res {
+        Ok(messages) => {
+            let mut columns = Vec::new();
+            let mut rows = Vec::new();
+            for msg in messages {
+                match msg {
+                    tokio_postgres::SimpleQueryMessage::Row(row) => {
+                        if columns.is_empty() {
+                            for col in row.columns() { columns.push(col.name().to_string()); }
+                        }
+                        let vals = (0..row.len())
+                            .map(|i| row.get(i).map(|s| serde_json::Value::String(s.to_string())).unwrap_or(serde_json::Value::Null))
+                            .collect();
+                        rows.push(vals);
+                    }
+                    _ => {}
+                }
+            }
+            let has_more = rows.len() as u32 == sentinel;
+            if has_more { rows.pop(); } // drop the sentinel row
+            Ok(BrowseResult { columns, rows, has_more, duration_ms })
+        }
+        Err(e) => Err(e.to_string()),
+    }
+}
+
+async fn browse_mysql(url: &str, sql: &str, sentinel: u32, offset: u32) -> Result<BrowseResult, String> {
+    let wrapped = format!(
+        "SELECT * FROM ({}) _crush_browse LIMIT {} OFFSET {}",
+        sql.trim_end_matches(';'),
+        sentinel,
+        offset
+    );
+    let res = query_mysql(url, &wrapped).await?;
+    let has_more = res.rows.len() as u32 == sentinel;
+    let mut rows = res.rows;
+    if has_more { rows.pop(); }
+    Ok(BrowseResult { columns: res.columns, rows, has_more, duration_ms: res.duration_ms })
+}
+
+// ── R5.2: Destructive-statement dry-run ───────────────────────────────────────
+
+#[derive(Debug, Serialize, Deserialize)]
+pub struct ImpactEstimate {
+    /// True when the statement was detected as destructive and we rolled it back.
+    pub is_destructive: bool,
+    /// Estimated affected row count (None for non-destructive or unsupported engines).
+    pub affected_rows: Option<u64>,
+    pub statement_type: String,
+}
+
+/// Analyse a SQL statement without committing it. For DELETE/UPDATE wraps in a
+/// BEGIN … ROLLBACK and reads the affected row count. For DROP/TRUNCATE returns
+/// a typed-confirmation-required marker (no rows to count).
+#[command]
+pub async fn db_estimate_impact(
+    engine: String,
+    url: String,
+    sql: String,
+) -> Result<ImpactEstimate, String> {
+    let stmt_upper = sql.trim().to_ascii_uppercase();
+    let stmt_type = if stmt_upper.starts_with("DELETE") { "DELETE" }
+        else if stmt_upper.starts_with("UPDATE") { "UPDATE" }
+        else if stmt_upper.starts_with("DROP") { "DROP" }
+        else if stmt_upper.starts_with("TRUNCATE") { "TRUNCATE" }
+        else {
+            return Ok(ImpactEstimate { is_destructive: false, affected_rows: None, statement_type: "SELECT".to_string() });
+        };
+
+    if engine != "postgres" {
+        // Only Postgres supports transactional dry-run here; MySQL/other engines
+        // return the type marker so the UI can at least show a warning.
+        return Ok(ImpactEstimate { is_destructive: true, affected_rows: None, statement_type: stmt_type.to_string() });
+    }
+
+    match stmt_type {
+        "DROP" | "TRUNCATE" => {
+            // Require typed confirmation — we don't dry-run schema changes.
+            Ok(ImpactEstimate { is_destructive: true, affected_rows: None, statement_type: stmt_type.to_string() })
+        }
+        "DELETE" | "UPDATE" => {
+            let (client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+                .await
+                .map_err(|e| format!("connection failed: {e}"))?;
+            let _handle = tokio::spawn(async move { let _ = connection.await; });
+
+            // Run inside a transaction that we immediately roll back.
+            let dry_sql = format!("BEGIN; {}; ROLLBACK;", sql.trim_end_matches(';'));
+            let res = client.simple_query(&dry_sql).await;
+            let affected = match res {
+                Ok(messages) => {
+                    messages.iter().find_map(|m| {
+                        if let tokio_postgres::SimpleQueryMessage::CommandComplete(n) = m {
+                            if *n > 0 { Some(*n) } else { None }
+                        } else { None }
+                    })
+                }
+                Err(_) => None,
+            };
+            Ok(ImpactEstimate { is_destructive: true, affected_rows: affected, statement_type: stmt_type.to_string() })
+        }
+        _ => unreachable!(),
+    }
+}
+
+/// Warn if a SELECT looks unbounded (no LIMIT clause). Used by the raw editor.
+#[command]
+pub async fn db_warn_unbounded(sql: String) -> bool {
+    let upper = sql.trim().to_ascii_uppercase();
+    upper.starts_with("SELECT") && !upper.contains("LIMIT")
+}

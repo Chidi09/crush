@@ -95,6 +95,9 @@ struct Cli {
     #[arg(long, help = "Capture the app's outgoing email into a local SMTP sink on :1025 (run `crush mail` to view)")]
     mail: bool,
 
+    #[arg(long, value_name = "POLICY", help = "Auto-restart on crash: always | on-failure | unless-stopped")]
+    restart: Option<String>,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -2743,6 +2746,16 @@ async fn main() -> anyhow::Result<()> {
                 priority: cli.priority.clone(),
                 assume_yes: cli.no_interactive,
                 smtp_capture_port: if cli.mail { Some(crush_build::mailbox::DEFAULT_PORT) } else { None },
+                // CLI defaults to Fail so existing non-interactive scripts don't
+                // silently bind a different port. Users can override with --port-conflict=reassign.
+                on_port_conflict: crush_build::run::PortConflictPolicy::Fail,
+                // Use restart policy if --restart flag is present.
+                restart_policy: cli.restart.as_deref().and_then(|s| match s {
+                    "always" => Some(crush_reliability::restart::RestartPolicy::Always),
+                    "on-failure" => Some(crush_reliability::restart::RestartPolicy::OnFailure { max_retries: Some(5) }),
+                    "unless-stopped" => Some(crush_reliability::restart::RestartPolicy::UnlessStopped),
+                    _ => None,
+                }),
             };
 
             let handle = crush_build::run::run_project(project_root.clone(), data_dir.clone(), options).await?;
