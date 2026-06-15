@@ -13,3 +13,4 @@ pub mod eject;
 pub mod deploy;
 pub mod config;
 pub mod inspect;
+pub mod device;

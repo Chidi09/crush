@@ -25,6 +25,13 @@ class RunStore {
   port = $state<number | null>(null);
   url = $state<string | null>(null);
   lines = $state<RunLine[]>([]);
+  /** Detected stack language (e.g. "flutter", "react-native", "node") — set on Detected. */
+  language = $state<string | null>(null);
+  /** True for Flutter/React Native runs, which mirror an emulator instead of a port. */
+  get isMobile() {
+    const l = (this.language ?? '').toLowerCase();
+    return l.startsWith('flutter') || l.startsWith('react-native');
+  }
 
   // Context captured at launch — needed for the overview + the deployment record.
   projectPath = $state<string | null>(null);
@@ -69,6 +76,7 @@ class RunStore {
     this.url = null;
     this.status = 'running';
     this.lines = [];
+    this.language = null;
     this.buildLog = [];
     this.runtimeLog = [];
   }
@@ -80,6 +88,7 @@ class RunStore {
     this.port = null;
     this.url = null;
     this.lines = [];
+    this.language = null;
     this.buildLog = [];
     this.runtimeLog = [];
   }
@@ -113,6 +122,7 @@ class RunStore {
       const e = event as any;
       switch (e.kind) {
         case 'detected':
+          this.language = e.language ?? null;
           this.push(`↳ detected ${e.language}${e.framework ? ` · ${e.framework}` : ''} · :${e.port}${e.is_monorepo ? ` · monorepo (${e.dep_count} svc)` : ''}`, 'meta'); break;
         case 'warm-run': this.push('warm run — launching', 'meta'); break;
         case 'deps-fresh': this.push('dependencies fresh — node_modules up to date', 'meta'); break;

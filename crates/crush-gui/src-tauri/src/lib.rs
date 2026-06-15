@@ -87,6 +87,11 @@ pub fn run() {
             commands::inspect::inspect_redis,
             commands::inspect::inspect_mongo,
             commands::inspect::inspect_minio,
+            commands::device::adb_devices,
+            commands::device::device_screencap,
+            commands::device::device_tap,
+            commands::device::device_swipe,
+            commands::device::device_key,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running Crush GUI");

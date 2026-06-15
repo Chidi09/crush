@@ -1,6 +1,7 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
   import TerminalPane from '$lib/components/TerminalPane.svelte';
+  import DeviceView from '$lib/components/DeviceView.svelte';
   import RunOverview from '$lib/components/RunOverview.svelte';
   import { goto } from '$app/navigation';
   import EmptyState from '$lib/components/EmptyState.svelte';
@@ -174,7 +175,15 @@
         onStop={() => run.stop()}
         onClose={() => run.close()}
       />
-      <TerminalPane />
+      {#if run.isMobile}
+        <!-- Mobile run: mirror the emulator/device alongside the log stream. -->
+        <div class="mobile-split">
+          <DeviceView />
+          <TerminalPane />
+        </div>
+      {:else}
+        <TerminalPane />
+      {/if}
     </div>
   {/if}
 
@@ -405,6 +414,9 @@
 <style>
   .dashboard { display: flex; flex-direction: column; gap: 14px; padding-bottom: 24px; }
   .run-stack { display: flex; flex-direction: column; gap: 14px; }
+  /* Mobile run: device mirror beside the logs; stacks on narrow widths. */
+  .mobile-split { display: grid; grid-template-columns: auto 1fr; gap: 14px; align-items: start; }
+  @media (max-width: 900px) { .mobile-split { grid-template-columns: 1fr; } }
 
   .hero { display: flex; align-items: center; justify-content: space-between; }
   .hero-left { display: flex; align-items: center; gap: 10px; }

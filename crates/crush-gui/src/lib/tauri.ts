@@ -273,6 +273,27 @@ export function runProject(projectPath: string, devMode: boolean): Promise<strin
   return invoke('run_project', { projectPath, devMode });
 }
 
+// ── Android device / emulator mirroring (mobile run view) ──
+export interface AdbDevice { serial: string; state: string; is_emulator: boolean; }
+
+export function adbDevices(): Promise<AdbDevice[]> {
+  return invoke('adb_devices');
+}
+/** PNG data: URL of the device screen. */
+export function deviceScreencap(serial = ''): Promise<string> {
+  return invoke('device_screencap', { serial });
+}
+export function deviceTap(serial: string, x: number, y: number): Promise<void> {
+  return invoke('device_tap', { serial, x: Math.round(x), y: Math.round(y) });
+}
+export function deviceSwipe(serial: string, x1: number, y1: number, x2: number, y2: number, ms = 200): Promise<void> {
+  return invoke('device_swipe', { serial, x1: Math.round(x1), y1: Math.round(y1), x2: Math.round(x2), y2: Math.round(y2), ms });
+}
+/** Android keyevent: 4=BACK, 3=HOME, 187=APP_SWITCH. */
+export function deviceKey(serial: string, keycode: number): Promise<void> {
+  return invoke('device_key', { serial, keycode });
+}
+
 export function abortRun(runId: string): Promise<void> {
   return invoke('abort_run', { runId });
 }
