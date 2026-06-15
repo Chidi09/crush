@@ -766,4 +766,110 @@ export function mongoDeleteDoc(port: number, database: string, collection: strin
   return invoke('mongo_delete_doc', { port, database, collection, filterJson });
 }
 
+// ── Storage / S3 ────────────────────────────────────────────────────────────
+export interface S3Connection {
+  name: string;
+  endpoint: string;
+  region: string;
+  access_key: string;
+  secret_key: string;
+  path_style: boolean;
+}
+
+export interface BucketInfo {
+  name: string;
+  created_at: number | null;
+}
+
+export interface ObjectInfo {
+  key: string;
+  size: number;
+  last_modified: number | null;
+}
+
+export interface ObjectMetadata {
+  key: string;
+  size: number;
+  last_modified: number | null;
+  content_type: string | null;
+  metadata: Record<string, string>;
+}
+
+export function storageGetConnections(): Promise<S3Connection[]> {
+  return invoke('storage_get_connections');
+}
+
+export function storageSaveConnections(connections: S3Connection[]): Promise<void> {
+  return invoke('storage_save_connections', { connections });
+}
+
+export function storageListBuckets(conn: S3Connection): Promise<BucketInfo[]> {
+  return invoke('storage_list_buckets', { conn });
+}
+
+export function storageCreateBucket(conn: S3Connection, name: string): Promise<void> {
+  return invoke('storage_create_bucket', { conn, name });
+}
+
+export function storageDeleteBucket(conn: S3Connection, name: string, force: boolean): Promise<void> {
+  return invoke('storage_delete_bucket', { conn, name, force });
+}
+
+export function storageListObjects(conn: S3Connection, bucket: string, prefix?: string): Promise<ObjectInfo[]> {
+  return invoke('storage_list_objects', { conn, bucket, prefix: prefix ?? null });
+}
+
+export function storageUploadObject(conn: S3Connection, bucket: string, key: string, filePath: string): Promise<void> {
+  return invoke('storage_upload_object', { conn, bucket, key, filePath });
+}
+
+export function storageUploadBytes(conn: S3Connection, bucket: string, key: string, dataBase64: string, contentType?: string): Promise<void> {
+  return invoke('storage_upload_bytes', { conn, bucket, key, dataBase64, contentType: contentType ?? null });
+}
+
+export function storageDownloadObject(conn: S3Connection, bucket: string, key: string, savePath: string): Promise<void> {
+  return invoke('storage_download_object', { conn, bucket, key, savePath });
+}
+
+export function storageDeleteObjects(conn: S3Connection, bucket: string, keys: string[]): Promise<void> {
+  return invoke('storage_delete_objects', { conn, bucket, keys });
+}
+
+export function storageGetPresignedUrl(conn: S3Connection, bucket: string, key: string, method: string, ttlSecs: number): Promise<string> {
+  return invoke('storage_get_presigned_url', { conn, bucket, key, method, ttlSecs });
+}
+
+export function storageGetBucketPolicy(conn: S3Connection, bucket: string): Promise<string> {
+  return invoke('storage_get_bucket_policy', { conn, bucket });
+}
+
+export function storageSetBucketPolicy(conn: S3Connection, bucket: string, policyJson: string): Promise<void> {
+  return invoke('storage_set_bucket_policy', { conn, bucket, policyJson });
+}
+
+export function storageSetBucketPublic(conn: S3Connection, bucket: string, publicStatus: boolean): Promise<void> {
+  return invoke('storage_set_bucket_public', { conn, bucket, public: publicStatus });
+}
+
+export function storageGetObjectMetadata(conn: S3Connection, bucket: string, key: string): Promise<ObjectMetadata> {
+  return invoke('storage_get_object_metadata', { conn, bucket, key });
+}
+
+export function storageSetObjectMetadata(conn: S3Connection, bucket: string, key: string, contentType: string, metadata: Record<string, string>): Promise<void> {
+  return invoke('storage_set_object_metadata', { conn, bucket, key, contentType, metadata });
+}
+
+export function storageReadObjectPreview(conn: S3Connection, bucket: string, key: string): Promise<string> {
+  return invoke('storage_read_object_preview', { conn, bucket, key });
+}
+
+export function storagePickUploadFile(): Promise<string | null> {
+  return invoke('storage_pick_upload_file');
+}
+
+export function storagePickDownloadDestination(filename: string): Promise<string | null> {
+  return invoke('storage_pick_download_destination', { filename });
+}
+
+
 
