@@ -1,9 +1,12 @@
 <script lang="ts">
   import { onMount } from 'svelte';
+  import { goto } from '$app/navigation';
   import Icon from '$lib/components/Icon.svelte';
   import EmptyState from '$lib/components/EmptyState.svelte';
   import * as api from '$lib/tauri';
   import type { SshHost } from '$lib/tauri';
+
+  function manage(alias: string) { goto(`/servers/${encodeURIComponent(alias)}`); }
 
   let hosts = $state<SshHost[]>([]);
   let loading = $state(true);
@@ -51,16 +54,19 @@
     <div class="grid">
       {#each hosts as h (h.alias)}
         <div class="card">
-          <div class="card-top">
+          <button class="card-top" onclick={() => manage(h.alias)} title="Manage server">
             <span class="host-icon"><Icon name="server" size={16} /></span>
             <div class="host-text">
               <span class="alias">{h.alias}</span>
               <span class="target">{target(h)}</span>
             </div>
-          </div>
-          <button class="connect-btn" disabled={connecting !== null} onclick={() => connect(h.alias)}>
-            {connecting === h.alias ? 'opening…' : 'Connect'}
           </button>
+          <div class="card-actions">
+            <button class="manage-btn" onclick={() => manage(h.alias)}>Manage</button>
+            <button class="connect-btn" disabled={connecting !== null} onclick={() => connect(h.alias)}>
+              {connecting === h.alias ? 'opening…' : 'Connect'}
+            </button>
+          </div>
         </div>
       {/each}
     </div>
@@ -81,7 +87,10 @@
   .muted { color: var(--color-crush-text-muted); font-size: 13px; }
   .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 12px; }
   .card { border: 1px solid var(--color-crush-border); border-radius: 12px; background: var(--color-crush-surface); padding: 14px; display: flex; flex-direction: column; gap: 12px; }
-  .card-top { display: flex; align-items: center; gap: 10px; }
+  .card-top { display: flex; align-items: center; gap: 10px; background: none; border: none; padding: 0; cursor: pointer; text-align: left; width: 100%; color: inherit; }
+  .card-actions { display: flex; gap: 8px; }
+  .manage-btn { flex: 1; font-size: 13px; color: var(--color-crush-text); background: rgba(224,85,64,0.08); border: 1px solid rgba(224,85,64,0.28); border-radius: 8px; padding: 7px; cursor: pointer; }
+  .manage-btn:hover { background: rgba(224,85,64,0.16); border-color: rgba(224,85,64,0.5); }
   .host-icon { display: inline-flex; width: 34px; height: 34px; align-items: center; justify-content: center; border-radius: 9px; background: rgba(99,102,241,0.08); border: 1px solid rgba(99,102,241,0.2); color: #a5b4fc; flex-shrink: 0; }
   .host-text { display: flex; flex-direction: column; min-width: 0; }
   .alias { font-weight: 600; font-size: 14px; }

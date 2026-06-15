@@ -323,7 +323,7 @@
             </div>
           {/if}
 
-          {#if webhookProviders.length > 0 || tunnel}
+          {#if tunnelPort || tunnel}
             <div class="tunnel-row">
               <span class="uses-label">Tunnel</span>
               <div class="tunnel-body">
@@ -340,7 +340,11 @@
                   </button>
                 {:else}
                   <span class="tunnel-hint">
-                    {webhookProviders.map((p) => p.name).join(', ')} need a public URL for webhooks
+                    {#if webhookProviders.length > 0}
+                      {webhookProviders.map((p) => p.name).join(', ')} need a public URL for webhooks
+                    {:else}
+                      Expose :{tunnelPort} to the internet (free cloudflare tunnel)
+                    {/if}
                   </span>
                   <button class="ghost-btn sm accent" onclick={() => startTunnel()} disabled={tunnelBusy || !tunnelPort}>
                     <Icon name="globe" size={13} /> {tunnelBusy ? 'opening…' : 'expose publicly'}

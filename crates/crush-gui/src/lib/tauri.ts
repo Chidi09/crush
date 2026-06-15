@@ -526,6 +526,25 @@ export interface SshHost { alias: string; hostname: string | null; user: string 
 export function sshHosts(): Promise<SshHost[]> { return invoke('ssh_hosts'); }
 export function sshConnect(host: string): Promise<void> { return invoke('ssh_connect', { host }); }
 
+export interface ServerHealth {
+  reachable: boolean; os: string; uptime: string; cpus: number;
+  mem_total_mb: number; mem_used_mb: number;
+  disk_size: string; disk_used: string; disk_pct: string;
+  has_docker: boolean; error: string | null;
+}
+export interface ServerContainer { id: string; name: string; image: string; status: string; ports: string; }
+export function serverHealth(host: string): Promise<ServerHealth> { return invoke('server_health', { host }); }
+export function serverContainers(host: string): Promise<ServerContainer[]> { return invoke('server_containers', { host }); }
+export function serverContainerLogs(host: string, id: string, tail = 200): Promise<string> {
+  return invoke('server_container_logs', { host, id, tail });
+}
+export function serverContainerRestart(host: string, id: string): Promise<void> {
+  return invoke('server_container_restart', { host, id });
+}
+export function serverContainerStop(host: string, id: string): Promise<void> {
+  return invoke('server_container_stop', { host, id });
+}
+
 // ── Deploy target detection ─────────────────────────────────────────────────
 export interface DeployTarget { platform: string; source: string; icon: string; deploy_command: string; }
 export function detectDeployTargets(path: string): Promise<DeployTarget[]> {

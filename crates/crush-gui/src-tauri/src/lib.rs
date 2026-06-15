@@ -126,6 +126,11 @@ pub fn run() {
             commands::mailbox::clear_mail,
             commands::servers::ssh_hosts,
             commands::servers::ssh_connect,
+            commands::servers::server_health,
+            commands::servers::server_containers,
+            commands::servers::server_container_logs,
+            commands::servers::server_container_restart,
+            commands::servers::server_container_stop,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running Crush GUI");
