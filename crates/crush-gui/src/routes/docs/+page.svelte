@@ -1,4 +1,5 @@
 <script lang="ts">
+  import { onMount } from 'svelte';
   import Icon from '$lib/components/Icon.svelte';
   import TechIcon from '$lib/components/TechIcon.svelte';
   import * as api from '$lib/tauri';
@@ -37,6 +38,37 @@
     { id: 'glossary',     label: 'Glossary' },
     { id: 'resources',    label: 'Resources' },
   ];
+
+  // ── Scrollspy: highlight the TOC entry for the section in view ──────────
+  let activeId = $state(TOC[0].id);
+
+  onMount(() => {
+    const sections = TOC
+      .map((t) => document.getElementById(t.id))
+      .filter((el): el is HTMLElement => !!el);
+    const visible = new Set<string>();
+    const obs = new IntersectionObserver(
+      (entries) => {
+        for (const e of entries) {
+          if (e.isIntersecting) visible.add(e.target.id);
+          else visible.delete(e.target.id);
+        }
+        // The topmost section (in TOC order) that's currently near the top wins.
+        const first = TOC.find((t) => visible.has(t.id));
+        if (first) activeId = first.id;
+      },
+      // Trigger when a section reaches the top ~30% of the viewport.
+      { rootMargin: '0px 0px -70% 0px', threshold: 0 },
+    );
+    sections.forEach((s) => obs.observe(s));
+    return () => obs.disconnect();
+  });
+
+  function goTo(e: MouseEvent, id: string) {
+    e.preventDefault();
+    activeId = id;
+    document.getElementById(id)?.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 
   // ── Commands, grouped by area ────────────────────────────────────────
   const CMD_GROUPS = [
@@ -208,7 +240,7 @@
     <div class="toc-title">On this page</div>
     <nav>
       {#each TOC as t}
-        <a href={`#${t.id}`}>{t.label}</a>
+        <a href={`#${t.id}`} class:active={activeId === t.id} onclick={(e) => goTo(e, t.id)}>{t.label}</a>
       {/each}
     </nav>
   </aside>
@@ -573,23 +605,25 @@ healthcheck: curl -f http://localhost:3000/health`}</code>
   .toc { position: sticky; top: 12px; flex-shrink: 0; width: 184px; max-height: calc(100vh - 24px); overflow-y: auto; padding: 4px 0; }
   .toc-title { font-size: 11px; text-transform: uppercase; letter-spacing: 0.06em; color: var(--color-crush-text-muted); padding: 0 8px 8px; }
   .toc nav { display: flex; flex-direction: column; }
-  .toc a { font-size: 12.5px; color: var(--color-crush-text-muted); text-decoration: none; padding: 5px 8px; border-radius: 6px; border-left: 2px solid transparent; }
+  .toc a { font-size: 12.5px; color: var(--color-crush-text-muted); text-decoration: none; padding: 5px 8px; border-radius: 6px; border-left: 2px solid transparent; transition: color 0.12s, background 0.12s, border-color 0.12s; }
   .toc a:hover { color: var(--color-crush-text); background: rgba(255,255,255,0.04); border-left-color: var(--color-crush-orange); }
+  /* Scrollspy active link */
+  .toc a.active { color: var(--color-crush-text); background: rgba(255,255,255,0.05); border-left-color: var(--color-crush-orange); font-weight: 600; }
 
-  .page { display: flex; flex-direction: column; gap: 14px; max-width: 860px; flex: 1; min-width: 0; }
+  .page { display: flex; flex-direction: column; gap: 22px; max-width: 860px; flex: 1; min-width: 0; }
   .page-header h1 { font-size: 22px; font-weight: 600; margin: 0; }
-  .subtitle { font-size: 13.5px; color: var(--color-crush-text-muted); margin: 6px 0 0; line-height: 1.5; }
+  .subtitle { font-size: 13.5px; color: var(--color-crush-text-muted); margin: 8px 0 0; line-height: 1.6; }
 
-  .sec { padding: 18px 20px; scroll-margin-top: 14px; }
-  .sec-head { display: flex; align-items: center; gap: 9px; margin-bottom: 12px; color: var(--color-crush-text-muted); }
+  .sec { padding: 26px 28px; scroll-margin-top: 14px; }
+  .sec-head { display: flex; align-items: center; gap: 9px; margin-bottom: 18px; color: var(--color-crush-text-muted); }
   .sec-head h2 { font-size: 13px; text-transform: uppercase; letter-spacing: 0.05em; margin: 0; }
-  .sec-desc { font-size: 13px; color: var(--color-crush-text-muted); margin: 0 0 14px; line-height: 1.5; }
-  .sub { font-size: 13px; font-weight: 600; margin: 18px 0 8px; color: var(--color-crush-text); }
+  .sec-desc { font-size: 13px; color: var(--color-crush-text-muted); margin: 0 0 18px; line-height: 1.6; }
+  .sub { font-size: 13px; font-weight: 600; margin: 28px 0 10px; color: var(--color-crush-text); }
 
-  .prose { font-size: 13.5px; line-height: 1.65; color: var(--color-crush-text); margin: 0 0 10px; }
+  .prose { font-size: 13.5px; line-height: 1.75; color: var(--color-crush-text); margin: 0 0 14px; }
   .prose:last-child { margin-bottom: 0; }
-  .tight { margin: 6px 0 0; padding-left: 18px; }
-  .tight li { font-size: 13px; line-height: 1.6; color: var(--color-crush-text); }
+  .tight { margin: 10px 0 0; padding-left: 20px; }
+  .tight li { font-size: 13px; line-height: 1.7; color: var(--color-crush-text); margin-bottom: 5px; }
 
   .callout { display: flex; gap: 12px; align-items: flex-start; margin-top: 14px; padding: 12px 14px; border: 1px solid var(--color-crush-border); border-radius: 8px; background: rgba(224,85,64,0.05); }
   .callout :global(svg) { margin-top: 2px; color: var(--color-crush-orange); flex-shrink: 0; }
