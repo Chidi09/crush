@@ -29,9 +29,10 @@
   }
 
   // ── Start a service on demand (no project required) ──────────────────────
-  const STARTABLE = [
+  const AVAILABLE_SERVICES = [
     { kind: 'postgres', label: 'PostgreSQL', tech: 'postgres' },
-    { kind: 'redis',    label: 'Redis',      tech: 'redis' },
+    { kind: 'mysql', label: 'MySQL / MariaDB', tech: 'mysql' },
+    { kind: 'redis-compat', label: 'Redis Compat (Valkey)', tech: 'redis' },
     { kind: 'mongodb',  label: 'MongoDB',    tech: 'mongodb' },
     { kind: 'minio',    label: 'MinIO',      tech: 'minio' },
   ];
@@ -60,8 +61,11 @@
 
   type Svc = { project: string; name: string; kind: string; port: number };
   function svcKey(s: Svc) { return `${s.project}/${s.name}`; }
+  function isNative(kind: string) {
+    return kind === 'postgres' || kind === 'mysql' || kind.startsWith('redis') || kind === 'mongodb' || kind === 'minio';
+  }
   function canInspect(kind: string) {
-    return kind === 'postgres' || kind.startsWith('redis') || kind === 'mongodb' || kind === 'minio';
+    return kind === 'postgres' || kind === 'mongodb' || kind === 'minio' || kind.startsWith('redis') || kind === 'redis-compat';
   }
 
   // ── Logs ──────────────────────────────────────────────────────────────────
@@ -130,7 +134,7 @@
   <!-- Start any native service on demand — no project needed. -->
   <div class="start-bar">
     <span class="start-label">Start a service</span>
-    {#each STARTABLE as s}
+    {#each AVAILABLE_SERVICES as s}
       <button class="start-btn" disabled={starting !== null} onclick={() => startService(s.kind)}>
         <TechIcon name={s.tech} size={15} />
         {starting === s.kind ? 'starting…' : s.label}

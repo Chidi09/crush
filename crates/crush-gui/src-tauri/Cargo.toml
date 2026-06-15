@@ -46,6 +46,7 @@ crush-image = { workspace = true }
 crush-build = { workspace = true }
 crush-services = { workspace = true }
 crush-ai = { workspace = true }
+futures = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]
 windows-sys = { version = "0.52", features = [

@@ -61,6 +61,8 @@ pub fn run() {
                 });
             }
 
+            commands::database::spawn_backup_task();
+
             Ok(())
         })
         .invoke_handler(tauri::generate_handler![
@@ -110,6 +112,8 @@ pub fn run() {
             commands::deploy::open_terminal,
             commands::config::get_config,
             commands::config::set_config,
+            commands::env::read_env,
+            commands::env::write_env,
             commands::inspect::inspect_postgres,
             commands::inspect::inspect_redis,
             commands::inspect::inspect_mongo,
@@ -128,9 +132,34 @@ pub fn run() {
             commands::servers::ssh_connect,
             commands::servers::server_health,
             commands::servers::server_containers,
+            commands::servers::server_container_stats,
+            commands::servers::server_services,
+            commands::servers::server_service_restart,
             commands::servers::server_container_logs,
+            commands::servers::server_container_logs_follow,
+            commands::servers::server_container_logs_unfollow,
             commands::servers::server_container_restart,
             commands::servers::server_container_stop,
+            commands::servers::server_container_exec,
+            commands::database::db_status,
+            commands::database::db_backups,
+            commands::database::db_backup_now,
+            commands::database::db_restore,
+            commands::database::db_delete_backup,
+            commands::database::db_run_query,
+            commands::database::redis_list_keys,
+            commands::database::redis_get_val,
+            commands::database::redis_set_val,
+            commands::database::redis_del_key,
+            commands::database::mongo_list_databases,
+            commands::database::mongo_list_collections,
+            commands::database::mongo_find_docs,
+            commands::database::mongo_insert_doc,
+            commands::database::mongo_update_doc,
+            commands::database::mongo_delete_doc,
+            commands::gateway::list_domains,
+            commands::gateway::add_domain,
+            commands::gateway::remove_domain,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running Crush GUI");

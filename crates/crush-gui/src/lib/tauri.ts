@@ -511,6 +511,26 @@ export function writeProjectFile(path: string, filename: string, content: string
 export function cliAvailable(program: string, probe: string): Promise<boolean> {
   return invoke('cli_available', { program, probe });
 }
+export function setCloudVars(project: string, provider: string, env: Record<string, string>): Promise<void> {
+  return invoke('set_cloud_vars', { project, provider, env });
+}
+
+// ── Database ────────────────────────────────────────────────────────────────
+export interface BackupFile { name: string; size: number; modified_ms: number; }
+export interface DbStatus { is_up: boolean; port: number; }
+
+export function dbStatus(): Promise<DbStatus> { return invoke('db_status'); }
+export function dbBackups(): Promise<BackupFile[]> { return invoke('db_backups'); }
+export function dbBackupNow(): Promise<void> { return invoke('db_backup_now'); }
+export function dbRestore(filename: string): Promise<void> { return invoke('db_restore', { filename }); }
+export function dbDeleteBackup(filename: string): Promise<void> { return invoke('db_delete_backup', { filename }); }
+
+// ── Gateway/Domains ─────────────────────────────────────────────────────────
+export interface DomainRecord { host: string; project: string; port: number; }
+export function listDomains(): Promise<DomainRecord[]> { return invoke('list_domains'); }
+export function addDomain(host: string, project: string, port: number): Promise<void> { return invoke('add_domain', { host, project, port }); }
+export function removeDomain(host: string): Promise<void> { return invoke('remove_domain', { host }); }
+
 export function runDeploy(path: string, program: string, args: string[], env: Record<string, string>): Promise<void> {
   return invoke('run_deploy', { path, program, args, env });
 }
@@ -533,16 +553,30 @@ export interface ServerHealth {
   has_docker: boolean; error: string | null;
 }
 export interface ServerContainer { id: string; name: string; image: string; status: string; ports: string; }
+export interface ServerContainerStat { name: string; cpu: string; mem: string; }
+export interface NativeServerService { name: string; status: string; kind: string; }
 export function serverHealth(host: string): Promise<ServerHealth> { return invoke('server_health', { host }); }
 export function serverContainers(host: string): Promise<ServerContainer[]> { return invoke('server_containers', { host }); }
+export function serverContainerStats(host: string): Promise<ServerContainerStat[]> { return invoke('server_container_stats', { host }); }
+export function serverServices(host: string): Promise<NativeServerService[]> { return invoke('server_services', { host }); }
+export function serverServiceRestart(host: string, name: string, kind: string): Promise<void> { return invoke('server_service_restart', { host, name, kind }); }
 export function serverContainerLogs(host: string, id: string, tail = 200): Promise<string> {
   return invoke('server_container_logs', { host, id, tail });
+}
+export function serverContainerLogsFollow(host: string, id: string): Promise<void> {
+  return invoke('server_container_logs_follow', { host, id });
+}
+export function serverContainerLogsUnfollow(host: string, id: string): Promise<void> {
+  return invoke('server_container_logs_unfollow', { host, id });
 }
 export function serverContainerRestart(host: string, id: string): Promise<void> {
   return invoke('server_container_restart', { host, id });
 }
 export function serverContainerStop(host: string, id: string): Promise<void> {
   return invoke('server_container_stop', { host, id });
+}
+export function serverContainerExec(host: string, id: string): Promise<void> {
+  return invoke('server_container_exec', { host, id });
 }
 
 // ── Deploy target detection ─────────────────────────────────────────────────
@@ -659,4 +693,77 @@ export function getConfig(): Promise<AppConfig> {
 export function setConfig(config: AppConfig): Promise<void> {
   return invoke('set_config', { config });
 }
+
+export interface EnvVar {
+  key: string;
+  value: string;
+  is_secret: boolean;
+}
+
+export function readEnv(projectPath: string): Promise<EnvVar[]> {
+  return invoke('read_env', { projectPath });
+}
+
+export function writeEnv(projectPath: string, env: EnvVar[]): Promise<void> {
+  return invoke('write_env', { projectPath, env });
+}
+
+export interface QueryResult {
+  columns: string[];
+  rows: any[][];
+  affected: number;
+  error: string | null;
+  duration_ms: number;
+}
+
+export interface RedisKeyInfo {
+  key: string;
+  kind: string;
+  ttl: number;
+}
+
+export function dbRunQuery(engine: string, url: string, sql: string): Promise<QueryResult> {
+  return invoke('db_run_query', { engine, url, sql });
+}
+
+export function redisListKeys(port: number, password?: string, pattern?: string): Promise<RedisKeyInfo[]> {
+  return invoke('redis_list_keys', { port, password: password ?? null, pattern: pattern ?? null });
+}
+
+export function redisGetVal(port: number, password: string | undefined, key: string): Promise<string> {
+  return invoke('redis_get_val', { port, password: password ?? null, key });
+}
+
+export function redisSetVal(port: number, password: string | undefined, key: string, value: string, ttlSecs?: number): Promise<void> {
+  return invoke('redis_set_val', { port, password: password ?? null, key, value, ttlSecs: ttlSecs ?? null });
+}
+
+export function redisDelKey(port: number, password: string | undefined, key: string): Promise<void> {
+  return invoke('redis_del_key', { port, password: password ?? null, key });
+}
+
+export function mongoListDatabases(port: number): Promise<string[]> {
+  return invoke('mongo_list_databases', { port });
+}
+
+export function mongoListCollections(port: number, database: string): Promise<string[]> {
+  return invoke('mongo_list_collections', { port, database });
+}
+
+export function mongoFindDocs(port: number, database: string, collection: string, filterJson?: string, limit = 50, skip = 0): Promise<string[]> {
+  return invoke('mongo_find_docs', { port, database, collection, filterJson: filterJson ?? null, limit, skip });
+}
+
+export function mongoInsertDoc(port: number, database: string, collection: string, docJson: string): Promise<void> {
+  return invoke('mongo_insert_doc', { port, database, collection, docJson });
+}
+
+export function mongoUpdateDoc(port: number, database: string, collection: string, filterJson: string, updateJson: string): Promise<number> {
+  return invoke('mongo_update_doc', { port, database, collection, filterJson, updateJson });
+}
+
+export function mongoDeleteDoc(port: number, database: string, collection: string, filterJson: string): Promise<number> {
+  return invoke('mongo_delete_doc', { port, database, collection, filterJson });
+}
+
 
