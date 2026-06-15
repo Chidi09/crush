@@ -1778,7 +1778,7 @@ checksum = "460fbee9c2c2f33933d720630a6a0bac33ba7053db5344fac858d4b8952d77d5"
 
 [[package]]
 name = "crush-ai"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1797,7 +1797,7 @@ dependencies = [
 
 [[package]]
 name = "crush-api"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1813,7 +1813,7 @@ dependencies = [
 
 [[package]]
 name = "crush-build"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1857,7 +1857,7 @@ dependencies = [
 
 [[package]]
 name = "crush-cli"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1906,7 +1906,7 @@ dependencies = [
 
 [[package]]
 name = "crush-compat"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1932,7 +1932,7 @@ dependencies = [
 
 [[package]]
 name = "crush-deploy"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -1951,7 +1951,7 @@ dependencies = [
 
 [[package]]
 name = "crush-gui"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "aws-sdk-s3",
@@ -1983,7 +1983,7 @@ dependencies = [
 
 [[package]]
 name = "crush-image"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2010,7 +2010,7 @@ dependencies = [
 
 [[package]]
 name = "crush-network"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2039,7 +2039,7 @@ dependencies = [
 
 [[package]]
 name = "crush-proto"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2053,7 +2053,7 @@ dependencies = [
 
 [[package]]
 name = "crush-registry"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2071,7 +2071,7 @@ dependencies = [
 
 [[package]]
 name = "crush-reliability"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2092,7 +2092,7 @@ dependencies = [
 
 [[package]]
 name = "crush-runtime-linux"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2111,7 +2111,7 @@ dependencies = [
 
 [[package]]
 name = "crush-runtime-macos"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2132,7 +2132,7 @@ dependencies = [
 
 [[package]]
 name = "crush-runtime-wasm"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2150,7 +2150,7 @@ dependencies = [
 
 [[package]]
 name = "crush-runtime-windows"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2176,7 +2176,7 @@ dependencies = [
 
 [[package]]
 name = "crush-services"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2194,7 +2194,7 @@ dependencies = [
 
 [[package]]
 name = "crush-tui"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2214,7 +2214,7 @@ dependencies = [
 
 [[package]]
 name = "crush-types"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2228,7 +2228,7 @@ dependencies = [
 
 [[package]]
 name = "crush-volume"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "anyhow",
  "async-trait",
