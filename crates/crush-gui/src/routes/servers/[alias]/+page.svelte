@@ -4,11 +4,13 @@
   import { goto } from '$app/navigation';
   import Icon from '$lib/components/Icon.svelte';
   import * as api from '$lib/tauri';
-  import type { ServerHealth, ServerContainer } from '$lib/tauri';
+  import type { ServerHealth, ServerContainer, NativeServerService, ServerContainerStat } from '$lib/tauri';
 
   let alias = $derived(decodeURIComponent(($page.params as Record<string, string>).alias ?? ''));
   let health = $state<ServerHealth | null>(null);
   let containers = $state<ServerContainer[]>([]);
+  let services = $state<NativeServerService[]>([]);
+  let stats = $state<Record<string, ServerContainerStat>>({});
   let loading = $state(true);
   let acting = $state<string | null>(null);
 
@@ -16,6 +18,15 @@
   let logFor = $state<ServerContainer | null>(null);
   let logText = $state('');
   let logLoading = $state(false);
+  let logFollowing = $state(false);
+  let logUnlisten: import('@tauri-apps/api/event').UnlistenFn | null = null;
+  let logBodyEl = $state<HTMLElement | null>(null);
+
+  $effect(() => {
+    if (logText && logBodyEl && logFollowing) {
+      logBodyEl.scrollTop = logBodyEl.scrollHeight;
+    }
+  });
 
   let memPct = $derived(health && health.mem_total_mb > 0 ? Math.round((health.mem_used_mb / health.mem_total_mb) * 100) : 0);
 
@@ -23,7 +34,21 @@
     loading = true;
     try {
       health = await api.serverHealth(alias);
-      containers = health?.reachable ? await api.serverContainers(alias) : [];
+      if (health?.reachable) {
+        if (health.has_docker) {
+          containers = await api.serverContainers(alias);
+          const st = await api.serverContainerStats(alias).catch(() => []);
+          const statMap: Record<string, ServerContainerStat> = {};
+          for (const s of st) statMap[s.name] = s;
+          stats = statMap;
+        } else {
+          services = await api.serverServices(alias);
+        }
+      } else {
+        containers = [];
+        services = [];
+        stats = {};
+      }
     } catch (e) {
       health = { reachable: false, os: '', uptime: '', cpus: 0, mem_total_mb: 0, mem_used_mb: 0, disk_size: '', disk_used: '', disk_pct: '', has_docker: false, error: String(e) };
     } finally {
@@ -40,10 +65,49 @@
     try { await api.serverContainerStop(alias, c.id); await load(); }
     catch (e) { alert(String(e)); } finally { acting = null; }
   }
+  async function restartService(s: NativeServerService) {
+    if (!confirm(`Restart ${s.kind} service ${s.name}?`)) return;
+    acting = s.name;
+    try { await api.serverServiceRestart(alias, s.name, s.kind); await load(); }
+    catch (e) { alert(`Failed to restart: ${String(e)}`); } finally { acting = null; }
+  }
+  async function execContainer(c: ServerContainer) {
+    try { await api.serverContainerExec(alias, c.id); }
+    catch (e) { alert(`Failed to open terminal: ${String(e)}`); }
+  }
   async function showLogs(c: ServerContainer) {
-    logFor = c; logText = ''; logLoading = true;
-    try { logText = await api.serverContainerLogs(alias, c.id, 300) || '(no output)'; }
-    catch (e) { logText = String(e); } finally { logLoading = false; }
+    if (logFor) await closeLogs();
+    logFor = c; logText = ''; logLoading = true; logFollowing = false;
+    try { 
+      let initial = await api.serverContainerLogs(alias, c.id, 300);
+      logText = initial ? initial + (initial.endsWith('\n') ? '' : '\n') : '(no output)\n';
+    }
+    catch (e) { logText = String(e) + '\n'; } finally { logLoading = false; }
+  }
+
+  async function closeLogs() {
+    if (logFollowing && logFor) {
+      await api.serverContainerLogsUnfollow(alias, logFor.id).catch(() => {});
+      if (logUnlisten) { logUnlisten(); logUnlisten = null; }
+    }
+    logFor = null;
+    logFollowing = false;
+    logUnlisten = null;
+  }
+
+  async function toggleFollow() {
+    if (!logFor) return;
+    if (logFollowing) {
+      logFollowing = false;
+      await api.serverContainerLogsUnfollow(alias, logFor.id);
+      if (logUnlisten) { logUnlisten(); logUnlisten = null; }
+    } else {
+      logFollowing = true;
+      logUnlisten = await api.onLogLine(`${alias}:${logFor.id}`, (line) => {
+        logText += line.text + '\n';
+      });
+      await api.serverContainerLogsFollow(alias, logFor.id);
+    }
   }
   function isUp(status: string) { return /^up/i.test(status.trim()); }
 
@@ -89,44 +153,73 @@
       </div>
     </div>
 
-    <!-- Containers -->
-    <div class="sec-head">
-      <h2>Containers</h2>
-      <span class="count">{containers.length}</span>
-    </div>
+    <!-- Containers or Services -->
     {#if !health.has_docker}
-      <p class="muted">Docker isn't installed on this server, so there are no containers to manage. (Native/systemd service management is on the roadmap.)</p>
-    {:else if !containers.length}
-      <p class="muted">No containers running.</p>
-    {:else}
-      <div class="ctable">
-        <div class="crow chead"><span>Name</span><span>Image</span><span>Status</span><span>Ports</span><span></span></div>
-        {#each containers as c (c.id)}
-          <div class="crow">
-            <span class="cname"><span class="sdot" class:up={isUp(c.status)}></span>{c.name}</span>
-            <span class="mono dim">{c.image}</span>
-            <span class="cstatus">{c.status}</span>
-            <span class="mono dim ports">{c.ports || '—'}</span>
-            <span class="cactions">
-              <button class="mini" disabled={acting!==null} onclick={() => showLogs(c)} title="Logs">logs</button>
-              <button class="mini" disabled={acting!==null} onclick={() => restart(c)} title="Restart">{acting===c.id ? '…' : 'restart'}</button>
-              <button class="mini danger" disabled={acting!==null} onclick={() => stop(c)} title="Stop">stop</button>
-            </span>
-          </div>
-        {/each}
+      <div class="sec-head">
+        <h2>Native Services</h2>
+        <span class="count">{services.length}</span>
       </div>
+      {#if !services.length}
+        <p class="muted">Docker isn't installed on this server, and no native services (systemd/pm2) were found.</p>
+      {:else}
+        <div class="ctable">
+          <div class="crow chead" style="grid-template-columns: 2fr 1fr 1fr auto;"><span>Name</span><span>Kind</span><span>Status</span><span></span></div>
+          {#each services as s}
+            <div class="crow" style="grid-template-columns: 2fr 1fr 1fr auto;">
+              <span class="cname">{s.name}</span>
+              <span class="mono dim">{s.kind}</span>
+              <span class="cstatus">{s.status}</span>
+              <span class="cactions">
+                <button class="mini" disabled={acting!==null} onclick={() => restartService(s)} title="Restart">{acting===s.name ? '…' : 'restart'}</button>
+              </span>
+            </div>
+          {/each}
+        </div>
+      {/if}
+    {:else}
+      <div class="sec-head">
+        <h2>Containers</h2>
+        <span class="count">{containers.length}</span>
+      </div>
+      {#if !containers.length}
+        <p class="muted">No containers running.</p>
+      {:else}
+        <div class="ctable">
+          <div class="crow chead" style="grid-template-columns: 1.4fr 1.6fr 60px 80px 1fr auto;"><span>Name</span><span>Image</span><span>CPU</span><span>Mem</span><span>Ports</span><span></span></div>
+          {#each containers as c (c.id)}
+            <div class="crow" style="grid-template-columns: 1.4fr 1.6fr 60px 80px 1fr auto;">
+              <span class="cname" title={c.status}><span class="sdot" class:up={isUp(c.status)}></span>{c.name}</span>
+              <span class="mono dim">{c.image}</span>
+              <span class="mono dim" style="font-size: 11px;">{stats[c.name]?.cpu || '—'}</span>
+              <span class="mono dim" style="font-size: 11px;">{stats[c.name]?.mem || '—'}</span>
+              <span class="mono dim ports">{c.ports || '—'}</span>
+              <span class="cactions">
+                <button class="mini" disabled={acting!==null} onclick={() => execContainer(c)} title="Terminal">exec</button>
+                <button class="mini" disabled={acting!==null} onclick={() => showLogs(c)} title="Logs">logs</button>
+                <button class="mini" disabled={acting!==null} onclick={() => restart(c)} title="Restart">{acting===c.id ? '…' : 'restart'}</button>
+                <button class="mini danger" disabled={acting!==null} onclick={() => stop(c)} title="Stop">stop</button>
+              </span>
+            </div>
+          {/each}
+        </div>
+      {/if}
     {/if}
   {/if}
 
   {#if logFor}
     <!-- svelte-ignore a11y_click_events_have_key_events a11y_no_noninteractive_element_interactions -->
-    <div class="logs-overlay" role="button" tabindex="0" onclick={() => logFor = null} onkeydown={(e)=>{if(e.key==='Escape')logFor=null;}}>
+    <div class="logs-overlay" role="button" tabindex="0" onclick={closeLogs} onkeydown={(e)=>{if(e.key==='Escape')closeLogs();}}>
       <div class="logs-panel" role="document" onclick={(e) => e.stopPropagation()}>
         <div class="logs-head">
           <span><Icon name="logs" size={14} /> {logFor.name}</span>
-          <button class="ghost-btn sm" onclick={() => logFor = null}><Icon name="x" size={13} /></button>
+          <div style="display: flex; gap: 8px;">
+            <label style="font-size: 13px; display: inline-flex; align-items: center; gap: 6px; cursor: pointer;">
+              <input type="checkbox" checked={logFollowing} onchange={toggleFollow} /> Follow
+            </label>
+            <button class="ghost-btn sm" onclick={closeLogs}><Icon name="x" size={13} /></button>
+          </div>
         </div>
-        <pre class="logs-body">{logLoading ? 'loading…' : logText}</pre>
+        <pre bind:this={logBodyEl} class="logs-body">{logLoading ? 'loading…' : logText}</pre>
       </div>
     </div>
   {/if}

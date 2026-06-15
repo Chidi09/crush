@@ -165,6 +165,17 @@ Every item below is a discrete, shippable task. `[have]` = already exists, surfa
 - [ ] [new] **Add/remove server** from the GUI (append a `Host` block to `~/.ssh/config`; validate connectivity).
 - [ ] [new] **Server-wide actions**: prune docker (`docker system prune`), reboot (confirm), free disk.
 
+## A4b. Server → typed service inventory + studio linkage + deployment mgmt (Dokploy-grade)
+Status: server detail shows generic `docker ps` + native services already. Build the rest:
+- [ ] **Typed service inventory.** Classify each container by image (reuse `crush_build::service_orchestrator::native_driver_for` mapping): Postgres/MySQL/MariaDB/Mongo/Redis → **Database**; minio → **Object storage (S3)**; everything else → **App**. Render with the right `TechIcon` + a type badge, grouped (Databases · Storage · Apps · Other). This is the "see the db, s3, and other services" ask.
+- [ ] **Open remote service in our studio (over SSH tunnel).** New command `open_ssh_tunnel(host, remote_port) -> local_port` that runs `ssh -N -L 127.0.0.1:<localport>:127.0.0.1:<remoteport> host` (track the child in `AppState` so it can be closed). Then:
+  - Remote **Postgres/MySQL/Mongo/Redis** → "Manage" button opens the **DB Studio** (Plan #2) pointed at `localhost:<localport>` with the container's creds (read from its env via `docker inspect`).
+  - Remote **MinIO** → "Browse" opens the **Storage Studio** (Plan #3) against the tunneled endpoint.
+  - Close the tunnel when the studio view closes.
+- [ ] **Manage deployments from the server.** List crush-deployed apps on the host: read blue/green containers + the gateway target (or `crush ps` over SSH). Per app: **Redeploy** (re-run `crush deploy`/blue-green), **Stop**, **Logs**, **open live URL/domain**. Ties the Servers view to the Deployments + Domains features.
+- [ ] **Container env + inspect.** `docker inspect <id>` → show env (mask secrets), mounts, ports, restart policy in a detail drawer (needed to derive DB creds for the studio linkage above).
+- [ ] **Accept:** open a server → see services grouped/typed with icons → click a Postgres container → DB Studio opens on it via tunnel and lists tables; see deployed apps and redeploy one.
+
 ## A5. Cross-cutting / polish (loose ends from this thread — capture all)
 - [ ] [partial] **Branch picker default `main`** — Phase 1a.
 - [ ] [partial] **Polyglot stack labels** (Go·React(Vite), no "latest") — Phase 1b.

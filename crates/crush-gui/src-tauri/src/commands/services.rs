@@ -109,6 +109,7 @@ fn connection_string_for(kind: &str, port: u16, project: &str, _name: &str) -> O
             port,
             project.replace('-', "_"),
         )),
+        "mysql" => Some(format!("mysql://root:crush@localhost:{}/{}", port, project.replace('-', "_"))),
         "redis-compat" => Some(format!("redis://localhost:{}", port)),
         "mongodb" => Some(format!("mongodb://localhost:{}", port)),
         "minio" => Some(format!("http://localhost:{} (credentials: minioadmin/minioadmin)", port)),
@@ -151,11 +152,15 @@ pub async fn start_native_service(
         ]),
         "redis" | "redis-compat" => ("redis:7", 6379, vec![]),
         "mongodb" | "mongo" => ("mongo:7", 27017, vec![]),
+        "mysql" | "mariadb" => ("mysql:8", 3306, vec![
+            ("MYSQL_ROOT_PASSWORD".into(), "crush".into()),
+            ("MYSQL_DATABASE".into(), "crush".into()),
+        ]),
         "minio" => ("minio/minio", 9000, vec![
             ("MINIO_ROOT_USER".into(), "minioadmin".into()),
             ("MINIO_ROOT_PASSWORD".into(), "minioadmin".into()),
         ]),
-        other => return Err(format!("unknown service kind '{other}' (use postgres, redis, mongodb, minio)")),
+        other => return Err(format!("unknown service kind '{other}' (use postgres, mysql, redis, mongodb, minio)")),
     };
 
     let dep = DepService {

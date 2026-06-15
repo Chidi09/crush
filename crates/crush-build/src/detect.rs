@@ -460,9 +460,44 @@ impl CrushSpecDetector {
         if let Some(d) = self.try_swift(root) { detections.push(d); }
 
         let mut best = if !detections.is_empty() {
-            detections.into_iter()
-                .max_by(|a, b| a.confidence.partial_cmp(&b.confidence).unwrap_or(std::cmp::Ordering::Equal))
-                .unwrap()
+            detections.sort_by(|a, b| b.confidence.partial_cmp(&a.confidence).unwrap_or(std::cmp::Ordering::Equal));
+            let mut top = detections[0].clone();
+            
+            let strong: Vec<_> = detections.into_iter().filter(|d| d.confidence >= 0.5).collect();
+            if strong.len() > 1 {
+                let mut labels = Vec::new();
+                for d in &strong {
+                    let rt_str = match d.runtime_type {
+                        RuntimeType::Node | RuntimeType::TypeScript => "Node",
+                        RuntimeType::Python => "Python",
+                        RuntimeType::Rust => "Rust",
+                        RuntimeType::Go => "Go",
+                        RuntimeType::Java => "Java",
+                        RuntimeType::DotNet => ".NET",
+                        RuntimeType::Ruby => "Ruby",
+                        RuntimeType::Php => "PHP",
+                        RuntimeType::Elixir => "Elixir",
+                        RuntimeType::Swift => "Swift",
+                        RuntimeType::Deno => "Deno",
+                        RuntimeType::Bun => "Bun",
+                        RuntimeType::Flutter => "Flutter",
+                        RuntimeType::ReactNative => "React Native",
+                        RuntimeType::Generic => "Generic",
+                    };
+                    if d.framework_detected && !d.framework_name.is_empty() {
+                        labels.push(format!("{} ({})", rt_str, d.framework_name));
+                    } else {
+                        labels.push(rt_str.to_string());
+                    }
+                }
+                labels.dedup();
+                let composite = labels.join(" · ");
+                top.runtime_type = RuntimeType::Generic;
+                top.framework_name = composite;
+                top.framework_detected = true;
+                top.runtime_version = String::new(); // Never emit a bare version/"latest" as the label
+            }
+            top
         } else if let Some(ref hints) = dockerfile_hints {
             self.try_dockerfile(root, hints)
         } else {
@@ -2241,6 +2276,25 @@ mod tests {
         node_project(dir.path());
         let d = CrushSpecDetector::new().detect(&dir.path().to_path_buf());
         assert_eq!(d.dockerfile_found, None);
+    }
+
+    #[test]
+    fn composite_label_for_polyglot_stack() {
+        let dir = tempfile::TempDir::new().unwrap();
+        // Setup Go
+        fs::write(dir.path().join("go.mod"), "module github.com/example/polyglot\n\ngo 1.21\n").unwrap();
+        fs::write(dir.path().join("main.go"), "package main\nfunc main() {}\n").unwrap();
+        // Setup React (Vite)
+        fs::write(dir.path().join("package.json"), r#"{"dependencies": {"react": "^18"}, "devDependencies": {"vite": "^4"}}"#).unwrap();
+        fs::write(dir.path().join("vite.config.ts"), "export default {}\n").unwrap();
+
+        let d = CrushSpecDetector::new().detect(&dir.path().to_path_buf());
+        assert!(matches!(d.runtime_type, RuntimeType::Generic), "Expected Generic for composite");
+        assert!(d.framework_detected, "Expected framework_detected to be true");
+        assert!(d.framework_name.contains("Go"), "Expected label to contain Go, got: {}", d.framework_name);
+        assert!(d.framework_name.contains("Node (Vite)") || d.framework_name.contains("React") || d.framework_name.contains("vite"), "Expected label to contain Node (Vite), got: {}", d.framework_name);
+        assert!(d.framework_name.contains(" · "), "Expected label to use dot separator");
+        assert_eq!(d.runtime_version, "", "Expected runtime_version to be empty to avoid emitting 'latest'");
     }
 }
 

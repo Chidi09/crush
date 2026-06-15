@@ -29,15 +29,21 @@ pub async fn detect_project(path: String) -> Result<ProjectInfo, String> {
         return Err(format!("Path does not exist: {path}"));
     }
     let det = CrushSpecDetector::new().detect(&root);
+    let mut runtime_str = format!("{:?}", det.runtime_type);
+    let mut fw = if det.framework_detected && !det.framework_name.is_empty() {
+        Some(det.framework_name.clone())
+    } else {
+        None
+    };
+    if matches!(det.runtime_type, crush_build::detect::RuntimeType::Generic) && det.framework_name.contains(" · ") {
+        runtime_str = det.framework_name.clone();
+        fw = None;
+    }
     Ok(ProjectInfo {
         name: det.project_name,
-        runtime: format!("{:?}", det.runtime_type),
+        runtime: runtime_str,
         version: det.runtime_version,
-        framework: if det.framework_detected && !det.framework_name.is_empty() {
-            Some(det.framework_name)
-        } else {
-            None
-        },
+        framework: fw,
         port: det.port,
         confidence: det.confidence,
         is_monorepo: det.is_monorepo,

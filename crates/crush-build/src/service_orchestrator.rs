@@ -705,6 +705,7 @@ pub fn native_driver_for(image: &str) -> Option<&'static str> {
         "postgres" | "pgvector" | "timescale" => Some("postgres"),
         n if n.starts_with("redis") || n.starts_with("valkey") || n.starts_with("keydb") || n.starts_with("garnet") => Some("redis"),
         "mongo" | "mongodb" => Some("mongodb"),
+        "mysql" | "mariadb" => Some("mysql"),
         n if n.starts_with("minio") => Some("minio"),
         _ => None,
     }
@@ -721,9 +722,9 @@ pub async fn start_dep_service_smart(
         fs::create_dir_all(&svc_data_dir).ok();
 
         let host_port = dep.ports.iter().next().map(|(hp, _)| *hp).unwrap_or(0);
-        let password = dep.env.iter().find(|(k, _)| k == "POSTGRES_PASSWORD" || k == "REDIS_PASSWORD" || k == "MONGO_INITDB_ROOT_PASSWORD" || k == "MINIO_ROOT_PASSWORD" || k == "MINIO_SECRET_KEY").map(|(_, v)| v.clone());
-        let database = dep.env.iter().find(|(k, _)| k == "POSTGRES_DB" || k == "MONGO_INITDB_DATABASE").map(|(_, v)| v.clone());
-        let user = dep.env.iter().find(|(k, _)| k == "POSTGRES_USER" || k == "MONGO_INITDB_ROOT_USERNAME" || k == "MINIO_ROOT_USER" || k == "MINIO_ACCESS_KEY").map(|(_, v)| v.clone());
+        let password = dep.env.iter().find(|(k, _)| k == "POSTGRES_PASSWORD" || k == "REDIS_PASSWORD" || k == "MONGO_INITDB_ROOT_PASSWORD" || k == "MINIO_ROOT_PASSWORD" || k == "MINIO_SECRET_KEY" || k == "MYSQL_ROOT_PASSWORD").map(|(_, v)| v.clone());
+        let database = dep.env.iter().find(|(k, _)| k == "POSTGRES_DB" || k == "MONGO_INITDB_DATABASE" || k == "MYSQL_DATABASE").map(|(_, v)| v.clone());
+        let user = dep.env.iter().find(|(k, _)| k == "POSTGRES_USER" || k == "MONGO_INITDB_ROOT_USERNAME" || k == "MINIO_ROOT_USER" || k == "MINIO_ACCESS_KEY" || k == "MYSQL_USER").map(|(_, v)| v.clone());
 
         let log_dir = data_dir.join("services").join("logs").join(project_name);
         let _ = fs::create_dir_all(&log_dir);
@@ -736,6 +737,7 @@ pub async fn start_dep_service_smart(
                     "redis" => 6379,
                     "mongodb" => 27017,
                     "minio" => 9000,
+                    "mysql" => 3306,
                     _ => 8080,
                 }
             },

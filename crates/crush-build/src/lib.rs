@@ -160,8 +160,15 @@ pub fn project_fingerprint(root: &Path) -> Result<String> {
 
 impl From<Detection> for InferredStack {
     fn from(d: Detection) -> Self {
+        let lang = if matches!(d.runtime_type, RuntimeType::Generic) && d.framework_name.contains(" · ") {
+            d.framework_name.clone()
+        } else if d.framework_detected && !d.framework_name.is_empty() {
+            format!("{} ({})", d.runtime_type.as_str(), d.framework_name)
+        } else {
+            d.runtime_type.as_str().to_string()
+        };
         Self {
-            language: format!("{} ({})", d.runtime_type.as_str(), d.framework_name),
+            language: lang,
             runtime_version: d.runtime_version,
             build_command: d.build_command,
             dev_install_command: d.dev_install_command,

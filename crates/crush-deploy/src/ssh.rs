@@ -22,7 +22,7 @@ impl SshProvider {
         }
     }
 
-    fn connect(&self) -> anyhow::Result<Session> {
+    pub fn connect(&self) -> anyhow::Result<Session> {
         let tcp = TcpStream::connect(format!("{}:{}", self.host, self.port))
             .context("TCP connect failed")?;
         let mut sess = Session::new()?;
@@ -41,7 +41,7 @@ impl SshProvider {
         Ok(sess)
     }
 
-    fn exec(&self, sess: &Session, cmd: &str) -> anyhow::Result<(String, String, i32)> {
+    pub fn exec(&self, sess: &Session, cmd: &str) -> anyhow::Result<(String, String, i32)> {
         let mut channel = sess.channel_session()?;
         channel.exec(cmd)?;
 

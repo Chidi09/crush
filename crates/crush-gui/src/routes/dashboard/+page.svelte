@@ -164,6 +164,22 @@
 
   // Git-aware run: switch the branch you run/deploy without leaving the dashboard.
   let branches = $state<api.BranchInfo[]>([]);
+  let sortedBranches = $derived(
+    branches
+      .filter((b) => !b.is_remote)
+      .sort((a, b) => {
+        const rank = (name: string) => {
+          if (name === 'main') return 1;
+          if (name === 'master') return 2;
+          if (name === git?.branch) return 3;
+          return 4;
+        };
+        const rA = rank(a.name);
+        const rB = rank(b.name);
+        if (rA !== rB) return rA - rB;
+        return a.name.localeCompare(b.name);
+      })
+  );
   let switching = $state(false);
   let switchErr = $state<string | null>(null);
   async function onSwitchBranch(branch: string) {
@@ -392,7 +408,7 @@
                     disabled={switching}
                     onchange={(e) => onSwitchBranch((e.currentTarget as HTMLSelectElement).value)}
                   >
-                    {#each branches.filter((b) => !b.is_remote) as b (b.name)}
+                    {#each sortedBranches as b (b.name)}
                       <option value={b.name}>{b.name}</option>
                     {/each}
                   </select>

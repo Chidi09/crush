@@ -20,6 +20,11 @@
   let fetchingBranches = $state(false);
   let resolvedPath = $state<string | null>(null);
 
+  let envVars = $state<api.EnvVar[]>([]);
+  let showSecrets = $state<Record<number, boolean>>({});
+  let loadingEnv = $state(false);
+  let savingEnv = $state(false);
+
   $effect(() => {
     const p = project;
     loading = true;
@@ -31,6 +36,8 @@
         resolvedPath = path;
         git = await api.gitInfo(path).catch(() => null);
         loadBranches(false);
+        loadingEnv = true;
+        api.readEnv(path).then(e => envVars = e).finally(() => loadingEnv = false);
       }
     }).catch(() => list = []).finally(() => loading = false);
   });
@@ -143,6 +150,29 @@
       default: return status;
     }
   }
+
+  function addEnvVar() {
+    envVars = [...envVars, { key: '', value: '', is_secret: false }];
+  }
+  function removeEnvVar(index: number) {
+    envVars = envVars.filter((_, i) => i !== index);
+  }
+  async function saveEnvVars() {
+    if (!resolvedPath) return;
+    savingEnv = true;
+    try {
+      await api.writeEnv(resolvedPath, envVars.filter(v => v.key.trim() !== ''));
+      toast('Environment variables saved', 'success');
+      envVars = await api.readEnv(resolvedPath);
+    } catch (e) {
+      toast('Failed to save env vars', 'error');
+    } finally {
+      savingEnv = false;
+    }
+  }
+  function toggleSecret(i: number) {
+    showSecrets[i] = !showSecrets[i];
+  }
 </script>
 
 <div class="page">
@@ -222,6 +252,40 @@
         </div>
       {/if}
     </div>
+
+    <!-- Environment Variables Panel -->
+    {#if resolvedPath}
+      <div class="crush-card mt-4">
+        <div class="lh">
+          <h2>Environment Variables</h2>
+          <span class="count">{envVars.length}</span>
+          <button class="btn primary sm ml-auto" onclick={saveEnvVars} disabled={savingEnv}>{savingEnv ? 'Saving...' : 'Save'}</button>
+        </div>
+        {#if loadingEnv}
+          <p class="muted">Loading environment variables...</p>
+        {:else}
+          <div class="env-list">
+            {#each envVars as ev, i}
+              <div class="env-row">
+                <input class="env-input env-key mono" placeholder="KEY" bind:value={ev.key} />
+                <span class="env-eq">=</span>
+                <div class="env-val-wrapper">
+                  <input class="env-input env-val mono" type={ev.is_secret && !showSecrets[i] ? 'password' : 'text'} placeholder="value" bind:value={ev.value} />
+                  {#if ev.is_secret}
+                    <button class="ghost-btn xs eye-btn" onclick={() => toggleSecret(i)} title={showSecrets[i] ? 'Hide value' : 'Show value'}>
+                      <Icon name={showSecrets[i] ? 'eye-off' : 'eye'} size={12} />
+                    </button>
+                  {/if}
+                </div>
+                <label class="env-sec-label"><input type="checkbox" bind:checked={ev.is_secret} /> Secret</label>
+                <button class="del ml-auto" onclick={() => removeEnvVar(i)} title="Remove">×</button>
+              </div>
+            {/each}
+          </div>
+          <button class="ghost-btn sm mt-2" onclick={addEnvVar}>+ Add Variable</button>
+        {/if}
+      </div>
+    {/if}
 
     <!-- Git Source -->
     {#if git && git.is_repo}
@@ -358,4 +422,15 @@
 
   .branch-row { grid-template-columns: 14px 150px auto 1fr 100px 80px auto; gap: 16px; cursor: default; }
   .branch-row:hover { background: none; }
+
+  .env-list { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; }
+  .env-row { display: flex; align-items: center; gap: 8px; }
+  .env-input { background: rgba(255,255,255,0.03); border: 1px solid var(--color-crush-border); color: var(--color-crush-text); padding: 6px 10px; border-radius: 6px; font-size: 13px; outline: none; }
+  .env-input:focus { border-color: var(--color-crush-primary); }
+  .env-key { width: 220px; font-weight: 500; }
+  .env-eq { color: var(--color-crush-muted); }
+  .env-val-wrapper { position: relative; flex: 1; display: flex; }
+  .env-val { flex: 1; width: 100%; padding-right: 32px; }
+  .eye-btn { position: absolute; right: 4px; top: 50%; transform: translateY(-50%); padding: 4px; border: none; }
+  .env-sec-label { display: flex; align-items: center; gap: 4px; font-size: 12px; color: var(--color-crush-text-muted); cursor: pointer; user-select: none; width: 80px; }
 </style>

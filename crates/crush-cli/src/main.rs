@@ -183,6 +183,8 @@ enum Commands {
     Mail(MailArgs),
     #[command(about = "Run the blue-green traffic gateway (or --set its upstream). Used by zero-downtime deploys.")]
     Gateway(GatewayArgs),
+    #[command(about = "Run the L7 proxy (HTTP/TLS) reading mapped domains from a file")]
+    L7Gateway(L7GatewayArgs),
     #[command(about = "List servers from your ~/.ssh/config and connect (crush ssh <host>)")]
     Ssh(SshArgs),
     #[command(about = "Run health checks on a container")]
@@ -499,16 +501,26 @@ struct SshArgs {
     host: Option<String>,
     #[arg(long, help = "List configured hosts even when a host is given")]
     list: bool,
+    #[arg(help = "Command to run on the remote host", trailing_var_arg = true)]
+    command: Vec<String>,
 }
 
-#[derive(Args, Debug)]
+#[derive(Args, Debug, Clone)]
 struct GatewayArgs {
     #[arg(long, help = "Public port the gateway listens on")]
     listen: Option<u16>,
     #[arg(long, help = "File holding the current upstream port (read per-connection)")]
     target_file: String,
-    #[arg(long, help = "Flip the upstream to this port and exit (the zero-downtime switch)")]
+    #[arg(long, help = "Atomically set the upstream port (flip the gateway) and exit")]
     set: Option<u16>,
+}
+
+#[derive(Parser, Debug, Clone)]
+struct L7GatewayArgs {
+    #[arg(long, help = "Path to the domains.json config file")]
+    domains: String,
+    #[arg(long, help = "Path to the TLS certs directory")]
+    certs: String,
 }
 
 #[derive(Subcommand, Debug)]
@@ -698,6 +710,8 @@ pub struct DeployArgs {
     lines: u32,
     #[arg(long, help = "Show current deployment status")]
     status: bool,
+    #[arg(long, help = "Stop the deployment without destroying the server/state")]
+    stop: bool,
     #[arg(long, help = "Destroy the deployment and remove the server")]
     destroy: bool,
     #[arg(long, default_value = "rolling", help = "Rollout strategy: rolling (default) or blue-green (zero-downtime, SSH/VPS)")]
@@ -2089,6 +2103,25 @@ async fn run_gateway_cmd(args: GatewayArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `crush l7-gateway`
+async fn run_l7_gateway_cmd(args: L7GatewayArgs) -> anyhow::Result<()> {
+    use crush_build::gateway;
+    let domains_file = std::path::PathBuf::from(&args.domains);
+    let certs_dir = std::path::PathBuf::from(&args.certs);
+    
+    std::fs::create_dir_all(&certs_dir)?;
+
+    tokio::select! {
+        r = gateway::run_l7_gateway(domains_file, certs_dir) => {
+            r.map_err(|e| anyhow::anyhow!("l7-gateway failed — {e}"))?;
+        }
+        _ = tokio::signal::ctrl_c() => {
+            println!("\n{} l7-gateway stopped", "↳".cyan());
+        }
+    }
+    Ok(())
+}
+
 /// `crush clean` — reclaim disk by removing dependency installs, build outputs,
 /// and tool caches from a project (node_modules, target, .venv, dist, .gradle,
 /// .dart_tool, Pods, …). Pulled out of the main dispatch so it runs before the
@@ -2664,10 +2697,12 @@ async fn main() -> anyhow::Result<()> {
         return run_mail_cmd(args).await;
     }
 
-    // `gateway` is the blue-green traffic director — no store needed.
-    if matches!(&command, Commands::Gateway(_)) {
-        let Commands::Gateway(args) = command else { unreachable!() };
-        return run_gateway_cmd(args).await;
+    // `gateway` and `l7-gateway` are traffic directors — no store needed.
+    if let Commands::Gateway(args) = &command {
+        return run_gateway_cmd(args.clone()).await;
+    }
+    if let Commands::L7Gateway(args) = &command {
+        return run_l7_gateway_cmd(args.clone()).await;
     }
 
     // `ssh` reads ~/.ssh/config and execs the system ssh — no store needed.
@@ -4008,6 +4043,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Clean(_) => unreachable!("clean is handled before the image store opens"),
         Commands::Ci(_) => unreachable!("ci is handled before the image store opens"),
         Commands::Catalog(_) => unreachable!("catalog is handled before the image store opens"),
+        Commands::L7Gateway(_) => unreachable!("l7-gateway is handled before the image store opens"),
         Commands::Tunnel(_) => unreachable!("tunnel is handled before the image store opens"),
         Commands::Db(_) => unreachable!("db is handled before the image store opens"),
         Commands::Lint(_) => unreachable!("lint is handled before the image store opens"),
@@ -4901,7 +4937,25 @@ async fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
 
-            if args.destroy {
+            if args.stop {
+                if let Some(info) = state.load(&project) {
+                    if info.provider == "ssh" {
+                        let ops = crush_deploy::SshProvider::new(&info.public_ip, 22, "root", None);
+                        println!("{} Stopping container for project {}...", "■".cyan(), project);
+                        if let Ok(sess) = ops.connect() {
+                            let (out, err, _code) = ops.exec(&sess, &format!("docker stop {}", project))?;
+                            println!("{}{}", out, err);
+                        } else {
+                            anyhow::bail!("Failed to connect to {}", info.public_ip);
+                        }
+                        return Ok(());
+                    }
+                    anyhow::bail!("--stop is currently only implemented for SSH provider");
+                }
+                anyhow::bail!("No deployment found for '{}'", project);
+            }
+
+    if args.destroy {
                 if let Some(info) = state.load(&project) {
                     let provider = build_provider(&provider_name, deploy_config)?;
                     println!("Destroying deployment for '{}'...", project);
@@ -5231,7 +5285,7 @@ async fn main() -> anyhow::Result<()> {
                                 crush_services::ServiceKind::RedisCompat => Box::new(crush_services::RedisCompatDriver::new(cache_dir.clone())),
                                 crush_services::ServiceKind::MongoDB => Box::new(crush_services::MongoDriver::new(cache_dir.clone())),
                                 crush_services::ServiceKind::ObjectStore => Box::new(crush_services::MinioDriver::new(cache_dir.clone())),
-                                crush_services::ServiceKind::MySQL => panic!("MySQL driver not implemented"),
+                                crush_services::ServiceKind::MySQL => Box::new(crush_services::MysqlDriver::new()),
                             };
                             let stop_res = driver.stop(s).await;
 
@@ -5279,7 +5333,7 @@ async fn main() -> anyhow::Result<()> {
                                 crush_services::ServiceKind::RedisCompat => Box::new(crush_services::RedisCompatDriver::new(cache_dir.clone())),
                                 crush_services::ServiceKind::MongoDB => Box::new(crush_services::MongoDriver::new(cache_dir.clone())),
                                 crush_services::ServiceKind::ObjectStore => Box::new(crush_services::MinioDriver::new(cache_dir.clone())),
-                                crush_services::ServiceKind::MySQL => panic!("MySQL driver not implemented"),
+                                crush_services::ServiceKind::MySQL => Box::new(crush_services::MysqlDriver::new()),
                             };
                             let _ = driver.stop(s).await;
                         }

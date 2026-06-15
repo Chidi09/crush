@@ -3,6 +3,7 @@
   import { goto } from '$app/navigation';
   import Icon from '$lib/components/Icon.svelte';
   import TechIcon from '$lib/components/TechIcon.svelte';
+  import DeployWizard from '$lib/components/DeployWizard.svelte';
   import * as api from '$lib/tauri';
   import type { DeploymentRecord, CloudDeployment } from '$lib/tauri';
 
@@ -18,8 +19,8 @@
   // Filters
   let query = $state('');
   let statusFilter = $state<'all' | 'running' | 'ready' | 'failed'>('all');
-  // Collapsed by default — track which projects the user has expanded.
   let expanded = $state<Set<string>>(new Set());
+  let defaultBranches = $state<Record<string, string>>({});
 
   type Group = { project: string; deps: DeploymentRecord[]; latest: DeploymentRecord };
 
@@ -49,9 +50,24 @@
       const map: Record<string, CloudDeployment> = {};
       for (const c of list) map[projKey(c.project)] = c;
       cloud = map;
+      
+      try {
+        const stored = localStorage.getItem('crush:branches');
+        if (stored) defaultBranches = JSON.parse(stored);
+      } catch (e) {}
+      
+      for (const d of all) {
+        if (!defaultBranches[d.project]) {
+          defaultBranches[d.project] = 'main';
+        }
+      }
     }
     catch (e) { console.error(e); all = []; }
     finally { loading = false; }
+  }
+
+  function saveBranch(project: string) {
+    localStorage.setItem('crush:branches', JSON.stringify(defaultBranches));
   }
 
   function openUrl(u: string) { if (u) api.openUrl(u).catch(console.error); }
@@ -73,6 +89,50 @@
   }
   function dur(ms: number): string { return ms < 1000 ? `${ms}ms` : `${(ms / 1000).toFixed(0)}s`; }
   function openProject(p: string) { goto(`/projects/${encodeURIComponent(p)}`); }
+
+  let showDeploy = $state(false);
+  let deployStack = $state<{ name: string; port: number; runtime: string | null; framework: string | null } | null>(null);
+  let deployPath = $state<string | null>(null);
+
+  function openDeploy(g: Group) {
+    deployPath = g.latest.project_path;
+    deployStack = {
+      name: g.project,
+      port: g.latest.port ?? 8080,
+      runtime: g.latest.runtime ?? null,
+      framework: g.latest.framework ?? null,
+    };
+    showDeploy = true;
+  }
+
+  function runProject(g: Group) {
+    if (g.latest.project_path) {
+      localStorage.setItem('crush:lastProject', g.latest.project_path);
+      goto('/dashboard');
+    }
+  }
+
+  async function stopDeploy(g: Group) {
+    if (!confirm(`Stop deployment for ${g.project}?`)) return;
+    try {
+      await api.runCapture(g.latest.project_path, 'crush', ['deploy', '--stop'], {});
+      alert(`Deployment for ${g.project} stopped.`);
+      await load();
+    } catch (e) {
+      alert(`Stop failed: ${String(e)}`);
+    }
+  }
+
+  async function deleteDeploy(g: Group) {
+    if (!confirm(`Delete deployment for ${g.project}? This will remove the server and state.`)) return;
+    try {
+      await api.runCapture(g.latest.project_path, 'crush', ['deploy', '--destroy'], {});
+      alert(`Deployment for ${g.project} deleted.`);
+      await load();
+    } catch (e) {
+      alert(`Delete failed: ${String(e)}`);
+    }
+  }
 
   // These records are a historical archive of past `crush run`s, not live
   // processes — a run is stored as "running" the moment it starts and only
@@ -135,36 +195,73 @@
         {@const isOpen = expanded.has(g.project)}
         {@const cd = cloudFor(g.project)}
         <div class="crush-card group">
-          <div class="group-head" role="button" tabindex="0"
-               onclick={() => toggle(g.project)}
-               onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { e.preventDefault(); toggle(g.project); } }}>
-            <svg class="chev" class:open={isOpen} viewBox="0 0 24 24" width="14" height="14"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
-            <span class="gh-name">{g.project}</span>
-            {#if g.latest?.framework || g.latest?.runtime}
-              <span class="gh-stack"><TechIcon name={g.latest.framework ?? g.latest.runtime} size={13} />{g.latest.framework ?? g.latest.runtime}</span>
-            {/if}
-            {#if cd}
-              <span class="live-chip" title={`Deployed to ${cd.provider}`}>
-                <span class="rocket-glow"><Icon name="rocket" size={13} /></span>
-                <TechIcon name={cd.provider} size={13} />
-                <span class="live-provider">{cd.provider}</span>
-              </span>
-              {#if cd.url}
-                <button class="live-url" title={`Open ${cd.url}`}
-                        onclick={(e) => { e.stopPropagation(); openUrl(cd.url); }}>
-                  <Icon name="globe" size={12} /> {cd.domain ?? cd.url.replace(/^https?:\/\//, '')}
-                </button>
+          <div class="group-main">
+            <div class="group-info" role="button" tabindex="0" onclick={() => openProject(g.project)} onkeydown={(e) => { if(e.key === 'Enter') openProject(g.project); }}>
+              <div class="project-icon-wrapper">
+                <div class="pi-fallback"><TechIcon name={g.latest.framework ?? g.latest.runtime} size={20} /></div>
+                {#if g.latest.port}
+                  <!-- svelte-ignore a11y_missing_attribute -->
+                  <img src={`http://localhost:${g.latest.port}/favicon.ico`} class="pi-image" onerror={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }} />
+                {/if}
+              </div>
+              <div class="project-meta">
+                <div class="gh-name">{g.project}</div>
+                {#if g.latest.framework || g.latest.runtime}
+                  <div class="gh-stack"><TechIcon name={g.latest.framework ?? g.latest.runtime} size={11} /> {g.latest.framework ?? g.latest.runtime}</div>
+                {/if}
+              </div>
+            </div>
+
+            <div class="group-branch">
+              <Icon name="branch" size={12} />
+              <select class="branch-select" bind:value={defaultBranches[g.project]} onchange={() => saveBranch(g.project)}>
+                <option value="main">main</option>
+                {#if g.latest.branch && g.latest.branch !== 'main'}
+                  <option value={g.latest.branch}>{g.latest.branch}</option>
+                {/if}
+              </select>
+            </div>
+
+            <div class="group-platform">
+              {#if cd}
+                <span class="live-chip" title={`Deployed to ${cd.provider}`}>
+                  <span class="rocket-glow"><Icon name="rocket" size={13} /></span>
+                  <TechIcon name={cd.provider} size={13} />
+                  <span class="live-provider">{cd.provider}</span>
+                </span>
+                {#if cd.url}
+                  <button class="live-url" title={`Open ${cd.url}`} onclick={(e) => { e.stopPropagation(); openUrl(cd.url); }}>
+                    <Icon name="globe" size={12} /> {cd.domain ?? cd.url.replace(/^https?:\/\//, '')}
+                  </button>
+                {/if}
+              {:else}
+                <span class="muted" style="font-size: 11px;">Not deployed</span>
               {/if}
-            {/if}
-            <!-- collapsed summary: latest status + when -->
-            <span class="gh-summary">
+            </div>
+
+            <div class="group-status">
               <span class="sdot {g.latest.status}"></span>
-              <span class="dep-status">{statusLabel(g.latest.status)}</span>
-              <span class="dep-when">{ago(g.latest.created_ms)}</span>
-            </span>
-            <span class="gh-count">{g.deps.length}</span>
-            <button class="open-btn" title="Open project" onclick={(e) => { e.stopPropagation(); openProject(g.project); }}><Icon name="play" size={11} /></button>
+              <div class="status-col">
+                <span class="dep-status">{statusLabel(g.latest.status)}</span>
+                <span class="dep-when">{ago(g.latest.created_ms)}</span>
+              </div>
+            </div>
+
+            <div class="group-actions">
+              <button class="ghost-btn" onclick={() => openProject(g.project)} title="View logs">Logs</button>
+              {#if cd}
+                <button class="ghost-btn" onclick={() => stopDeploy(g)} title="Stop Deployment">Stop</button>
+                <button class="ghost-btn text-red" onclick={() => deleteDeploy(g)} title="Delete Deployment">Delete</button>
+              {/if}
+              <button class="ghost-btn" onclick={() => openDeploy(g)} title="Deploy to cloud">Deploy</button>
+              <button class="btn primary" onclick={() => runProject(g)}>Run</button>
+            </div>
           </div>
+          
+          <button class="history-toggle" onclick={() => toggle(g.project)} aria-expanded={isOpen}>
+             <svg class="chev" class:open={isOpen} viewBox="0 0 24 24" width="12" height="12"><path d="M9 6l6 6-6 6" stroke="currentColor" stroke-width="2" fill="none" stroke-linecap="round" stroke-linejoin="round"/></svg>
+             {g.deps.length} {g.deps.length === 1 ? 'deployment' : 'deployments'} history
+          </button>
 
           {#if isOpen}
             <div class="rows">
@@ -188,6 +285,10 @@
     {/if}
   {/if}
 </div>
+
+{#if showDeploy && deployStack && deployPath}
+  <DeployWizard path={deployPath} stack={deployStack} onClose={() => showDeploy = false} />
+{/if}
 
 <style>
   .page { display: flex; flex-direction: column; gap: 14px; }
@@ -214,13 +315,37 @@
   .empty-box .muted { max-width: 460px; line-height: 1.6; }
   .empty-box code { font-family: var(--font-mono); font-size: 12px; background: var(--color-crush-surface); padding: 1px 5px; border-radius: 4px; color: var(--color-crush-text); }
 
-  .group { padding: 0; overflow: hidden; }
-  .group-head { display: flex; align-items: center; gap: 12px; width: 100%; text-align: left; background: none; border: none; padding: 12px 14px; cursor: pointer; color: var(--color-crush-text); }
-  .group-head:hover { background: rgba(255,255,255,0.02); }
+  .group { padding: 0; overflow: hidden; display: flex; flex-direction: column; }
+  .group-main { display: grid; grid-template-columns: 2fr 1fr 1.5fr 1fr auto; align-items: center; gap: 16px; padding: 16px 20px; }
+  
+  .group-info { display: flex; align-items: center; gap: 14px; cursor: pointer; }
+  .group-info:hover .gh-name { text-decoration: underline; }
+  .project-icon-wrapper { position: relative; width: 42px; height: 42px; border-radius: 10px; overflow: hidden; background: rgba(255,255,255,0.06); flex-shrink: 0; border: 1px solid var(--color-crush-border); }
+  .pi-fallback { position: absolute; inset: 0; display: flex; align-items: center; justify-content: center; }
+  .pi-image { position: absolute; inset: 0; width: 100%; height: 100%; object-fit: cover; background: var(--color-crush-surface); z-index: 2; }
+  .project-meta { display: flex; flex-direction: column; gap: 4px; }
+  .gh-name { font-weight: 600; font-size: 15px; color: var(--color-crush-text); }
+  .gh-stack { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-crush-text-muted); }
+
+  .group-branch { display: flex; align-items: center; gap: 6px; color: var(--color-crush-text-muted); }
+  .branch-select { background: rgba(255,255,255,0.03); border: 1px solid var(--color-crush-border); color: var(--color-crush-text); padding: 4px 8px; border-radius: 6px; font-size: 12px; font-family: var(--font-mono); outline: none; cursor: pointer; }
+  .branch-select:hover { border-color: var(--color-crush-muted); }
+
+  .group-platform { display: flex; flex-direction: column; align-items: flex-start; gap: 6px; }
+
+  .group-status { display: flex; align-items: center; gap: 10px; }
+  .status-col { display: flex; flex-direction: column; gap: 2px; }
+
+  .group-actions { display: flex; align-items: center; gap: 8px; justify-content: flex-end; }
+  .btn { display: inline-flex; align-items: center; justify-content: center; background: none; border: 1px solid var(--color-crush-border); color: var(--color-crush-text-muted); border-radius: 8px; padding: 7px 12px; font-size: 13px; cursor: pointer; }
+  .btn.primary { background: var(--color-crush-primary); border-color: var(--color-crush-primary); color: var(--color-crush-on-primary); font-weight: 500; }
+  .btn.primary:hover { background: var(--color-crush-primary-hover); }
+
+  .history-toggle { display: flex; align-items: center; gap: 8px; background: rgba(0,0,0,0.15); border: none; border-top: 1px solid var(--color-crush-border); color: var(--color-crush-text-muted); font-size: 12px; padding: 8px 20px; cursor: pointer; width: 100%; text-align: left; }
+  .history-toggle:hover { color: var(--color-crush-text); background: rgba(255,255,255,0.02); }
   .chev { color: var(--color-crush-muted); transition: transform 0.18s ease; flex-shrink: 0; }
   .chev.open { transform: rotate(90deg); }
-  .gh-name { font-weight: 600; font-size: 14px; }
-  .gh-stack { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; color: var(--color-crush-text-muted); }
+
   /* Live cloud deployment: glowing orange rocket + platform icon + name */
   .live-chip { display: inline-flex; align-items: center; gap: 6px; font-size: 11.5px; color: var(--color-crush-orange); background: rgba(224,85,64,0.08); border: 1px solid rgba(224,85,64,0.28); border-radius: 9999px; padding: 2px 10px; text-transform: capitalize; }
   .live-provider { font-weight: 600; }
@@ -232,12 +357,10 @@
   @media (prefers-reduced-motion: reduce) { .rocket-glow { animation: none; } }
   .live-url { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-family: var(--font-mono); color: var(--color-crush-orange); background: none; border: 1px solid rgba(224,85,64,0.28); border-radius: 7px; padding: 2px 8px; cursor: pointer; }
   .live-url:hover { background: rgba(224,85,64,0.14); border-color: rgba(224,85,64,0.5); }
-  .gh-summary { margin-left: auto; display: inline-flex; align-items: center; gap: 8px; font-size: 12px; color: var(--color-crush-text-muted); }
-  .gh-count { font-size: 12px; color: var(--color-crush-muted); background: var(--color-crush-surface); border: 1px solid var(--color-crush-border); border-radius: 9999px; min-width: 22px; text-align: center; padding: 0 7px; line-height: 18px; }
-  .open-btn { display: inline-flex; align-items: center; justify-content: center; background: none; border: 1px solid var(--color-crush-border); color: var(--color-crush-text-muted); border-radius: 6px; padding: 4px 6px; cursor: pointer; }
-  .open-btn:hover { color: var(--color-crush-text); border-color: var(--color-crush-muted); }
+  .dep-status { text-transform: capitalize; font-size: 13px; color: var(--color-crush-text); }
+  .dep-when { font-size: 11.5px; color: var(--color-crush-muted); }
 
-  .rows { display: flex; flex-direction: column; padding: 2px 8px 8px; border-top: 1px solid var(--color-crush-border); }
+  .rows { display: flex; flex-direction: column; padding: 4px 12px 12px; background: rgba(0,0,0,0.1); }
   .dep-row { display: grid; grid-template-columns: 12px 64px 1fr auto auto 80px; align-items: center; gap: 12px; width: 100%; text-align: left; background: none; border: none; padding: 9px 8px; cursor: pointer; color: var(--color-crush-text); font-size: 13px; border-radius: 6px; }
   .dep-row:hover { background: rgba(255,255,255,0.03); }
   .sdot { width: 8px; height: 8px; border-radius: 50%; flex-shrink: 0; }
@@ -246,8 +369,8 @@
   .dep-status { text-transform: capitalize; }
   .dep-branch { display: inline-flex; align-items: center; gap: 4px; color: var(--color-crush-text-muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .dep-port { color: var(--color-crush-text); }
-  .dep-dur, .dep-when { color: var(--color-crush-text-muted); font-size: 12px; }
-  .dep-when { text-align: right; }
+  .dep-dur, .dep-row .dep-when { color: var(--color-crush-text-muted); font-size: 12px; }
+  .dep-row .dep-when { text-align: right; }
   .mono { font-family: var(--font-mono); }
   .more { background: none; border: none; color: var(--color-crush-text); cursor: pointer; font-size: 12px; text-align: left; padding: 8px; }
   .more:hover { text-decoration: underline; }
