@@ -1,5 +1,6 @@
 pub mod detect;
 pub mod run;
+pub mod mobile;
 pub mod version;
 pub mod env;
 pub mod multiservice;

@@ -36,6 +36,9 @@ pub async fn run_project(
         tokio::spawn(async move {
             let detector = crush_build::StackDetector::new();
             if let Ok(stack) = detector.detect(&proj).await {
+                // Mobile stacks (Flutter/RN) run on a device/emulator and have no
+                // OCI base image — there's nothing to commit as a runnable image.
+                if stack.base_image.trim().is_empty() { return; }
                 let name = proj.file_name().and_then(|n| n.to_str()).unwrap_or("app");
                 let tag = format!("{}:latest", name);
                 let entry = if !stack.entry_point.trim().is_empty() {

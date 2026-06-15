@@ -287,7 +287,7 @@ pub fn assign_to_job(_child: &tokio::process::Child) {}
 /// leaves orphaned still holding the port, so on Windows tear down the whole
 /// tree with `taskkill /T`.
 #[cfg(target_os = "windows")]
-async fn kill_tree(child: &mut tokio::process::Child) {
+pub(crate) async fn kill_tree(child: &mut tokio::process::Child) {
     if let Some(pid) = child.id() {
         let _ = tokio::process::Command::new("taskkill")
             .args(["/F", "/T", "/PID", &pid.to_string()])
@@ -299,7 +299,7 @@ async fn kill_tree(child: &mut tokio::process::Child) {
 }
 
 #[cfg(not(target_os = "windows"))]
-async fn kill_tree(child: &mut tokio::process::Child) {
+pub(crate) async fn kill_tree(child: &mut tokio::process::Child) {
     let _ = child.kill().await;
     let _ = child.wait().await;
 }
@@ -998,6 +998,14 @@ async fn run_project_inner(
         port: stack.default_port,
         dep_count: dep_service_names.len(),
     }).await;
+
+    // ── Mobile/app stacks (Flutter, React Native) ─────────────────────────
+    // These run on a device/emulator via their own toolchain, not as an OCI
+    // image or a host web server — skip the whole build/pack/spawn pipeline.
+    let lang0 = stack.language.split(' ').next().unwrap_or("").to_lowercase();
+    if lang0 == "flutter" || lang0 == "react-native" {
+        return crate::mobile::run_mobile(&stack.language, project_root, options.dev, tx, abort_rx).await;
+    }
 
     // ── 4. Build ──────────────────────────────────────────────────────────
     let cache_dir = data_dir.join("cache");
