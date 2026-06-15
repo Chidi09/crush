@@ -163,6 +163,8 @@ enum Commands {
     Clean(CleanArgs),
     #[command(about = "Generate a CI/CD pipeline (GitHub Actions, AppVeyor, or Codemagic) for the detected stack")]
     Ci(CiArgs),
+    #[command(about = "Browse a curated catalog of popular images you can pull")]
+    Catalog(CatalogArgs),
     #[command(about = "Run health checks on a container")]
     Health(HealthArgs),
     #[command(about = "Deploy a project to cloud infrastructure defined in the Crushfile")]
@@ -437,6 +439,12 @@ struct EjectArgs {
     force: bool,
     #[arg(long, default_value = ".", help = "Directory to write the generated files into")]
     out: String,
+}
+
+#[derive(Args, Debug)]
+struct CatalogArgs {
+    #[arg(help = "Filter by name, category, or description (e.g. 'search', 'flaresolverr')")]
+    query: Option<String>,
 }
 
 #[derive(Args, Debug)]
@@ -2012,6 +2020,46 @@ async fn run_clean(args: CleanArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `crush catalog` — print the curated image catalog (optionally filtered),
+/// grouped by category, with the exact `crush pull` reference for each.
+fn run_catalog(args: CatalogArgs) -> anyhow::Result<()> {
+    let query = args.query.unwrap_or_default();
+    let hits = crush_types::catalog::search(&query);
+    if hits.is_empty() {
+        println!("No catalog entries match {:?}", query);
+        println!("   {} run {} to see everything", "↳".cyan(), "crush catalog".bold());
+        return Ok(());
+    }
+
+    // Stable category order; entries already grouped logically in the source.
+    let order = ["database", "cache", "search", "storage", "messaging", "proxy", "observability", "tool"];
+    let mut shown = std::collections::HashSet::new();
+    for cat in order {
+        let in_cat: Vec<_> = hits.iter().filter(|e| e.category == cat).collect();
+        if in_cat.is_empty() { continue; }
+        println!("\n{}", cat.to_uppercase().cyan().bold());
+        for e in in_cat {
+            shown.insert(e.reference);
+            let tag = if e.native { " (native)".green().to_string() } else { String::new() };
+            println!("  {:<22} {}{}", e.name.bold(), e.reference.dimmed(), tag);
+            println!("  {:<22} {}", "", e.description);
+        }
+    }
+    // Any categories not in the predefined order.
+    let leftover: Vec<_> = hits.iter().filter(|e| !shown.contains(e.reference)).collect();
+    if !leftover.is_empty() {
+        println!("\n{}", "OTHER".cyan().bold());
+        for e in leftover {
+            println!("  {:<22} {}", e.name.bold(), e.reference.dimmed());
+        }
+    }
+
+    println!("\n{} pull one with: {}", "↳".cyan(), "crush pull <reference>".bold());
+    println!("{} entries tagged {} also run as managed services: {}",
+        "↳".cyan(), "(native)".green(), "crush services".bold());
+    Ok(())
+}
+
 async fn run_internal(args: InternalRunArgs, data_dir: std::path::PathBuf) -> anyhow::Result<()> {
             let container_dir = data_dir.join("containers").join(&args.id);
             let container_json_path = container_dir.join("container.json");
@@ -2299,6 +2347,12 @@ async fn main() -> anyhow::Result<()> {
     if matches!(&command, Commands::Ci(_)) {
         let Commands::Ci(args) = command else { unreachable!() };
         return commands::ci::exec(args.system, args.force).await;
+    }
+
+    // `catalog` is a static listing — no store needed.
+    if matches!(&command, Commands::Catalog(_)) {
+        let Commands::Catalog(args) = command else { unreachable!() };
+        return run_catalog(args);
     }
 
     let store = ImageStore::new(data_dir.join("images")).await?;
@@ -3581,6 +3635,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Eject(_) => unreachable!("eject is handled before the image store opens"),
         Commands::Clean(_) => unreachable!("clean is handled before the image store opens"),
         Commands::Ci(_) => unreachable!("ci is handled before the image store opens"),
+        Commands::Catalog(_) => unreachable!("catalog is handled before the image store opens"),
         Commands::Scan(args) => {
             if args.fix || args.image.is_none() {
                 let root = std::env::current_dir()?;

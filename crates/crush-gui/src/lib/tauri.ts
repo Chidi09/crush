@@ -269,6 +269,19 @@ export function removeImage(id: string): Promise<void> {
   return invoke('remove_image', { id });
 }
 
+export interface CatalogEntry {
+  name: string;
+  reference: string;
+  category: string;
+  description: string;
+  native: boolean;
+}
+
+/** Curated catalog of popular images (shared with `crush catalog`). */
+export function listCatalog(): Promise<CatalogEntry[]> {
+  return invoke('list_catalog');
+}
+
 export function runProject(projectPath: string, devMode: boolean): Promise<string> {
   return invoke('run_project', { projectPath, devMode });
 }

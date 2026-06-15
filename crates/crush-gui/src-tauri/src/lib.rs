@@ -52,6 +52,7 @@ pub fn run() {
             commands::images::inspect_image,
             commands::images::pull_image,
             commands::images::remove_image,
+            commands::images::list_catalog,
             commands::run_cmd::run_project,
             commands::run_cmd::abort_run,
             commands::logs::subscribe_logs,

@@ -4,6 +4,8 @@ use serde::{Serialize, Deserialize};
 use thiserror::Error;
 use async_trait::async_trait;
 
+pub mod catalog;
+
 pub fn dirs_or_default() -> PathBuf {
     let base = if cfg!(target_os = "linux") {
         if let Ok(env_dir) = std::env::var("CRUSH_DATA_DIR") {

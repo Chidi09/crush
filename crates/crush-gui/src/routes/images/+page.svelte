@@ -26,12 +26,32 @@
 
   let copied = $state<string | null>(null);
 
+  // Curated catalog of popular images (shared with `crush catalog`).
+  let catalog = $state<api.CatalogEntry[]>([]);
+  let showCatalog = $state(false);
+  let catalogSearch = $state('');
+  let filteredCatalog = $derived(
+    catalog.filter((e) => {
+      const q = catalogSearch.toLowerCase();
+      return !q || e.name.toLowerCase().includes(q) || e.reference.toLowerCase().includes(q)
+        || e.category.toLowerCase().includes(q) || e.description.toLowerCase().includes(q);
+    })
+  );
+  async function loadCatalog() {
+    if (catalog.length) return;
+    try { catalog = await api.listCatalog(); } catch (e) { console.error('catalog load failed', e); }
+  }
+  async function pullFromCatalog(ref: string) {
+    pullRef = ref;
+    await doPull();
+  }
+
   let filtered = $derived(
     $images.filter(i => !search || (i.tag || '').toLowerCase().includes(search.toLowerCase()) || i.digest.includes(search))
   );
   let totalSize = $derived($images.reduce((a, i) => a + i.size_bytes, 0));
 
-  onMount(refreshImages);
+  onMount(() => { refreshImages(); loadCatalog(); });
 
   function copy(text: string, key: string) {
     navigator.clipboard.writeText(text).then(() => {
@@ -121,7 +141,40 @@
     {/if}
     {#if pullStatus}<p class="pull-status">{pullStatus}</p>{/if}
     {#if pullError}<p class="pull-error">{pullError}</p>{/if}
+
+    <button class="catalog-toggle" onclick={() => (showCatalog = !showCatalog)}>
+      <Icon name="images" size={13} />
+      {showCatalog ? 'Hide' : 'Browse'} popular images ({catalog.length})
+    </button>
   </div>
+
+  {#if showCatalog}
+    <div class="crush-card catalog-card">
+      <input class="crush-input" type="text" placeholder="Search catalog… e.g. search, flaresolverr" bind:value={catalogSearch} />
+      <div class="catalog-grid">
+        {#each filteredCatalog as e (e.reference)}
+          <div class="cat-item">
+            <div class="cat-icon">
+              {#if lookupTech(e.name.split(' ')[0])}
+                <TechIcon name={e.name.split(' ')[0]} size={22} />
+              {:else}
+                <Identicon seed={e.reference} size={28} />
+              {/if}
+            </div>
+            <div class="cat-body">
+              <div class="cat-name">{e.name}{#if e.native}<span class="cat-native">native</span>{/if}</div>
+              <div class="cat-desc">{e.description}</div>
+              <div class="cat-ref">{e.reference}</div>
+            </div>
+            <button class="cat-pull" onclick={() => pullFromCatalog(e.reference)} disabled={pulling} title="Pull {e.reference}">
+              <Icon name="images" size={13} /> Pull
+            </button>
+          </div>
+        {/each}
+        {#if filteredCatalog.length === 0}<p class="muted">No catalog entries match “{catalogSearch}”.</p>{/if}
+      </div>
+    </div>
+  {/if}
 
   {#if $images.length === 0}
     <EmptyState title="No images cached" description="Pull an image above to get started" />
@@ -254,6 +307,26 @@
   .pull-error { margin: 10px 0 0; font-size: 12px; color: var(--color-crush-red); font-family: var(--font-mono); }
 
   .muted { color: var(--color-crush-text-muted); font-size: 13px; }
+
+  /* Curated catalog */
+  .catalog-toggle { margin-top: 10px; display: inline-flex; align-items: center; gap: 6px;
+    background: none; border: none; color: var(--color-crush-text-muted); font-size: 12px; cursor: pointer; padding: 2px 0; }
+  .catalog-toggle:hover { color: var(--color-crush-text); }
+  .catalog-card { padding: 14px 16px; margin-bottom: 20px; display: flex; flex-direction: column; gap: 12px; }
+  .catalog-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(280px, 1fr)); gap: 10px; }
+  .cat-item { display: flex; align-items: flex-start; gap: 10px; padding: 10px 12px;
+    border: 1px solid var(--color-crush-border); border-radius: 0.75rem; background: var(--color-crush-surface); }
+  .cat-icon { flex-shrink: 0; width: 28px; height: 28px; display: flex; align-items: center; justify-content: center; line-height: 0; }
+  .cat-body { flex: 1; min-width: 0; }
+  .cat-name { font-size: 13px; font-weight: 600; display: flex; align-items: center; gap: 6px; }
+  .cat-native { font-size: 10px; font-weight: 600; color: #34d399; border: 1px solid #34d39955; border-radius: 4px; padding: 0 4px; }
+  .cat-desc { font-size: 12px; color: var(--color-crush-text-muted); margin: 2px 0; }
+  .cat-ref { font-size: 11px; font-family: var(--font-mono); color: var(--color-crush-text-dim); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .cat-pull { flex-shrink: 0; display: inline-flex; align-items: center; gap: 5px; background: var(--color-crush-surface-2, var(--color-crush-surface));
+    color: var(--color-crush-text); border: 1px solid var(--color-crush-border); border-radius: 0.6rem; padding: 5px 10px; font-size: 12px; cursor: pointer; }
+  .cat-pull:hover:not(:disabled) { background: var(--color-crush-primary); color: var(--color-crush-on-primary); border-color: transparent; }
+  .cat-pull:disabled { opacity: 0.5; cursor: not-allowed; }
+
   .image-list { display: flex; flex-direction: column; gap: 8px; }
   .image-row { display: flex; align-items: center; gap: 14px; padding: 16px 20px; }
   .img-ident { flex-shrink: 0; width: 40px; height: 40px; display: flex; align-items: center; justify-content: center; line-height: 0; }

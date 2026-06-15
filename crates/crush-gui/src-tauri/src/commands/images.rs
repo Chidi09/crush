@@ -86,3 +86,10 @@ pub async fn remove_image(id: String, state: State<'_, AppState>) -> Result<(), 
     state.store.database().delete_image(&id).await.map_err(|e| e.to_string())?;
     Ok(())
 }
+
+/// The curated catalog of popular images, for one-click discovery + pull in the
+/// GUI. Shared with the CLI's `crush catalog`.
+#[tauri::command]
+pub fn list_catalog() -> Vec<crush_types::catalog::CatalogEntry> {
+    crush_types::catalog::catalog().to_vec()
+}
