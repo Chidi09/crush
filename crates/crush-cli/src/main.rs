@@ -591,8 +591,12 @@ struct HealthArgs {
 pub struct DeployArgs {
     #[arg(long, help = "Override the provider from Crushfile (hetzner, ssh, aws, gcp, digitalocean, fly, railway)")]
     provider: Option<String>,
-    #[arg(long, help = "Stream deployment logs after deploy completes")]
+    #[arg(long, help = "Show logs of the current deployment (no redeploy)")]
     logs: bool,
+    #[arg(long, short = 'f', help = "With --logs: keep streaming new log output")]
+    follow: bool,
+    #[arg(long, default_value_t = 100, help = "With --logs: number of log lines to fetch")]
+    lines: u32,
     #[arg(long, help = "Show current deployment status")]
     status: bool,
     #[arg(long, help = "Destroy the deployment and remove the server")]
@@ -4477,6 +4481,43 @@ async fn main() -> anyhow::Result<()> {
                 return Ok(());
             }
 
+            // `--logs` is a standalone action: stream logs of the *existing*
+            // deployment (no rebuild/redeploy). With `--follow`, poll the
+            // provider and print only newly-appended output.
+            if args.logs {
+                let Some(info) = state.load(&project) else {
+                    println!("No deployment found for '{}'", project);
+                    return Ok(());
+                };
+                let provider = build_provider(&provider_name, deploy_config)?;
+                if args.follow {
+                    use std::io::Write;
+                    println!("Streaming logs for '{}' on {} (Ctrl-C to stop)\n", project, info.provider);
+                    let mut last = String::new();
+                    loop {
+                        match provider.logs(&info, args.lines).await {
+                            Ok(out) => {
+                                // Append-only tail: print just the new suffix; if the
+                                // window rolled (no longer a prefix), reprint in full.
+                                if !last.is_empty() && out.starts_with(&last) {
+                                    print!("{}", &out[last.len()..]);
+                                } else {
+                                    print!("{out}");
+                                }
+                                std::io::stdout().flush().ok();
+                                last = out;
+                            }
+                            Err(e) => eprintln!("  log fetch error: {e}"),
+                        }
+                        tokio::time::sleep(std::time::Duration::from_secs(3)).await;
+                    }
+                } else {
+                    let out = provider.logs(&info, args.lines).await?;
+                    print!("{out}");
+                }
+                return Ok(());
+            }
+
             // Build the project image
             println!("[1/4] Building image...");
             let detector = crush_build::StackDetector::new();
@@ -4523,11 +4564,7 @@ async fn main() -> anyhow::Result<()> {
 
             let _ = std::fs::remove_file(&tar_path);
 
-            if args.logs {
-                println!("\nContainer logs:");
-                let logs = provider.logs(&info, 50).await?;
-                print!("{}", logs);
-            }
+            println!("\n  tail logs with: {}", format!("crush deploy --logs -f").dimmed());
         }
         Commands::Services(args) => {
             let project_root = std::env::current_dir()?;
