@@ -122,24 +122,13 @@ impl ServiceDriver for MysqlDriver {
     }
 
     async fn is_alive(&self, service: &RunningService) -> bool {
-        #[cfg(target_os = "windows")]
-        {
-            use sysinfo::{System, Pid};
-            let mut sys = System::new_all();
-            sys.refresh_processes();
-            sys.process(Pid::from_u32(service.pid)).is_some()
-        }
-        #[cfg(not(target_os = "windows"))]
-        {
-            std::process::Command::new("kill")
-                .arg("-0")
-                .arg(service.pid.to_string())
-                .stdout(std::process::Stdio::null())
-                .stderr(std::process::Stdio::null())
-                .status()
-                .map(|s| s.success())
-                .unwrap_or(false)
-        }
+        // Portable + dependency-free: a live mysqld accepts TCP connections on
+        // its port. More meaningful than a PID check for a DB service, and avoids
+        // a platform-specific process API (the previous Windows path pulled in an
+        // undeclared `sysinfo`, which only broke on the Windows cross-compile).
+        tokio::net::TcpStream::connect(format!("127.0.0.1:{}", service.port))
+            .await
+            .is_ok()
     }
 
     async fn wait_ready(&self, service: &RunningService, timeout_ms: u64) -> bool {
