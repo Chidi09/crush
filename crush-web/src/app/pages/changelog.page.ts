@@ -60,6 +60,17 @@ import { HlmBadgeDirective } from '../ui/badge';
 export default class ChangelogPage implements OnInit {
   releases = [
     {
+      version: 'v1.0.2',
+      date: '2026-06-15',
+      headline: 'Servers, deploy detection, one-click deploy, and git-aware runs — all in the GUI.',
+      items: [
+        '<strong>Servers panel:</strong> a new Servers tab lists the hosts in your <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">~/.ssh/config</code> as cards; <strong>Connect</strong> opens a terminal running <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">ssh</code> (keys, ports, ProxyJump honored). CLI <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">crush ssh</code> too.',
+        '<strong>Deploy-platform detection:</strong> the dashboard shows a <strong>Deploys to</strong> row auto-detected from project config — Vercel (<code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">vercel.json</code>/<code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">.vercel</code>), Netlify, Render, Fly.io, Railway, Cloudflare (<code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">wrangler.toml</code>), AWS, plus Hetzner/DigitalOcean/etc. from a Crushfile <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">[deploy]</code>. Monorepo subdirs are scanned too.',
+        '<strong>One-click Deploy:</strong> each detected platform gets a glowing-rocket chip with a <strong>Deploy</strong> button that runs the inferred command (<code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">vercel --prod</code>, <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">netlify deploy --prod</code>, <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">fly deploy</code>, <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">git push</code>, <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">crush deploy</code>, …) in a terminal.',
+        '<strong>Git-aware runs:</strong> the branch is now a dropdown — pick one and crush checks it out and re-detects the stack, so what you Run/Deploy is that branch. Uncommitted changes surface as a badge; if a switch is blocked, git\'s reason is shown.',
+      ],
+    },
+    {
       version: 'v1.0.1',
       date: '2026-06-15',
       headline: 'Post-1.0 stabilization: fixes from real-world monorepo runs, plus a few quality-of-life additions.',
