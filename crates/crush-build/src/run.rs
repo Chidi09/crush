@@ -983,23 +983,15 @@ async fn run_project_inner(
     }
 
 
-    let root_is_generic = stack.language.starts_with("generic")
-        || stack.entry_point == "entrypoint.sh"
-        || stack.entry_point.is_empty();
-    // A monorepo orchestrator's root "entry" is just a fan-out command
-    // (`pnpm run dev` → `turbo run dev`). Running that combined command often
-    // misbehaves — interleaved output breaks port detection, every app shares
-    // one process, and crush can't proxy/track them individually. When we've
-    // actually resolved the sub-apps, run them separately so each gets its own
-    // port, proxy route, and log stream — even though the root has an entry.
-    let ll = stack.language.to_lowercase();
-    let is_orchestrator_monorepo = ll.contains("turborepo")
-        || ll.contains("lerna")
-        || ll.contains("monorepo")
-        || ll.contains("(nx)");
-    let is_multi_service = stack.is_monorepo
-        && stack.services.len() >= 2
-        && (root_is_generic || is_orchestrator_monorepo);
+    // Run per-service whenever we've resolved 2+ real runnable apps. The
+    // detector promotes one sub-app's entry to the root (naijaspride →
+    // `node apps/api/dist/app.js`, variantrade → `gunicorn backend.main:app`),
+    // so the old "only when the root has no entry" gate ran a single app and
+    // ignored the rest. multiservice now excludes library packages, so a
+    // services count >= 2 reliably means a real multi-app repo (turbo/nx/lerna,
+    // workspace, convention `backend/`+`frontend/`, or polyglot `services/*`) —
+    // run each separately with its own port, proxy route, and log stream.
+    let is_multi_service = stack.is_monorepo && stack.services.len() >= 2;
 
     let _ = tx.send(RunEvent::Detected {
         language: stack.language.clone(),
