@@ -195,3 +195,34 @@ Every item below is a discrete, shippable task. `[have]` = already exists, surfa
 # APPENDIX C — Acceptance demo script (validator will run this)
 For each phase, the implementing agent records exact click-paths the validator can replay in the GUI: e.g. "Servers → variantrade → Manage → see health + containers → Restart `api` → Logs shows output." If a feature can't be demoed in the GUI, it's not done.
 
+# APPENDIX D — Dokploy/Coolify parity matrix (every row accounted for)
+Scope tags: `[have]` exists, `[partial]` exists-incomplete, `[new]` build it, `[inherent]` true by crush's architecture, `[out]` deliberately out-of-scope (with reason — do NOT silently skip; if revisited, design-review first).
+
+| Row (from the comparison) | Crush scope | Notes / where |
+|---|---|---|
+| One-command installation | [have] | `install.sh` / `crush install`; installer ships in releases. |
+| Installation feedback + progress logs | [partial] | install scripts print steps; make the GUI first-run/update show progress. |
+| Works with firewall + Tailscale out of the box | [partial→new] | Tunneling already gives public reach without port-forwarding. **[new]** detect Tailscale (`tailscale status`) and offer a Tailscale URL as a tunnel provider alongside cloudflared. |
+| Lightweight CPU while idle | [inherent] | No daemon; nothing runs idle. Keep it that way — don't add a always-on background service. |
+| Low memory usage | [inherent] | Native processes, no VM/containers in dev loop. |
+| Teams & organizations | [out] | Crush is a **local, single-user** tool; multi-tenant accounts contradict the model. Revisit only if a hosted mode is ever added. |
+| Projects grouping | [new] | Use the App/Project registry (Appendix A6); group by folder/workspace in the GUI. |
+| Consistent, responsive UI | [partial] | Ongoing; Svelte 5 GUI. Keep pages consistent with existing patterns. |
+| Built with Next.js / TypeScript | [out] | N/A by design — crush GUI is Tauri + SvelteKit + Rust (smaller, native). Not a feature to copy. |
+| AI-assisted deployments | [partial] | `crush-ai` (Gemini default) does diagnosis; **[new]** extend to deploy suggestions / fix-on-failed-deploy. |
+| Deploy from custom Docker images | [new] | A1 "Docker image source" — run/deploy a prebuilt image. |
+| Database deployment (PG/MySQL/Redis/…) | [have]+[new] | Native services exist; **add MySQL + MariaDB drivers** (Appendix A3). |
+| Scheduled DB backups (to S3) | [partial→new] | `crush db snapshot/restore` exists; **[new]** scheduling + **S3 target** (reuse MinIO/S3 client; configurable bucket/creds). |
+| Back up arbitrary Docker volumes (not just DBs) | [new] | `docker run --rm -v <vol>:/v -v <out>:/out alpine tar czf /out/<vol>.tgz /v` over SSH; list/restore. |
+| Preview deployments (review apps) | [partial] | Branch previews via worktrees (`preview_branch`/`list_worktrees`) exist locally; **[new]** make a preview a *deployable ephemeral env* (deploy the worktree, get a URL, tear down). |
+| API + CLI tools for automation | [have]+[new] | CLI is extensive. **[new]** optional local HTTP API (opt-in, bound to localhost) for automation — must stay off by default (no idle daemon). |
+| Multi-server deployment | [new] | Deploy one app to several servers from the Servers registry; aggregate status. |
+| Docker Swarm clustering | [out] | Heavy, daemon-centric, contradicts native/no-daemon ethos. Mark out; if demanded, scope a separate design. |
+| Cron jobs inside containers | [new] | Add a cron entry to a target container (`crontab`/systemd timer); manage from GUI. |
+| Cron jobs on the host machine | [new] | Manage host cron (crontab on Linux servers; Task Scheduler on Windows) — schedule `crush` commands (e.g. backups, redeploys). |
+| Monitoring metrics (CPU/RAM/Disk) | [have]+[partial] | Server health done; add **network** + per-app/per-container (Appendix A1/A4). |
+| Metrics enabled by default | [new] | Make the server detail auto-poll (already 15s) and show on the Servers list cards (a tiny health dot/summary) without opening detail. |
+| Automated alerts from metrics | [new] | Threshold alerts (disk >90%, mem >90%, container down) → desktop notification (Tauri notification API) + GUI banner. Opt-in thresholds. |
+
+**Net:** of the 22 rows, ~17 are in-scope (several already `[have]`/`[inherent]`), 3 are `[out]` by deliberate design (teams/orgs, Swarm, "built with Next.js"), and the rest are concrete `[new]` tasks folded into Appendices A/D. Add these to the per-phase work — Tailscale + custom-image + volume backups + preview-deploy + cron + alerts are natural Phase 2/3/5 additions; multi-server + local API are their own small phases.
+
