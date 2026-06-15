@@ -16,21 +16,24 @@ import { fileURLToPath } from 'node:url';
 const REPO = 'Chidi09/crush';
 const API = `https://api.github.com/repos/${REPO}/releases/latest`;
 const REPO_API = `https://api.github.com/repos/${REPO}`;
+const ALL_RELEASES_API = `https://api.github.com/repos/${REPO}/releases?per_page=100`;
 const OUT = fileURLToPath(new URL('../src/app/components/download-block/release.data.ts', import.meta.url));
 
 async function main() {
   let version = '';
   let assets = [];
   let stars = 0;
+  let downloads = 0; // grand total across every release asset (GitHub's authoritative count)
 
   try {
     const headers = { Accept: 'application/vnd.github+json', 'User-Agent': 'crush-web-build' };
     // A token (optional) raises the build-server limit to 5000/hr — set GITHUB_TOKEN in Vercel.
     if (process.env.GITHUB_TOKEN) headers.Authorization = `Bearer ${process.env.GITHUB_TOKEN}`;
 
-    const [relRes, repoRes] = await Promise.all([
+    const [relRes, repoRes, allRes] = await Promise.all([
       fetch(API, { headers }),
       fetch(REPO_API, { headers }),
+      fetch(ALL_RELEASES_API, { headers }),
     ]);
 
     if (relRes.ok) {
@@ -40,6 +43,7 @@ async function main() {
         name: a.name,
         url: a.browser_download_url,
         size: a.size,
+        downloadCount: a.download_count ?? 0,
       }));
       console.log(`[fetch-release] baked ${assets.length} assets for ${version || '(no tag)'}`);
     } else {
@@ -53,6 +57,20 @@ async function main() {
     } else {
       console.warn(`[fetch-release] repo API ${repoRes.status} — stars default 0`);
     }
+
+    // Sum download_count across all releases. Every download — website button,
+    // `install.sh` curl-pipe, or direct GitHub — flows through these counters,
+    // since the install script also pulls the binary from the release asset URL.
+    if (allRes.ok) {
+      const all = await allRes.json();
+      downloads = all.reduce(
+        (sum, rel) => sum + (rel.assets ?? []).reduce((s, a) => s + (a.download_count ?? 0), 0),
+        0,
+      );
+      console.log(`[fetch-release] baked ${downloads} total downloads across ${all.length} releases`);
+    } else {
+      console.warn(`[fetch-release] releases list API ${allRes.status} — downloads default 0`);
+    }
   } catch (err) {
     console.warn(`[fetch-release] fetch failed (${err?.message ?? err}) — emitting fallback`);
   }
@@ -60,9 +78,9 @@ async function main() {
   const banner =
     '// AUTO-GENERATED at build time by scripts/fetch-release.mjs. Do not edit by hand.\n';
   const body =
-    `export interface ReleaseAsset { name: string; url: string; size: number; }\n` +
-    `export interface ReleaseData { version: string; assets: ReleaseAsset[]; stars: number; }\n\n` +
-    `export const RELEASE: ReleaseData = ${JSON.stringify({ version, assets, stars }, null, 2)};\n`;
+    `export interface ReleaseAsset { name: string; url: string; size: number; downloadCount?: number; }\n` +
+    `export interface ReleaseData { version: string; assets: ReleaseAsset[]; stars: number; downloads: number; }\n\n` +
+    `export const RELEASE: ReleaseData = ${JSON.stringify({ version, assets, stars, downloads }, null, 2)};\n`;
 
   await mkdir(dirname(OUT), { recursive: true });
   await writeFile(OUT, banner + body, 'utf8');
