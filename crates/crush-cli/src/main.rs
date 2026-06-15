@@ -159,6 +159,8 @@ enum Commands {
     Services(ServicesArgs),
     #[command(about = "Generate production Dockerfile + docker-compose from current detection (stop relying on crush)")]
     Eject(EjectArgs),
+    #[command(about = "Remove build artifacts, dependency installs, and tool caches from a project")]
+    Clean(CleanArgs),
     #[command(about = "Run health checks on a container")]
     Health(HealthArgs),
     #[command(about = "Deploy a project to cloud infrastructure defined in the Crushfile")]
@@ -433,6 +435,18 @@ struct EjectArgs {
     force: bool,
     #[arg(long, default_value = ".", help = "Directory to write the generated files into")]
     out: String,
+}
+
+#[derive(Args, Debug)]
+struct CleanArgs {
+    #[arg(help = "Project directory to clean (default: current directory)")]
+    path: Option<String>,
+    #[arg(long, short = 'n', help = "Show what would be removed without deleting anything")]
+    dry_run: bool,
+    #[arg(long, short = 'y', help = "Skip the confirmation prompt")]
+    yes: bool,
+    #[arg(long, help = "Also clear crush's own global build-layer cache")]
+    cache: bool,
 }
 
 #[derive(Args, Debug)]
@@ -1845,6 +1859,145 @@ async fn run_eject(args: EjectArgs) -> anyhow::Result<()> {
     Ok(())
 }
 
+/// `crush clean` — reclaim disk by removing dependency installs, build outputs,
+/// and tool caches from a project (node_modules, target, .venv, dist, .gradle,
+/// .dart_tool, Pods, …). Pulled out of the main dispatch so it runs before the
+/// image store opens; it only touches the project tree (and optionally crush's
+/// own cache dir), never the store.
+async fn run_clean(args: CleanArgs) -> anyhow::Result<()> {
+    // Directory basenames safe to delete: dependency installs, build outputs,
+    // and framework/tool caches. Matched anywhere in the tree; once matched we
+    // don't descend (the children go with the parent).
+    const CLEAN_DIRS: &[&str] = &[
+        // JS / TS
+        "node_modules", ".next", ".nuxt", ".svelte-kit", ".turbo", ".parcel-cache",
+        ".angular", ".vite", ".astro",
+        // build outputs
+        "dist", "build", "out", ".output",
+        // Rust
+        "target",
+        // Python
+        ".venv", "venv", "__pycache__", ".pytest_cache", ".mypy_cache", ".ruff_cache",
+        ".tox", ".nox",
+        // JVM / Gradle
+        ".gradle",
+        // Flutter / Dart
+        ".dart_tool",
+        // iOS / React Native
+        "Pods",
+        // generic tool cache
+        ".cache",
+    ];
+    // Never descend into or remove these.
+    const NEVER: &[&str] = &[".git", ".hg", ".svn"];
+
+    let root = match &args.path {
+        Some(p) => std::path::PathBuf::from(p),
+        None => std::env::current_dir()?,
+    };
+    let root = root.canonicalize()
+        .map_err(|e| anyhow::anyhow!("cannot access {}: {}", root.display(), e))?;
+    if !root.is_dir() {
+        anyhow::bail!("not a directory: {}", root.display());
+    }
+
+    fn dir_size(path: &std::path::Path) -> u64 {
+        let mut total = 0u64;
+        let mut stack = vec![path.to_path_buf()];
+        while let Some(dir) = stack.pop() {
+            let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+            for entry in rd.flatten() {
+                let Ok(ft) = entry.file_type() else { continue };
+                if ft.is_symlink() { continue; }
+                if ft.is_dir() { stack.push(entry.path()); }
+                else if let Ok(m) = entry.metadata() { total += m.len(); }
+            }
+        }
+        total
+    }
+
+    // Walk the tree, collecting cleanable dirs without descending into matches.
+    let mut found: Vec<(std::path::PathBuf, u64)> = Vec::new();
+    let mut stack = vec![root.clone()];
+    while let Some(dir) = stack.pop() {
+        let Ok(rd) = std::fs::read_dir(&dir) else { continue };
+        for entry in rd.flatten() {
+            let Ok(ft) = entry.file_type() else { continue };
+            if !ft.is_dir() || ft.is_symlink() { continue; }
+            let name = entry.file_name().to_string_lossy().to_string();
+            if NEVER.contains(&name.as_str()) { continue; }
+            if CLEAN_DIRS.contains(&name.as_str()) {
+                let p = entry.path();
+                let size = dir_size(&p);
+                found.push((p, size));
+            } else {
+                stack.push(entry.path());
+            }
+        }
+    }
+
+    // Optionally include crush's own global build-layer cache.
+    let mut cache_target: Option<(std::path::PathBuf, u64)> = None;
+    if args.cache {
+        let cache = dirs_or_default().join("cache");
+        if cache.is_dir() {
+            let size = dir_size(&cache);
+            cache_target = Some((cache, size));
+        }
+    }
+
+    if found.is_empty() && cache_target.is_none() {
+        println!(" {} nothing to clean in {}", "✓".green().bold(), root.display());
+        return Ok(());
+    }
+
+    found.sort_by(|a, b| b.1.cmp(&a.1));
+    let total: u64 = found.iter().map(|(_, s)| *s).sum::<u64>()
+        + cache_target.as_ref().map(|(_, s)| *s).unwrap_or(0);
+
+    if args.dry_run { println!("{}", "would remove:".yellow().bold()); }
+    else { println!("{}", "will remove:".bold()); }
+    for (p, s) in &found {
+        let rel = p.strip_prefix(&root).unwrap_or(p);
+        println!("   {:>9}  {}", format_bytes(*s).dimmed(), rel.display());
+    }
+    if let Some((p, s)) = &cache_target {
+        println!("   {:>9}  {} {}", format_bytes(*s).dimmed(), p.display(), "(crush cache)".dimmed());
+    }
+    println!("   {:>9}  {}", format_bytes(total).cyan().bold(), "total".bold());
+
+    if args.dry_run {
+        println!(" {} dry run — nothing deleted", "↳".cyan());
+        return Ok(());
+    }
+
+    if !args.yes {
+        use std::io::Write;
+        print!("\ndelete these? [y/N] ");
+        std::io::stdout().flush().ok();
+        let mut line = String::new();
+        std::io::stdin().read_line(&mut line).ok();
+        if !matches!(line.trim().to_lowercase().as_str(), "y" | "yes") {
+            println!(" {} aborted", "✗".red());
+            return Ok(());
+        }
+    }
+
+    let mut reclaimed = 0u64;
+    let mut failures = 0u32;
+    for (p, s) in found.iter().chain(cache_target.iter()) {
+        match std::fs::remove_dir_all(p) {
+            Ok(()) => reclaimed += *s,
+            Err(e) => { eprintln!("   {} {}: {}", "!".red().bold(), p.display(), e); failures += 1; }
+        }
+    }
+    println!(" {} reclaimed {}", "✓".green().bold(), format_bytes(reclaimed).bold());
+    if failures > 0 {
+        anyhow::bail!("{} path(s) could not be removed (in use? permissions?)", failures);
+    }
+    Ok(())
+}
+
 async fn run_internal(args: InternalRunArgs, data_dir: std::path::PathBuf) -> anyhow::Result<()> {
             let container_dir = data_dir.join("containers").join(&args.id);
             let container_json_path = container_dir.join("container.json");
@@ -2118,6 +2271,14 @@ async fn main() -> anyhow::Result<()> {
     if matches!(&command, Commands::Eject(_)) {
         let Commands::Eject(args) = command else { unreachable!() };
         return run_eject(args).await;
+    }
+
+    // `clean` only touches the project tree (and optionally crush's cache dir),
+    // never the image store. Dispatch it before the sled db opens so it works
+    // even while the GUI holds the store lock.
+    if matches!(&command, Commands::Clean(_)) {
+        let Commands::Clean(args) = command else { unreachable!() };
+        return run_clean(args).await;
     }
 
     let store = ImageStore::new(data_dir.join("images")).await?;
@@ -3398,6 +3559,7 @@ async fn main() -> anyhow::Result<()> {
         }
         // Dispatched before the store opens (see above); unreachable here.
         Commands::Eject(_) => unreachable!("eject is handled before the image store opens"),
+        Commands::Clean(_) => unreachable!("clean is handled before the image store opens"),
         Commands::Scan(args) => {
             if args.fix || args.image.is_none() {
                 let root = std::env::current_dir()?;
