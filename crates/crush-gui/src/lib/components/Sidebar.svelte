@@ -8,6 +8,7 @@
     { href: '/dashboard', icon: 'dashboard', label: 'Dashboard' },
     { href: '/deployments', icon: 'rocket', label: 'Deployments' },
     { href: '/services', icon: 'services', label: 'Services' },
+    { href: '/servers', icon: 'server', label: 'Servers' },
     { href: '/images', icon: 'images', label: 'Images' },
     { href: '/logs', icon: 'logs', label: 'Logs' },
     { href: '/mailbox', icon: 'mail', label: 'Mailbox' },

@@ -101,6 +101,7 @@ pub fn run() {
             commands::deployments::list_cloud_deployments,
             commands::eject::eject_project,
             commands::deploy::write_project_file,
+            commands::deploy::detect_deploy_targets,
             commands::deploy::cli_available,
             commands::deploy::run_deploy,
             commands::deploy::run_capture,
@@ -121,6 +122,8 @@ pub fn run() {
             commands::tunnel::list_tunnels,
             commands::mailbox::list_mail,
             commands::mailbox::clear_mail,
+            commands::servers::ssh_hosts,
+            commands::servers::ssh_connect,
         ])
         .run(tauri::generate_context!())
         .expect("Error while running Crush GUI");

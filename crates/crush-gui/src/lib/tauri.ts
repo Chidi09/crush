@@ -520,6 +520,17 @@ export function runCapture(path: string, program: string, args: string[], env: R
 export function openTerminal(path: string, command: string): Promise<void> {
   return invoke('open_terminal', { path, command });
 }
+
+// ── SSH servers ─────────────────────────────────────────────────────────────
+export interface SshHost { alias: string; hostname: string | null; user: string | null; port: number | null; }
+export function sshHosts(): Promise<SshHost[]> { return invoke('ssh_hosts'); }
+export function sshConnect(host: string): Promise<void> { return invoke('ssh_connect', { host }); }
+
+// ── Deploy target detection ─────────────────────────────────────────────────
+export interface DeployTarget { platform: string; source: string; icon: string; deploy_command: string; }
+export function detectDeployTargets(path: string): Promise<DeployTarget[]> {
+  return invoke('detect_deploy_targets', { path });
+}
 export function onDeployLine(cb: (e: { stream: string; line: string }) => void): Promise<UnlistenFn> {
   return listen<{ stream: string; line: string }>('deploy-line', (e) => cb(e.payload));
 }

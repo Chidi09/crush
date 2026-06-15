@@ -2,6 +2,14 @@ use std::collections::HashMap;
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use tauri::{Window, Emitter};
+use crush_build::deploy_targets::{detect_deploy_targets as detect_targets, DeployTarget};
+
+/// Detect where this project deploys (Vercel/Netlify/Render/Fly/Hetzner/…) from
+/// its config markers, so the GUI can show platforms + a one-click Deploy.
+#[tauri::command]
+pub async fn detect_deploy_targets(path: String) -> Result<Vec<DeployTarget>, String> {
+    Ok(detect_targets(Path::new(&path)))
+}
 
 /// Allow-list of deploy CLIs we'll spawn. The frontend catalog drives *which*
 /// command runs; this just bounds it to known provider tooling so an arbitrary

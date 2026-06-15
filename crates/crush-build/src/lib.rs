@@ -22,6 +22,8 @@ pub mod tunnel;
 pub mod lint;
 pub mod mailbox;
 pub mod gateway;
+pub mod ssh;
+pub mod deploy_targets;
 
 use std::path::{Path, PathBuf};
 use std::fs;

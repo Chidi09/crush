@@ -153,11 +153,23 @@
   }
 
   async function detectStack(path: string) {
-    detecting = true; project = null; git = null;
+    detecting = true; project = null; git = null; deployTargets = [];
     try {
       project = await api.detectProject(path);
       git = await api.gitInfo(path);
+      deployTargets = await api.detectDeployTargets(path).catch(() => []);
     } catch (e) { console.error(e); } finally { detecting = false; }
+  }
+
+  // Detected deploy platforms (Vercel/Netlify/Hetzner/…) + one-click deploy.
+  let deployTargets = $state<api.DeployTarget[]>([]);
+  let deploying = $state<string | null>(null);
+  async function deployTo(t: api.DeployTarget) {
+    if (!projectPath) return;
+    deploying = t.platform;
+    try { await api.openTerminal(projectPath, t.deploy_command); }
+    catch (e) { console.error(e); }
+    finally { setTimeout(() => { deploying = null; }, 1500); }
   }
   async function openProject() {
     const p = await api.pickProjectDirectory();
@@ -318,6 +330,26 @@
                 {/if}
               </div>
               {#if tunnelError}<div class="tunnel-err">{tunnelError}</div>{/if}
+            </div>
+          {/if}
+
+          {#if deployTargets.length > 0}
+            <div class="deploy-row">
+              <span class="uses-label">Deploys to</span>
+              <div class="deploy-list">
+                {#each deployTargets as t (t.platform)}
+                  <div class="deploy-target" title={`Detected from ${t.source}`}>
+                    <span class="dt-rocket"><Icon name="rocket" size={12} /></span>
+                    <TechIcon name={t.icon} size={14} />
+                    <span class="dt-name">{t.platform}</span>
+                    <button class="dt-deploy" disabled={deploying !== null}
+                            title={`Run: ${t.deploy_command}`}
+                            onclick={() => deployTo(t)}>
+                      {deploying === t.platform ? 'deploying…' : 'Deploy'}
+                    </button>
+                  </div>
+                {/each}
+              </div>
             </div>
           {/if}
         {/if}
@@ -629,6 +661,16 @@
   .uses-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-crush-text-muted); font-weight: 600; flex-shrink: 0; }
   .inline-chips { display: flex; flex-wrap: wrap; gap: 6px; }
   .ext-chip { background: rgba(99,102,241,0.06) !important; border-color: rgba(99,102,241,0.18) !important; color: #a5b4fc !important; font-weight: 500; }
+
+  /* ── deploy targets ── */
+  .deploy-row { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; padding-top: 10px; flex-wrap: wrap; }
+  .deploy-list { display: flex; flex-wrap: wrap; gap: 8px; }
+  .deploy-target { display: inline-flex; align-items: center; gap: 7px; padding: 4px 6px 4px 10px; border-radius: 9999px; background: rgba(224,85,64,0.06); border: 1px solid rgba(224,85,64,0.22); font-size: 12.5px; }
+  .dt-rocket { display: inline-flex; color: var(--color-crush-orange); filter: drop-shadow(0 0 4px rgba(224,85,64,0.7)); }
+  .dt-name { font-weight: 500; }
+  .dt-deploy { font-size: 11.5px; color: var(--color-crush-orange); background: rgba(224,85,64,0.1); border: 1px solid rgba(224,85,64,0.3); border-radius: 9999px; padding: 2px 10px; cursor: pointer; transition: background 0.15s, border-color 0.15s; }
+  .dt-deploy:hover:not(:disabled) { background: rgba(224,85,64,0.2); border-color: rgba(224,85,64,0.55); }
+  .dt-deploy:disabled { opacity: 0.5; cursor: default; }
 
   /* ── tunnel ── */
   .tunnel-row { display: flex; align-items: flex-start; gap: 8px; margin-top: 10px; padding-top: 10px; flex-wrap: wrap; }
