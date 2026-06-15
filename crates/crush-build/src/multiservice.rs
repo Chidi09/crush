@@ -109,30 +109,15 @@ impl MultiServiceDetector {
         }
 
         match det.runtime_type {
-            crate::detect::RuntimeType::Node => {
-                if let Ok(content) = fs::read_to_string(path.join("package.json")) {
-                    if let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) {
-                        if let Some(scripts) = json["scripts"].as_object() {
-                            if scripts.contains_key("start") || scripts.contains_key("dev") {
-                                return true;
-                            }
-                        }
-                        if let Some(deps) = json["dependencies"].as_object() {
-                            let web_deps = [
-                                "express", "koa", "fastify", "next", "nuxt", "react", "vue",
-                                "svelte", "astro", "vite", "remix", "@nestjs/core", "hono",
-                                "graphql", "apollo-server"
-                            ];
-                            for dep in web_deps {
-                                if deps.contains_key(dep) {
-                                    return true;
-                                }
-                            }
-                        }
-                    }
-                }
-                false
-            }
+            // JS/TS packages: a monorepo's `packages/*` are usually *libraries*
+            // (e.g. @scope/types with only a `build: tsc` script and a `main`
+            // field) — they must NOT be run as services. Treat a package as a
+            // runnable app only if it has a real (non-compiler) start/dev/serve
+            // script or a server/frontend framework dependency.
+            crate::detect::RuntimeType::Node
+            | crate::detect::RuntimeType::TypeScript
+            | crate::detect::RuntimeType::Bun
+            | crate::detect::RuntimeType::Deno => Self::node_like_runnable(path),
             crate::detect::RuntimeType::Rust => {
                 let has_main = path.join("src/main.rs").exists();
                 let has_bin = if let Ok(cargo_content) = fs::read_to_string(path.join("Cargo.toml")) {
@@ -157,10 +142,47 @@ impl MultiServiceDetector {
             crate::detect::RuntimeType::Generic => {
                 false
             }
-            _ => {
-                det.framework_detected || (!det.entry_point.is_empty() && det.entry_point != "entrypoint.sh")
+            // Mobile and anything else: only when a framework was actually
+            // detected — never just because a synthesized entry is non-empty
+            // (that wrongly promoted library packages to services).
+            _ => det.framework_detected,
+        }
+    }
+
+    /// A JS/TS package is a runnable app (not a library) when it has a real
+    /// start/dev/serve script that isn't merely a compiler, or it depends on a
+    /// server/frontend framework. Pure libraries (`build: tsc`, a `main`/
+    /// `exports` field, no framework) return false.
+    fn node_like_runnable(path: &Path) -> bool {
+        let Ok(content) = fs::read_to_string(path.join("package.json")) else { return false };
+        let Ok(json) = serde_json::from_str::<serde_json::Value>(&content) else { return false };
+
+        if let Some(scripts) = json["scripts"].as_object() {
+            for key in ["start", "dev", "serve"] {
+                if let Some(cmd) = scripts.get(key).and_then(|v| v.as_str()) {
+                    if !Self::is_compiler_only(cmd) { return true; }
+                }
             }
         }
+
+        let frameworks = [
+            "express", "koa", "fastify", "next", "nuxt", "react", "vue", "svelte",
+            "astro", "vite", "remix", "@nestjs/core", "hono", "@angular/core",
+            "react-scripts", "@sveltejs/kit", "apollo-server", "@apollo/server",
+        ];
+        for section in ["dependencies", "devDependencies"] {
+            if let Some(deps) = json[section].as_object() {
+                if frameworks.iter().any(|d| deps.contains_key(*d)) { return true; }
+            }
+        }
+        false
+    }
+
+    /// True when a script just compiles/bundles a library (tsc, tsup, rollup…)
+    /// rather than starting a long-running server.
+    fn is_compiler_only(cmd: &str) -> bool {
+        let first = cmd.trim().split_whitespace().next().unwrap_or("");
+        matches!(first, "tsc" | "tsup" | "rollup" | "rimraf" | "rm" | "babel" | "swc" | "unbuild" | "tsdx")
     }
 
     fn extract_port_from_env_or_scripts(path: &Path, default_port: u16) -> u16 {

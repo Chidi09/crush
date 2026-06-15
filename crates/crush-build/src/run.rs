@@ -986,9 +986,20 @@ async fn run_project_inner(
     let root_is_generic = stack.language.starts_with("generic")
         || stack.entry_point == "entrypoint.sh"
         || stack.entry_point.is_empty();
+    // A monorepo orchestrator's root "entry" is just a fan-out command
+    // (`pnpm run dev` → `turbo run dev`). Running that combined command often
+    // misbehaves — interleaved output breaks port detection, every app shares
+    // one process, and crush can't proxy/track them individually. When we've
+    // actually resolved the sub-apps, run them separately so each gets its own
+    // port, proxy route, and log stream — even though the root has an entry.
+    let ll = stack.language.to_lowercase();
+    let is_orchestrator_monorepo = ll.contains("turborepo")
+        || ll.contains("lerna")
+        || ll.contains("monorepo")
+        || ll.contains("(nx)");
     let is_multi_service = stack.is_monorepo
         && stack.services.len() >= 2
-        && root_is_generic;
+        && (root_is_generic || is_orchestrator_monorepo);
 
     let _ = tx.send(RunEvent::Detected {
         language: stack.language.clone(),
