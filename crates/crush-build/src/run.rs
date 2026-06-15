@@ -1607,8 +1607,21 @@ async fn run_project_inner(
                     });
                 }
 
-                let status = child.wait().await
-                    .map_err(|e| anyhow::anyhow!("Failed to run `{}`: {}", icmd, e))?;
+                // Wait for the build to finish OR for the user to abort. A bare
+                // `child.wait()` here ignored the stop button until the build
+                // exited on its own — a hung or slow build (gradle daemon, heavy
+                // compile) couldn't be killed. Tree-kill on abort so build
+                // grandchildren (daemons, watchers) don't orphan.
+                let status = tokio::select! {
+                    s = child.wait() => {
+                        s.map_err(|e| anyhow::anyhow!("Failed to run `{}`: {}", icmd, e))?
+                    }
+                    _ = &mut *abort_rx => {
+                        kill_tree(&mut child).await;
+                        let _ = tx.send(RunEvent::Exited { code: 130 }).await;
+                        return Ok(());
+                    }
+                };
                 let build_dur = build_start.elapsed().as_millis() as u64;
                 let ok = status.success();
                 let _ = tx.send(RunEvent::BuildFinished {
