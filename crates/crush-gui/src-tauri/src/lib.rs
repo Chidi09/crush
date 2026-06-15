@@ -97,6 +97,8 @@ pub fn run() {
             commands::git::git_branches,
             commands::git::preview_branch,
             commands::git::remove_worktree,
+            commands::git::switch_branch,
+            commands::git::list_worktrees,
             commands::deployments::list_all_deployments,
             commands::deployments::list_cloud_deployments,
             commands::eject::eject_project,

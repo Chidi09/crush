@@ -158,7 +158,25 @@
       project = await api.detectProject(path);
       git = await api.gitInfo(path);
       deployTargets = await api.detectDeployTargets(path).catch(() => []);
+      branches = git?.is_repo ? await api.gitBranches(path, false).catch(() => []) : [];
     } catch (e) { console.error(e); } finally { detecting = false; }
+  }
+
+  // Git-aware run: switch the branch you run/deploy without leaving the dashboard.
+  let branches = $state<api.BranchInfo[]>([]);
+  let switching = $state(false);
+  let switchErr = $state<string | null>(null);
+  async function onSwitchBranch(branch: string) {
+    if (!projectPath || !branch || branch === git?.branch) return;
+    switching = true; switchErr = null;
+    try {
+      await api.switchBranch(projectPath, branch);
+      await detectStack(projectPath); // re-detect so the next run uses this branch
+    } catch (e) {
+      switchErr = String(e);
+    } finally {
+      switching = false;
+    }
   }
 
   // Detected deploy platforms (Vercel/Netlify/Hetzner/…) + one-click deploy.
@@ -362,13 +380,30 @@
                   <Icon name="github" size={13} fill /> {git.parsed_github.owner}/{git.parsed_github.repo}
                 </button>
               {/if}
-              <div class="chip accent branch-chip"><Icon name="branch" size={13} /> {git.branch}</div>
+              {#if branches.length > 1}
+                <label class="branch-switch" title="Switch the branch you run & deploy">
+                  <Icon name="branch" size={13} />
+                  <select
+                    value={git.branch}
+                    disabled={switching}
+                    onchange={(e) => onSwitchBranch((e.currentTarget as HTMLSelectElement).value)}
+                  >
+                    {#each branches.filter((b) => !b.is_remote) as b (b.name)}
+                      <option value={b.name}>{b.name}</option>
+                    {/each}
+                  </select>
+                  {#if switching}<span class="dim sm">switching…</span>{/if}
+                </label>
+              {:else}
+                <div class="chip accent branch-chip"><Icon name="branch" size={13} /> {git.branch}</div>
+              {/if}
               <div class="chips">
-                {#if git.dirty_count > 0}<span class="chip">dirty: {git.dirty_count}</span>{/if}
+                {#if git.dirty_count > 0}<span class="chip dirty-chip" title="Uncommitted changes in the working tree">● {git.dirty_count} uncommitted</span>{/if}
                 {#if git.ahead && git.ahead > 0}<span class="chip">↑ {git.ahead}</span>{/if}
                 {#if git.behind && git.behind > 0}<span class="chip">↓ {git.behind}</span>{/if}
               </div>
             </div>
+            {#if switchErr}<div class="switch-err">{switchErr}</div>{/if}
             {#if git.head}
               <div class="git-commit mt-2">
                 <span class="strong">{git.head.message}</span>
@@ -656,6 +691,11 @@
   .git-source-header { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; }
   .git-commit { display: flex; align-items: baseline; gap: 8px; }
   .branch-chip { font-family: var(--font-mono); }
+  .branch-switch { display: inline-flex; align-items: center; gap: 6px; padding: 3px 8px; border: 1px solid rgba(99,102,241,0.3); background: rgba(99,102,241,0.06); border-radius: 0.75rem; color: #a5b4fc; }
+  .branch-switch select { background: transparent; border: none; color: var(--color-crush-text); font-family: var(--font-mono); font-size: 12.5px; cursor: pointer; outline: none; max-width: 220px; }
+  .branch-switch select:disabled { opacity: 0.6; }
+  .dirty-chip { color: #eab308 !important; border-color: rgba(234,179,8,0.3) !important; background: rgba(234,179,8,0.08) !important; }
+  .switch-err { color: var(--color-crush-red); font-size: 12px; margin-top: 6px; }
 
   .uses-row { display: flex; align-items: center; gap: 8px; margin-top: 12px; padding-top: 12px; border-top: 1px dashed var(--color-crush-border); }
   .uses-label { font-size: 11px; text-transform: uppercase; letter-spacing: 0.05em; color: var(--color-crush-text-muted); font-weight: 600; flex-shrink: 0; }

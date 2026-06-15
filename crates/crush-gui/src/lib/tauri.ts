@@ -584,6 +584,13 @@ export function previewBranch(path: string, branch: string): Promise<string> {
 export function removeWorktree(path: string, branch: string): Promise<void> {
   return invoke('remove_worktree', { path, branch });
 }
+export function switchBranch(path: string, branch: string): Promise<void> {
+  return invoke('switch_branch', { path, branch });
+}
+export interface WorktreeInfo { path: string; branch: string | null; is_main: boolean; }
+export function listWorktrees(path: string): Promise<WorktreeInfo[]> {
+  return invoke('list_worktrees', { path });
+}
 
 
 // Event listeners

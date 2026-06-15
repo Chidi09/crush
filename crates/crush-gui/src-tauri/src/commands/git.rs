@@ -274,6 +274,62 @@ pub async fn remove_worktree(path: String, branch: String, state: State<'_, AppS
     if status.is_err() || !status.unwrap().success() {
         return Err("Failed to remove worktree".to_string());
     }
-    
+
     Ok(())
+}
+
+/// Switch the working tree to `branch` (`git checkout`). Returns git's stderr on
+/// failure (e.g. uncommitted changes that would be overwritten) so the GUI can
+/// show *why* — the user then commits/stashes and retries.
+#[tauri::command]
+pub async fn switch_branch(path: String, branch: String) -> Result<(), String> {
+    let out = git_cmd(&path)
+        .args(&["checkout", &branch])
+        .output()
+        .map_err(|e| format!("failed to run git: {e}"))?;
+    if out.status.success() {
+        Ok(())
+    } else {
+        let err = String::from_utf8_lossy(&out.stderr).trim().to_string();
+        Err(if err.is_empty() { format!("couldn't switch to {branch}") } else { err })
+    }
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct WorktreeInfo {
+    pub path: String,
+    pub branch: Option<String>,
+    /// True for the primary working tree (the project dir itself).
+    pub is_main: bool,
+}
+
+/// List git worktrees for the repo (`git worktree list --porcelain`). Lets the
+/// GUI show branch previews that are checked out alongside the main tree.
+#[tauri::command]
+pub async fn list_worktrees(path: String) -> Result<Vec<WorktreeInfo>, String> {
+    let Some(out) = run_git_cmd(&path, &["worktree", "list", "--porcelain"]) else {
+        return Ok(vec![]);
+    };
+    let main = run_git_cmd(&path, &["rev-parse", "--show-toplevel"]).unwrap_or_default();
+    let mut trees = Vec::new();
+    let mut cur_path: Option<String> = None;
+    let mut cur_branch: Option<String> = None;
+    let mut flush = |p: &mut Option<String>, b: &mut Option<String>, trees: &mut Vec<WorktreeInfo>| {
+        if let Some(path) = p.take() {
+            let is_main = !main.is_empty() && std::path::Path::new(&path) == std::path::Path::new(&main);
+            trees.push(WorktreeInfo { path, branch: b.take(), is_main });
+        } else {
+            *b = None;
+        }
+    };
+    for line in out.lines() {
+        if let Some(p) = line.strip_prefix("worktree ") {
+            flush(&mut cur_path, &mut cur_branch, &mut trees);
+            cur_path = Some(p.trim().to_string());
+        } else if let Some(b) = line.strip_prefix("branch ") {
+            cur_branch = Some(b.trim().trim_start_matches("refs/heads/").to_string());
+        }
+    }
+    flush(&mut cur_path, &mut cur_branch, &mut trees);
+    Ok(trees)
 }
