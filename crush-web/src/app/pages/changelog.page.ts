@@ -60,6 +60,18 @@ import { HlmBadgeDirective } from '../ui/badge';
 export default class ChangelogPage implements OnInit {
   releases = [
     {
+      version: 'v1.0.3',
+      date: '2026-06-15',
+      headline: 'Crush grows a local-PaaS surface: a database studio, an S3/object-storage studio, server management, custom domains with TLS, and an env editor.',
+      items: [
+        '<strong>Database Studio:</strong> a local, free DB management GUI — browse &amp; edit tables/data, run SQL, manage extensions (one-click pgvector, pg_cron, pgmq, …), roles, and pgmq queues — for Postgres, MySQL/MariaDB, MongoDB and Redis, against crush-managed services or any connection string.',
+        '<strong>Object-Storage Studio:</strong> a local S3 browser for crush\'s MinIO <em>and</em> any S3-compatible endpoint (AWS S3, Cloudflare R2, Backblaze) — buckets, upload/download/delete, presigned URLs, public/private toggle.',
+        '<strong>Server management:</strong> open any host from your <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">~/.ssh/config</code> and see live health (CPU/mem/disk/uptime), running containers (restart/stop/logs/exec), and native systemd/pm2 services — all over your SSH keys.',
+        '<strong>Custom domains + TLS:</strong> a built-in L7 reverse proxy maps domains to your deployed apps with automatic Let\'s Encrypt certificates (self-signed for local <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">*.local</code> domains, where public ACME isn\'t possible).',
+        '<strong>MySQL / MariaDB</strong> join the natively-managed databases. <strong>Env editor</strong> in the GUI to read/write a project\'s <code class="text-crush-orange bg-crush-orange/10 px-1 py-0.5 rounded">.env</code>. New <strong>Database</strong>, <strong>Servers</strong>, and <strong>Domains</strong> tabs in the GUI.',
+      ],
+    },
+    {
       version: 'v1.0.2',
       date: '2026-06-15',
       headline: 'Servers, deploy detection, one-click deploy, and git-aware runs — all in the GUI.',
