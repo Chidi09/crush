@@ -161,6 +161,8 @@ enum Commands {
     Eject(EjectArgs),
     #[command(about = "Remove build artifacts, dependency installs, and tool caches from a project")]
     Clean(CleanArgs),
+    #[command(about = "Generate a CI/CD pipeline (GitHub Actions, AppVeyor, or Codemagic) for the detected stack")]
+    Ci(CiArgs),
     #[command(about = "Run health checks on a container")]
     Health(HealthArgs),
     #[command(about = "Deploy a project to cloud infrastructure defined in the Crushfile")]
@@ -435,6 +437,14 @@ struct EjectArgs {
     force: bool,
     #[arg(long, default_value = ".", help = "Directory to write the generated files into")]
     out: String,
+}
+
+#[derive(Args, Debug)]
+struct CiArgs {
+    #[arg(help = "CI system: github, appveyor, or codemagic (default: auto from stack)")]
+    system: Option<String>,
+    #[arg(long, help = "Overwrite the config file if it already exists")]
+    force: bool,
 }
 
 #[derive(Args, Debug)]
@@ -2281,6 +2291,12 @@ async fn main() -> anyhow::Result<()> {
         return run_clean(args).await;
     }
 
+    // `ci` only reads the project tree (stack detection + template write) — no store.
+    if matches!(&command, Commands::Ci(_)) {
+        let Commands::Ci(args) = command else { unreachable!() };
+        return commands::ci::exec(args.system, args.force).await;
+    }
+
     let store = ImageStore::new(data_dir.join("images")).await?;
 
     match command {
@@ -3560,6 +3576,7 @@ async fn main() -> anyhow::Result<()> {
         // Dispatched before the store opens (see above); unreachable here.
         Commands::Eject(_) => unreachable!("eject is handled before the image store opens"),
         Commands::Clean(_) => unreachable!("clean is handled before the image store opens"),
+        Commands::Ci(_) => unreachable!("ci is handled before the image store opens"),
         Commands::Scan(args) => {
             if args.fix || args.image.is_none() {
                 let root = std::env::current_dir()?;
