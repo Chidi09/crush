@@ -15,8 +15,22 @@ environment:
   # Set GITHUB_TOKEN in AppVeyor project Settings → Environment (lock icon = secure).
   GITHUB_TOKEN: $(GITHUB_TOKEN)
 
+  # The workspace release profile (lto=true, codegen-units=1, opt-level=3) is tuned
+  # for the smallest/fastest *binary*, but it's the slowest possible *compile* and
+  # blows past AppVeyor's free 60-minute limit on Windows. Override it here so CI
+  # compiles fast & parallel — the GUI is webview-bound, so opt-level 2 with no LTO
+  # is indistinguishable at runtime. Real release binaries (Linux CI + release.sh)
+  # still use the full profile.
+  CARGO_PROFILE_RELEASE_LTO: "false"
+  CARGO_PROFILE_RELEASE_CODEGEN_UNITS: "256"
+  CARGO_PROFILE_RELEASE_OPT_LEVEL: "2"
+  CARGO_PROFILE_RELEASE_DEBUG: "false"
+  CARGO_INCREMENTAL: "0"
+  CARGO_NET_RETRY: "5"
+
 cache:
   - C:\Users\appveyor\.cargo\registry -> Cargo.lock
+  - C:\Users\appveyor\.cargo\git -> Cargo.lock
   - C:\Users\appveyor\AppData\Local\pnpm\store -> crates\crush-gui\pnpm-lock.yaml
 
 install:
