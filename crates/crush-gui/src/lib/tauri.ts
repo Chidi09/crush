@@ -366,8 +366,8 @@ export function listCatalog(): Promise<CatalogEntry[]> {
   return invoke('list_catalog');
 }
 
-export function runProject(projectPath: string, devMode: boolean): Promise<string> {
-  return invoke('run_project', { projectPath, devMode });
+export function runProject(projectPath: string, devMode: boolean, sandbox: boolean = false): Promise<string> {
+  return invoke('run_project', { projectPath, devMode, sandbox });
 }
 
 // ── Android device / emulator mirroring (mobile run view) ──
@@ -470,6 +470,21 @@ export function systemResources(): Promise<ResourceUsage> {
   return invoke('system_resources');
 }
 
+/** A project's own favicon/logo as a data URL, or null to fall back to the stack icon. */
+export function findProjectIcon(projectPath: string): Promise<string | null> {
+  return invoke('find_project_icon', { projectPath });
+}
+
+export interface ProbeResult {
+  ok: boolean;
+  status: number;
+  latency_ms: number;
+}
+/** Live-check a deployment URL — `ok` means the host responded (even a 4xx). */
+export function probeDeployment(url: string): Promise<ProbeResult> {
+  return invoke('probe_deployment', { url });
+}
+
 // Deployments (persisted run history, Vercel-style)
 export interface DeploymentRecord {
   id: string;
@@ -554,6 +569,9 @@ export function dbBackups(): Promise<BackupFile[]> { return invoke('db_backups')
 export function dbBackupNow(): Promise<void> { return invoke('db_backup_now'); }
 export function dbRestore(filename: string): Promise<void> { return invoke('db_restore', { filename }); }
 export function dbDeleteBackup(filename: string): Promise<void> { return invoke('db_delete_backup', { filename }); }
+export function dbCreateSandbox(projectPath: string): Promise<string> { return invoke('db_create_sandbox', { projectPath }); }
+export function dbResetSandbox(sandboxId: string): Promise<void> { return invoke('db_reset_sandbox', { sandboxId }); }
+export function dbDestroySandbox(sandboxId: string): Promise<void> { return invoke('db_destroy_sandbox', { sandboxId }); }
 
 // ── Gateway/Domains ─────────────────────────────────────────────────────────
 export interface DomainRecord { host: string; project: string; port: number; }
@@ -607,6 +625,9 @@ export function serverContainerStop(host: string, id: string): Promise<void> {
 }
 export function serverContainerExec(host: string, id: string): Promise<void> {
   return invoke('server_container_exec', { host, id });
+}
+export function serverContainerInspect(host: string, id: string): Promise<string> {
+  return invoke('server_container_inspect', { host, id });
 }
 
 // ── Deploy target detection ─────────────────────────────────────────────────
@@ -853,6 +874,17 @@ export function storageUploadObject(conn: S3Connection, bucket: string, key: str
   return invoke('storage_upload_object', { conn, bucket, key, filePath });
 }
 
+export interface UploadDirResult {
+  uploaded: number;
+  total_files: number;
+  total_bytes: number;
+  errors: string[];
+}
+
+export function storageUploadDirectory(conn: S3Connection, bucket: string, prefix: string, localDir: string): Promise<UploadDirResult> {
+  return invoke('storage_upload_directory', { conn, bucket, prefix, localDir });
+}
+
 export function storageUploadBytes(conn: S3Connection, bucket: string, key: string, dataBase64: string, contentType?: string): Promise<void> {
   return invoke('storage_upload_bytes', { conn, bucket, key, dataBase64, contentType: contentType ?? null });
 }
@@ -901,5 +933,152 @@ export function storagePickDownloadDestination(filename: string): Promise<string
   return invoke('storage_pick_download_destination', { filename });
 }
 
+// --- API Studio Interfaces ---
 
+export interface Server {
+  url: string;
+  description: string | null;
+}
 
+export interface Variable {
+  name: string;
+  value: string;
+}
+
+export interface Header {
+  name: string;
+  value: string;
+  description: string | null;
+}
+
+export interface Param {
+  name: string;
+  in_location: string;
+  required: boolean;
+  schema: any;
+  description: string | null;
+}
+
+export interface BodySpec {
+  mime_type: string;
+  schema: any;
+  example: any;
+}
+
+export interface CapturedExample {
+  label: string;
+  request: SavedRequest;
+  response: SavedResponse;
+  verified_at: number;
+  schema_ok: boolean | null;
+}
+
+export interface SavedRequest {
+  method: string;
+  url: string;
+  headers: Header[];
+  body: string | null;
+}
+
+export interface SavedResponse {
+  status: number;
+  headers: Header[];
+  body: string | null;
+  timing_ms: number;
+  size_bytes: number;
+}
+
+export interface RequestDoc {
+  summary: string;
+  description_md: string;
+  examples: CapturedExample[];
+  error_examples: CapturedExample[];
+}
+
+export interface RequestSpec {
+  id: string;
+  method: string;
+  path: string;
+  params: Param[];
+  headers: Header[];
+  body: BodySpec | null;
+  auth: any;
+  doc: RequestDoc;
+}
+
+export interface Group {
+  name: string;
+  requests: RequestSpec[];
+}
+
+export interface ApiModel {
+  servers: Server[];
+  groups: Group[];
+  auth: any;
+  variables: Variable[];
+}
+
+export interface ApiSendRequest {
+  method: string;
+  url: string;
+  headers: Header[];
+  body: string | null;
+}
+
+export interface ApiResponse {
+  status: number;
+  headers: Header[];
+  body: string | null;
+  timing_ms: number;
+  size_bytes: number;
+}
+
+// --- API Studio Tauri Invokers ---
+
+export function apiLoadSpec(projectPath: string): Promise<ApiModel | null> {
+  return invoke('api_load_spec', { projectPath });
+}
+
+export function apiImportSpec(projectPath: string, specContent: string): Promise<ApiModel> {
+  return invoke('api_import_spec', { projectPath, specContent });
+}
+
+export function apiScanProject(projectPath: string): Promise<string | null> {
+  return invoke('api_scan_project', { projectPath });
+}
+
+export function apiProbeLive(baseUrl: string): Promise<string | null> {
+  return invoke('api_probe_live', { baseUrl });
+}
+
+export function apiSend(projectPath: string, req: ApiSendRequest): Promise<ApiResponse> {
+  return invoke('api_send', { projectPath, req });
+}
+
+export function apiSaveExample(
+  projectPath: string,
+  groupName: string,
+  requestId: string,
+  isError: boolean,
+  example: CapturedExample
+): Promise<ApiModel> {
+  return invoke('api_save_example', { projectPath, groupName, requestId, isError, example });
+}
+
+export function apiVerifyExample(
+  projectPath: string,
+  groupName: string,
+  requestId: string,
+  label: string,
+  isError: boolean
+): Promise<ApiModel> {
+  return invoke('api_verify_example', { projectPath, groupName, requestId, label, isError });
+}
+
+export function apiVerifyAll(projectPath: string): Promise<ApiModel> {
+  return invoke('api_verify_all', { projectPath });
+}
+
+export function apiPublishDocs(projectPath: string): Promise<string> {
+  return invoke('api_publish_docs', { projectPath });
+}

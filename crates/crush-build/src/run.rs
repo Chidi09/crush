@@ -143,7 +143,18 @@ pub enum RunEvent {
     /// snapshot first. `tool` is the detected ORM (prisma/drizzle/…), `path`
     /// is the backup file (empty if the snapshot was skipped/failed).
     DbSnapshot { tool: String, path: String },
+
+    // ── R1.4: Resource-exhaustion sentinels ─────────────────────────────
+    /// A resource exhaustion warning (e.g. process leaking memory).
+    ResourceWarn {
+        service: String,
+        rss_bytes: u64,
+        pct_ram: u8,
+    },
 }
+
+#[path = "diagnose.rs"]
+pub mod diagnose;
 
 /// Options that change the run flow's behaviour. Maps onto the CLI's
 /// boolean/option flags (`--dev`, `--rebuild`, `--repack`, `--no-proxy`,
@@ -184,6 +195,8 @@ pub struct RunOptions {
     /// Defaults to `None` (no restart) to preserve existing behaviour.
     #[serde(default)]
     pub restart_policy: Option<crush_reliability::restart::RestartPolicy>,
+    #[serde(default)]
+    pub sandbox: bool,
 }
 
 /// How the run-loop should react when the desired port is already bound.
@@ -864,7 +877,7 @@ pub async fn run_project(
     let handle = RunHandle { run_id, events: rx, abort: abort_tx };
 
     tokio::spawn(async move {
-        if let Err(e) = run_project_inner(&project_root, &data_dir, &options, &tx, &mut abort_rx).await {
+        if let Err(e) = run_project_inner(&project_root, &data_dir, &options, run_id, &tx, &mut abort_rx).await {
             let msg = e.to_string();
             if !msg.is_empty() {
                 let _ = tx.send(RunEvent::Warning { message: msg }).await;
@@ -880,6 +893,7 @@ async fn run_project_inner(
     project_root: &Path,
     data_dir: &Path,
     options: &RunOptions,
+    run_id: uuid::Uuid,
     tx: &tokio::sync::mpsc::Sender<RunEvent>,
     abort_rx: &mut tokio::sync::oneshot::Receiver<()>,
 ) -> anyhow::Result<()> {
@@ -954,7 +968,11 @@ async fn run_project_inner(
                                     native,
                                 }).await;
                                 dep_service_names.push(dep.name.clone());
-                                dep_env.extend(synthesize_dep_env(&dep));
+                                if options.sandbox {
+                                    dep_env.extend(setup_database_sandbox(project_root, &dep, run_id).await);
+                                } else {
+                                    dep_env.extend(synthesize_dep_env(&dep));
+                                }
                                 running_natives.push(running);
                             }
                             Ok(StartedService::Container(cname)) => {
@@ -964,7 +982,11 @@ async fn run_project_inner(
                                     native: false,
                                 }).await;
                                 dep_service_names.push(dep.name.clone());
-                                dep_env.extend(synthesize_dep_env(&dep));
+                                if options.sandbox {
+                                    dep_env.extend(setup_database_sandbox(project_root, &dep, run_id).await);
+                                } else {
+                                    dep_env.extend(synthesize_dep_env(&dep));
+                                }
                                 running_containers.push(RunningContainer {
                                     service_name: dep.name.clone(),
                                     container_name: cname,
@@ -1052,7 +1074,11 @@ async fn run_project_inner(
                             native: true,
                         }).await;
                         dep_service_names.push(dep.name.clone());
-                        dep_env.extend(synthesize_dep_env(&dep));
+                        if options.sandbox {
+                            dep_env.extend(setup_database_sandbox(project_root, &dep, run_id).await);
+                        } else {
+                            dep_env.extend(synthesize_dep_env(&dep));
+                        }
                         running_natives.push(running);
                     }
                     Ok(StartedService::Container(cname)) => {
@@ -1062,7 +1088,11 @@ async fn run_project_inner(
                             native: false,
                         }).await;
                         dep_service_names.push(dep.name.clone());
-                        dep_env.extend(synthesize_dep_env(&dep));
+                        if options.sandbox {
+                            dep_env.extend(setup_database_sandbox(project_root, &dep, run_id).await);
+                        } else {
+                            dep_env.extend(synthesize_dep_env(&dep));
+                        }
                         running_containers.push(RunningContainer {
                             service_name: dep.name.clone(),
                             container_name: cname,
@@ -1970,16 +2000,29 @@ async fn run_project_inner(
     );
     let mut explicitly_stopped = false;
 
+    let mut oom_monitor = crush_reliability::oom::OomMonitor::new_for_pid(
+        child.id().unwrap_or(0),
+        &project_name,
+        60,
+    );
+
     loop {
-        let (exit_code, was_aborted) = tokio::select! {
-            status = child.wait() => {
-                let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
-                (code, false)
-            }
-            _ = &mut *abort_rx => {
-                kill_tree(&mut child).await;
-                explicitly_stopped = true;
-                (130, true)
+        let (exit_code, was_aborted) = loop {
+            tokio::select! {
+                status = child.wait() => {
+                    let code = status.ok().and_then(|s| s.code()).unwrap_or(-1);
+                    break (code, false);
+                }
+                _ = &mut *abort_rx => {
+                    kill_tree(&mut child).await;
+                    explicitly_stopped = true;
+                    break (130, true);
+                }
+                _ = tokio::time::sleep(tokio::time::Duration::from_secs(5)) => {
+                    if let Ok(crush_reliability::oom::OomEvent::ResourceWarn { service, rss_bytes, pct_ram }) = oom_monitor.poll().await {
+                        let _ = tx.send(RunEvent::ResourceWarn { service, rss_bytes, pct_ram }).await;
+                    }
+                }
             }
         };
 
@@ -2047,6 +2090,11 @@ async fn run_project_inner(
                                 }
                             });
                         }
+                        oom_monitor = crush_reliability::oom::OomMonitor::new_for_pid(
+                            child.id().unwrap_or(0),
+                            &project_name,
+                            60,
+                        );
                         continue; // loop back to wait
                     }
                     Err(e) => {
@@ -2123,3 +2171,116 @@ async fn wait_for_port(port: u16, timeout_secs: u64) -> bool {
     }
     false
 }
+
+async fn setup_database_sandbox(
+    project_root: &Path,
+    dep: &crate::service_orchestrator::DepService,
+    run_id: uuid::Uuid,
+) -> Vec<(String, String)> {
+    let base_env = crate::service_orchestrator::synthesize_dep_env(dep);
+    let img = dep.image.split(':').next().unwrap_or(&dep.image);
+    let img_name = img.split('/').last().unwrap_or(img);
+
+    if !(img_name.starts_with("postgres") || img_name.starts_with("pgvector") || img_name.starts_with("timescale")) {
+        return base_env;
+    }
+
+    let host_port = dep.ports.first().map(|(hp, _)| *hp).unwrap_or(5432);
+    let default_url = format!("postgresql://postgres:postgres@localhost:{}/postgres", host_port);
+
+    // 1. Terminate other connections and drop stale sandboxes
+    if let Ok((client, connection)) = tokio_postgres::connect(&default_url, tokio_postgres::NoTls).await {
+        tokio::spawn(async move { let _ = connection.await; });
+        if let Ok(rows) = client.query("SELECT datname FROM pg_database WHERE datname LIKE 'crush_sandbox_%'", &[]).await {
+            for row in rows {
+                let datname: String = row.get(0);
+                let terminate_sql = format!(
+                    "SELECT pg_terminate_backend(pg_stat_activity.pid) FROM pg_stat_activity WHERE pg_stat_activity.datname = '{}' AND pid <> pg_backend_pid();",
+                    datname
+                );
+                let _ = client.execute(&terminate_sql, &[]).await;
+                let drop_sql = format!("DROP DATABASE IF EXISTS \"{}\";", datname);
+                let _ = client.execute(&drop_sql, &[]).await;
+            }
+        }
+    }
+
+    // 2. Ensure template DB exists
+    let has_template = if let Ok((client, connection)) = tokio_postgres::connect(&default_url, tokio_postgres::NoTls).await {
+        tokio::spawn(async move { let _ = connection.await; });
+        let rows = client.query("SELECT 1 FROM pg_database WHERE datname = 'crush_seed_template'", &[]).await;
+        rows.is_ok() && !rows.unwrap().is_empty()
+    } else {
+        false
+    };
+
+    if !has_template {
+        if let Ok((client, connection)) = tokio_postgres::connect(&default_url, tokio_postgres::NoTls).await {
+            tokio::spawn(async move { let _ = connection.await; });
+            let _ = client.execute("CREATE DATABASE crush_seed_template;", &[]).await;
+        }
+
+        let template_url = format!("postgresql://postgres:postgres@localhost:{}/crush_seed_template", host_port);
+
+        // Run migrations/seeds
+        if project_root.join("prisma").join("schema.prisma").exists() {
+            let _ = tokio::process::Command::new("npx")
+                .args(["prisma", "db", "push", "--accept-data-loss"])
+                .current_dir(project_root)
+                .env("DATABASE_URL", &template_url)
+                .output()
+                .await;
+            let _ = tokio::process::Command::new("npx")
+                .args(["prisma", "db", "seed"])
+                .current_dir(project_root)
+                .env("DATABASE_URL", &template_url)
+                .output()
+                .await;
+        } else if project_root.join("knexfile.js").exists() || project_root.join("knexfile.ts").exists() {
+            let _ = tokio::process::Command::new("npx")
+                .args(["knex", "migrate:latest"])
+                .current_dir(project_root)
+                .env("DATABASE_URL", &template_url)
+                .output()
+                .await;
+            let _ = tokio::process::Command::new("npx")
+                .args(["knex", "seed:run"])
+                .current_dir(project_root)
+                .env("DATABASE_URL", &template_url)
+                .output()
+                .await;
+        }
+
+        // Custom seeds.sql
+        let seed_sql = project_root.join(".crush").join("seeds").join("seed.sql");
+        if seed_sql.exists() {
+            if let Ok(sql) = std::fs::read_to_string(&seed_sql) {
+                if let Ok((client, connection)) = tokio_postgres::connect(&template_url, tokio_postgres::NoTls).await {
+                    tokio::spawn(async move { let _ = connection.await; });
+                    let _ = client.batch_execute(&sql).await;
+                }
+            }
+        }
+    }
+
+    // 3. Clone sandbox
+    let db_name = format!("crush_sandbox_{}", run_id.simple());
+    if let Ok((client, connection)) = tokio_postgres::connect(&default_url, tokio_postgres::NoTls).await {
+        tokio::spawn(async move { let _ = connection.await; });
+        let clone_sql = format!("CREATE DATABASE \"{}\" TEMPLATE crush_seed_template;", db_name);
+        if client.execute(&clone_sql, &[]).await.is_ok() {
+            return base_env.into_iter().map(|(k, v)| {
+                if k == "DATABASE_URL" {
+                    (k, format!("postgresql://postgres:postgres@localhost:{}/{}", host_port, db_name))
+                } else if k == "SPRING_DATASOURCE_URL" {
+                    (k, format!("jdbc:postgresql://localhost:{}/{}", host_port, db_name))
+                } else {
+                    (k, v)
+                }
+            }).collect();
+        }
+    }
+
+    base_env
+}
+

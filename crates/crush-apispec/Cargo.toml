@@ -1,0 +1,16 @@
+[package]
+name = "crush-apispec"
+version.workspace = true
+edition.workspace = true
+authors.workspace = true
+license.workspace = true
+repository.workspace = true
+description = "Pure unified API Model & Parsers (OpenAPI and Postman) for Crush"
+
+[dependencies]
+serde = { workspace = true }
+serde_json = { workspace = true }
+serde_yaml = { workspace = true }
+anyhow = { workspace = true }
+thiserror = { workspace = true }
+openapiv3 = "2.0.0"

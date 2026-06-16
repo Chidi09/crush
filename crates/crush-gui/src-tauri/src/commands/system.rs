@@ -172,3 +172,105 @@ pub async fn system_info(state: State<'_, AppState>) -> Result<SystemInfo, Strin
         disk_breakdown: breakdown,
     })
 }
+
+/// Find a project's *own* icon (favicon/logo) on disk and return it as a data URL.
+/// This is what makes the dashboard + deployments rows show the real project brand
+/// instead of falling back to the stack logo. Returns None if nothing suitable is
+/// found, so the caller can render its stack-icon fallback.
+#[tauri::command]
+pub async fn find_project_icon(project_path: String) -> Result<Option<String>, String> {
+    tokio::task::spawn_blocking(move || scan_project_icon(Path::new(&project_path)))
+        .await
+        .map_err(|e| e.to_string())
+}
+
+fn scan_project_icon(root: &Path) -> Option<String> {
+    if !root.is_dir() {
+        return None;
+    }
+    // Highest-fidelity brand assets first, generic favicons last.
+    const CANDIDATES: &[&str] = &[
+        "public/apple-touch-icon.png",
+        "static/apple-touch-icon.png",
+        "public/logo.svg",
+        "static/logo.svg",
+        "src/assets/logo.svg",
+        "assets/logo.svg",
+        "public/logo.png",
+        "static/logo.png",
+        "src/assets/logo.png",
+        "assets/logo.png",
+        "public/logo192.png",
+        "public/icon.png",
+        "static/icon.png",
+        "public/icon.svg",
+        "src-tauri/icons/128x128.png",
+        "public/favicon.svg",
+        "static/favicon.svg",
+        "public/favicon.ico",
+        "static/favicon.ico",
+        "src/favicon.ico",
+        "favicon.ico",
+        "favicon.png",
+    ];
+
+    const MAX_BYTES: u64 = 1024 * 1024; // 1MB cap — icons are tiny; avoid loading art.
+
+    for rel in CANDIDATES {
+        let path = root.join(rel);
+        let Ok(meta) = std::fs::metadata(&path) else { continue };
+        if !meta.is_file() || meta.len() == 0 || meta.len() > MAX_BYTES {
+            continue;
+        }
+        let Ok(bytes) = std::fs::read(&path) else { continue };
+        let mime = match path.extension().and_then(|e| e.to_str()).map(|e| e.to_ascii_lowercase()).as_deref() {
+            Some("svg") => "image/svg+xml",
+            Some("png") => "image/png",
+            Some("jpg") | Some("jpeg") => "image/jpeg",
+            Some("gif") => "image/gif",
+            Some("webp") => "image/webp",
+            Some("ico") => "image/x-icon",
+            _ => "application/octet-stream",
+        };
+        use base64::Engine;
+        let b64 = base64::engine::general_purpose::STANDARD.encode(&bytes);
+        return Some(format!("data:{mime};base64,{b64}"));
+    }
+    None
+}
+
+#[derive(Debug, Clone, Serialize)]
+pub struct ProbeResult {
+    pub ok: bool,
+    pub status: u16,
+    pub latency_ms: u64,
+}
+
+/// Probe a deployment URL to see if it's *actually live* right now (not just
+/// "we recorded a deploy once"). A reachable response — even a 4xx — means the
+/// host is up; only network failures/timeouts count as down.
+#[tauri::command]
+pub async fn probe_deployment(url: String) -> Result<ProbeResult, String> {
+    if url.trim().is_empty() {
+        return Ok(ProbeResult { ok: false, status: 0, latency_ms: 0 });
+    }
+    let client = reqwest::Client::builder()
+        .timeout(std::time::Duration::from_secs(6))
+        .danger_accept_invalid_certs(true) // self-signed/edge certs shouldn't read as "down"
+        .user_agent("crush-deploy-probe")
+        .build()
+        .map_err(|e| e.to_string())?;
+
+    let started = std::time::Instant::now();
+    match client.get(&url).send().await {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            Ok(ProbeResult {
+                ok: status < 500,
+                status,
+                latency_ms: started.elapsed().as_millis() as u64,
+            })
+        }
+        Err(_) => Ok(ProbeResult { ok: false, status: 0, latency_ms: started.elapsed().as_millis() as u64 }),
+    }
+}

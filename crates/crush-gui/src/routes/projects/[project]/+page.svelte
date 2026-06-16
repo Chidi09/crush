@@ -6,6 +6,7 @@
   import DeployWizard from '$lib/components/DeployWizard.svelte';
   import * as api from '$lib/tauri';
   import { toast } from '$lib/stores/toast.svelte.ts';
+  import { confirmAction } from '$lib/stores/confirm.svelte.ts';
   import type { DeploymentRecord, DeploymentDetail, GitInfo, BranchInfo } from '$lib/tauri';
 
   let project = $derived($page.params.project || '');
@@ -113,7 +114,7 @@
       const msg = String((e as any)?.message ?? e);
       if (!force && /already exists/i.test(msg)) {
         ejecting = false;
-        if (confirm('Dockerfile / docker-compose.yml already exist. Overwrite them?')) {
+        if (await confirmAction({ title: 'Overwrite files?', message: 'Dockerfile / docker-compose.yml already exist. Overwrite them?', confirmText: 'Overwrite', danger: true })) {
           return doEject(true);
         }
         return;

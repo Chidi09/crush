@@ -489,7 +489,7 @@ async fn obtain_acme_cert(domain: &str, account_path: &Path, state: &L7State) ->
     Ok(())
 }
 
-pub async fn run_l7_gateway(domains_file: PathBuf, certs_dir: PathBuf) -> std::io::Result<()> {
+pub async fn run_l7_gateway(domains_file: PathBuf, certs_dir: PathBuf, mut shutdown: tokio::sync::broadcast::Receiver<()>) -> std::io::Result<()> {
     std::fs::create_dir_all(&certs_dir).ok();
     let certs: CertMap = Arc::new(StdRwLock::new(HashMap::new()));
 
@@ -527,22 +527,41 @@ pub async fn run_l7_gateway(domains_file: PathBuf, certs_dir: PathBuf) -> std::i
     tokio::spawn(acme_worker(state.clone()));
 
     // Port 80: ACME challenges + HTTPS redirect.
+    let (conn_tx, mut conn_rx) = tokio::sync::mpsc::channel::<()>(1);
+    
     {
         let st80 = state.clone();
+        let mut shutdown80 = shutdown.resubscribe();
+        let conn_tx80 = conn_tx.clone();
         tokio::spawn(async move {
             let Ok(l80) = TcpListener::bind::<SocketAddr>(([0, 0, 0, 0], 80).into()).await else {
                 eprintln!("gateway: could not bind :80 (ACME challenges + redirect disabled)");
                 return;
             };
             loop {
-                let Ok((stream, _)) = l80.accept().await else { continue };
-                let st = st80.clone();
-                tokio::spawn(async move {
-                    let io = TokioIo::new(stream);
-                    let _ = http1::Builder::new()
-                        .serve_connection(io, service_fn(move |req| handle_port80(req, st.clone())))
-                        .await;
-                });
+                tokio::select! {
+                    _ = shutdown80.recv() => break,
+                    res = l80.accept() => {
+                        let Ok((stream, _)) = res else { continue };
+                        let st = st80.clone();
+                        let tx80 = conn_tx80.clone();
+                        let mut task_shutdown = shutdown80.resubscribe();
+                        tokio::spawn(async move {
+                            let _tx = tx80;
+                            let io = TokioIo::new(stream);
+                            let mut conn = http1::Builder::new()
+                                .serve_connection(io, service_fn(move |req| handle_port80(req, st.clone())));
+                            let mut conn = std::pin::pin!(conn);
+                            tokio::select! {
+                                _ = &mut conn => {}
+                                _ = task_shutdown.recv() => {
+                                    conn.as_mut().graceful_shutdown();
+                                    let _ = conn.await;
+                                }
+                            }
+                        });
+                    }
+                }
             }
         });
     }
@@ -559,28 +578,53 @@ pub async fn run_l7_gateway(domains_file: PathBuf, certs_dir: PathBuf) -> std::i
     println!("L7 Gateway listening on https://0.0.0.0:443 (+ :80 redirect/ACME)");
 
     loop {
-        let (stream, _peer) = match listener.accept().await {
-            Ok(pair) => pair,
-            Err(_) => continue,
-        };
-        let acceptor = acceptor.clone();
-        let state = state.clone();
-        tokio::spawn(async move {
-            match acceptor.accept(stream).await {
-                Ok(tls_stream) => {
-                    let io = TokioIo::new(tls_stream);
-                    if let Err(e) = http1::Builder::new()
-                        .serve_connection(io, service_fn(move |req| handle_l7_request(req, state.clone())))
-                        .with_upgrades()
-                        .await
-                    {
-                        eprintln!("HTTP serving error: {}", e);
-                    }
-                }
-                Err(e) => eprintln!("TLS error: {}", e),
+        tokio::select! {
+            _ = shutdown.recv() => {
+                println!("gateway: graceful shutdown initiated, draining connections...");
+                break;
             }
-        });
+            res = listener.accept() => {
+                let (stream, _peer) = match res {
+                    Ok(pair) => pair,
+                    Err(_) => continue,
+                };
+                let acceptor = acceptor.clone();
+                let state = state.clone();
+                let mut shutdown_clone = shutdown.resubscribe();
+                let tx443 = conn_tx.clone();
+                tokio::spawn(async move {
+                    let _tx = tx443;
+                    match acceptor.accept(stream).await {
+                        Ok(tls_stream) => {
+                            let io = TokioIo::new(tls_stream);
+                            let mut conn = http1::Builder::new()
+                                .serve_connection(io, service_fn(move |req| handle_l7_request(req, state.clone())))
+                                .with_upgrades();
+                            let mut conn = std::pin::pin!(conn);
+                            tokio::select! {
+                                res = &mut conn => {
+                                    if let Err(e) = res {
+                                        eprintln!("HTTP serving error: {}", e);
+                                    }
+                                }
+                                _ = shutdown_clone.recv() => {
+                                    conn.as_mut().graceful_shutdown();
+                                    let _ = conn.await;
+                                }
+                            }
+                        }
+                        Err(e) => eprintln!("TLS error: {}", e),
+                    }
+                });
+            }
+        }
     }
+    
+    drop(conn_tx);
+    // Wait for in-flight requests to complete (bounded to 30s)
+    let _ = tokio::time::timeout(Duration::from_secs(30), conn_rx.recv()).await;
+    println!("gateway: shutdown complete.");
+    Ok(())
 }
 
 #[cfg(test)]

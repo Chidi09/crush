@@ -9,6 +9,7 @@
     { href: '/deployments', icon: 'rocket', label: 'Deployments' },
     { href: '/services', icon: 'services', label: 'Services' },
     { href: '/database', icon: 'database', label: 'Database' },
+    { href: '/api', icon: 'api', label: 'API Studio' },
     { href: '/storage', icon: 'box', label: 'Storage' },
     { href: '/domains', icon: 'globe', label: 'Domains' },
     { href: '/servers', icon: 'server', label: 'Servers' },

@@ -24,3 +24,6 @@ dist/
 
 crush-*.exe
 *.exe
+
+# stray downloaded archives (e.g. favicon bundles)
+*.zip

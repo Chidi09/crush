@@ -4,7 +4,10 @@
   import { page } from '$app/stores';
   import Sidebar from '$lib/components/Sidebar.svelte';
   import Toaster from '$lib/components/Toaster.svelte';
+  import CommandPalette from '$lib/components/CommandPalette.svelte';
+  import ConfirmDialog from '$lib/components/ConfirmDialog.svelte';
   import { installNativeGuard } from '$lib/native-guard';
+  import { installErrorGuard } from '$lib/error-guard';
   import { startPolling, stopPolling } from '$lib/stores/containers.svelte.ts';
   import { refreshServices } from '$lib/stores/services.svelte.ts';
   import { refreshImages } from '$lib/stores/images.svelte.ts';
@@ -13,6 +16,7 @@
   // Start all background polling here so individual pages never restart it on navigation.
   onMount(() => {
     installNativeGuard();
+    installErrorGuard();
     startPolling();
     refreshServices();
     refreshImages();
@@ -33,6 +37,8 @@
     {/key}
   </main>
   <Toaster />
+  <CommandPalette />
+  <ConfirmDialog />
 </div>
 
 <style>

@@ -1,16 +1,12 @@
 @import "tailwindcss";
 
 @theme {
-  /* Orange is the brand mark — reserve it for deliberate brand moments
-     (logo, version badge). Default controls use the neutral primary below. */
   --color-crush-orange: #e05540;
   --color-crush-orange-light: #f06a55;
   --color-crush-orange-dark: #c04530;
-  /* Neutral primary — Vercel-style white CTA on the true-dark surface. */
   --color-crush-primary: #ededed;
   --color-crush-primary-hover: #ffffff;
   --color-crush-on-primary: #000000;
-  /* Vercel-style true-dark: pure-black app bg, off-black cards, thin neutral borders */
   --color-crush-black: #000000;
   --color-crush-dark: #0a0a0a;
   --color-crush-surface: #141414;
@@ -24,177 +20,171 @@
   --font-mono: 'Geist Mono', 'JetBrains Mono', 'Fira Code', 'Cascadia Code', 'Consolas', monospace;
 }
 
+:root {
+  /* Make native controls (the <select> dropdown popup, scrollbars, date pickers)
+     render dark — otherwise the option list is white-on-white on Windows. */
+  color-scheme: dark;
+  /* V1: Semantic surfaces */
+  --bg: var(--color-crush-black);
+  --surface: var(--color-crush-surface);
+  --surface-raised: #1e1e1e;
+  --surface-hover: #2a2a2a;
+  --overlay: rgba(0, 0, 0, 0.7);
+  --border: var(--color-crush-border);
+  --border-strong: #333333;
+  --text: var(--color-crush-text);
+  --text-muted: var(--color-crush-text-muted);
+  --text-faint: #4a4a52;
+  --crush-orange: var(--color-crush-orange);
+
+  /* V1: Status palette */
+  --status-success: #10b981;
+  --status-warn: #f59e0b;
+  --status-error: #ef4444;
+  --status-info: #3b82f6;
+  --status-neutral: #8a8a93;
+
+  /* V1: Data-viz palette (8 hues) */
+  --viz-1: #8b5cf6;
+  --viz-2: #ec4899;
+  --viz-3: #14b8a6;
+  --viz-4: #f97316;
+  --viz-5: #0ea5e9;
+  --viz-6: #eab308;
+  --viz-7: #a855f7;
+  --viz-8: #f43f5e;
+
+  /* V1: Elevation */
+  --elevation-1: 0 1px 2px rgba(0,0,0,0.5);
+  --elevation-2: 0 4px 12px rgba(0,0,0,0.5);
+  --elevation-3: 0 8px 24px rgba(0,0,0,0.5);
+  --elevation-4: 0 16px 48px rgba(0,0,0,0.6);
+  --inner-glow: inset 0 1px 0 rgba(255, 255, 255, 0.05);
+
+  /* V1: Radius */
+  --radius-sm: 4px;
+  --radius-md: 8px;
+  --radius-lg: 12px;
+  --radius-pill: 9999px;
+
+  /* V1: Spacing (Comfortable) */
+  --space-1: 4px;
+  --space-2: 8px;
+  --space-3: 16px;
+  --space-4: 24px;
+  --space-5: 32px;
+
+  /* V1: Motion tokens */
+  --duration-fast: 120ms;
+  --duration-base: 200ms;
+  --duration-slow: 320ms;
+
+  --ease-standard: cubic-bezier(0.2, 0, 0, 1);
+  --ease-emphasized: cubic-bezier(0.2, 0, 0, 1);
+  --ease-spring: cubic-bezier(0.175, 0.885, 0.32, 1.275);
+}
+
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f9fafb;
+  --surface: #ffffff;
+  --surface-raised: #ffffff;
+  --surface-hover: #f3f4f6;
+  --overlay: rgba(0, 0, 0, 0.3);
+  --border: #e5e7eb;
+  --border-strong: #d1d5db;
+  --text: #111827;
+  --text-muted: #6b7280;
+  --text-faint: #9ca3af;
+
+  --elevation-1: 0 1px 2px rgba(0,0,0,0.05);
+  --elevation-2: 0 4px 12px rgba(0,0,0,0.08);
+  --elevation-3: 0 8px 24px rgba(0,0,0,0.12);
+  --elevation-4: 0 16px 48px rgba(0,0,0,0.16);
+  --inner-glow: inset 0 1px 0 rgba(255, 255, 255, 0.5);
+}
+
+:root[data-density="compact"] {
+  --space-1: 2px;
+  --space-2: 4px;
+  --space-3: 8px;
+  --space-4: 16px;
+  --space-5: 24px;
+}
+
 * {
   scrollbar-width: thin;
-  scrollbar-color: var(--color-crush-border) var(--color-crush-black);
+  scrollbar-color: var(--border) transparent;
 }
 
 body {
   margin: 0;
-  background: var(--color-crush-black);
-  color: var(--color-crush-text);
+  background: var(--bg);
+  color: var(--text);
   font-family: var(--font-sans);
   min-height: 100vh;
+  transition: background-color var(--duration-base) var(--ease-standard), color var(--duration-base) var(--ease-standard);
 }
 
 ::selection {
-  background: rgba(255, 255, 255, 0.2);
+  background: var(--crush-orange);
   color: white;
 }
 
-.crush-card {
-  background: var(--color-crush-dark);
-  border: 1px solid var(--color-crush-border);
-  border-radius: 0.75rem;
-  transition: border-color 0.15s;
+/* Native <select> popup options — force readable dark colors on every platform. */
+select option,
+select optgroup {
+  background: var(--surface-raised);
+  color: var(--text);
 }
 
-.crush-card:hover {
-  border-color: #333333;
+/* Base interactive elements */
+button, a {
+  transition: all var(--duration-fast) var(--ease-standard);
 }
-
-.crush-badge {
-  display: inline-flex;
-  align-items: center;
-  border-radius: 9999px;
-  border: 1px solid rgba(224, 85, 64, 0.2);
-  background: rgba(224, 85, 64, 0.05);
-  color: var(--color-crush-orange);
-  text-transform: uppercase;
-  letter-spacing: 0.05em;
-  font-size: 0.75rem;
-  padding: 0.125rem 0.625rem;
+button:active:not(:disabled) {
+  transform: scale(0.98);
 }
-
-.crush-mono-panel {
-  background: rgba(9, 9, 11, 0.9);
-  font-family: var(--font-mono);
-  font-size: 11px;
-  border-radius: 0.75rem;
-  overflow: hidden;
+:focus-visible {
+  outline: 2px solid var(--crush-orange);
+  outline-offset: 2px;
 }
-
-.crush-glow {
-  position: fixed;
-  pointer-events: none;
-  width: 600px;
-  height: 600px;
-  border-radius: 50%;
-  background: rgba(255, 255, 255, 0.025);
-  filter: blur(140px);
-  z-index: 0;
-}
-
-.crush-input {
-  background: var(--color-crush-surface);
-  border: 1px solid var(--color-crush-border);
-  border-radius: 0.75rem;
-  color: var(--color-crush-text);
-  padding: 0.5rem 0.75rem;
-  font-size: 0.875rem;
+:focus:not(:focus-visible) {
   outline: none;
 }
 
+/* Utilities */
+.crush-card {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  box-shadow: var(--elevation-1), var(--inner-glow);
+  transition: border-color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
+}
+.crush-card:hover {
+  border-color: var(--border-strong);
+  box-shadow: var(--elevation-2), var(--inner-glow);
+}
+
+.crush-input {
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: var(--radius-md);
+  color: var(--text);
+  padding: calc(var(--space-2) - 2px) var(--space-2);
+  transition: border-color var(--duration-fast) var(--ease-standard), box-shadow var(--duration-fast) var(--ease-standard);
+}
 .crush-input:focus {
-  border-color: var(--color-crush-muted);
-  box-shadow: 0 0 0 2px rgba(255, 255, 255, 0.12);
+  border-color: var(--crush-orange);
+  box-shadow: 0 0 0 2px rgba(224, 85, 64, 0.2);
 }
 
-@keyframes fadeIn {
-  from { opacity: 0; }
-  to { opacity: 1; }
-}
-
-@keyframes slideUp {
-  from { opacity: 0; transform: translateY(20px); }
-  to { opacity: 1; transform: translateY(0); }
-}
-
-.animate-fade-in { animation: fadeIn 0.5s ease-out; }
-.animate-slide-up { animation: slideUp 0.5s ease-out; }
-
-/* ── Global micro-interactions (professional polish, applied app-wide) ───── */
-
-/* Smooth, tactile buttons + links everywhere */
-button { transition: background 0.15s ease, color 0.15s ease, border-color 0.15s ease, transform 0.07s ease, opacity 0.15s ease, box-shadow 0.15s ease; }
-button:active:not(:disabled) { transform: translateY(0.5px) scale(0.985); }
-a { transition: color 0.15s ease, opacity 0.15s ease; }
-
-/* Keyboard focus ring — accessible + polished */
-:focus-visible { outline: 2px solid rgba(255, 255, 255, 0.5); outline-offset: 2px; }
-:focus:not(:focus-visible) { outline: none; }
-
-/* Cards gain a soft lift on hover (subtle — no jumpiness) */
-.crush-card:hover { box-shadow: 0 6px 22px rgba(0, 0, 0, 0.28); }
-
-/* Inputs: animated focus glow */
-.crush-input { transition: border-color 0.15s ease, box-shadow 0.15s ease; }
-
-/* Skeleton shimmer — use class="skeleton" on a sized placeholder box */
-.skeleton { position: relative; overflow: hidden; background: var(--color-crush-surface); border-radius: 6px; }
-.skeleton::after {
-  content: ''; position: absolute; inset: 0; transform: translateX(-100%);
-  background: linear-gradient(90deg, transparent, rgba(255, 255, 255, 0.06), transparent);
-  animation: shimmer 1.4s infinite;
-}
-@keyframes shimmer { 100% { transform: translateX(100%); } }
-
-/* Staggered entrance for lists — add class="stagger" on the container */
-@keyframes riseIn { from { opacity: 0; transform: translateY(7px); } to { opacity: 1; transform: translateY(0); } }
-.stagger > * { animation: riseIn 0.34s cubic-bezier(0.22, 1, 0.36, 1) both; }
-.stagger > *:nth-child(1) { animation-delay: 0.02s; }
-.stagger > *:nth-child(2) { animation-delay: 0.05s; }
-.stagger > *:nth-child(3) { animation-delay: 0.08s; }
-.stagger > *:nth-child(4) { animation-delay: 0.11s; }
-.stagger > *:nth-child(5) { animation-delay: 0.14s; }
-.stagger > *:nth-child(6) { animation-delay: 0.17s; }
-.stagger > *:nth-child(7) { animation-delay: 0.2s; }
-.stagger > *:nth-child(8) { animation-delay: 0.23s; }
-
-/* A gentle pop for value/badge changes — add class="pop" */
-@keyframes pop { 0% { transform: scale(0.9); opacity: 0.6; } 60% { transform: scale(1.04); } 100% { transform: scale(1); opacity: 1; } }
-.pop { animation: pop 0.22s ease-out; }
-
-/* ── Stack-aware Run-button glows (see $lib/stack.ts) ──────────────────── */
-/* One animated conic rainbow halo, graduated by intensity vars:
-   turbo = vivid + a crisp ring · fullstack = soft · spa = faint. */
-@property --fx-angle { syntax: '<angle>'; initial-value: 0deg; inherits: false; }
-@keyframes fx-spin { to { --fx-angle: 360deg; } }
-
-.fx-rainbow, .fx-rainbow-soft, .fx-rainbow-faint { position: relative; z-index: 0; }
-
-/* Outer bloom — a strong rainbow glow that bleeds OUT from the edge. Sits
-   behind the button (z-index -1), so the button face stays clean. */
-.fx-rainbow::before, .fx-rainbow-soft::before, .fx-rainbow-faint::before {
-  content: ''; position: absolute; inset: -3px; border-radius: inherit; z-index: -1;
-  background: conic-gradient(from var(--fx-angle),
-    #ff2d55, #ff8a00, #ffe600, #36e27b, #00b3ff, #8a5cff, #ff2d55);
-  filter: blur(var(--fx-blur, 9px));
-  opacity: var(--fx-op, 1);
-  animation: fx-spin var(--fx-speed, 3s) linear infinite;
-}
-
-/* Crisp bright rainbow RING hugging the very edge (the glow-edge itself).
-   Rendered just outside the button via the padding+mask trick — on all tiers. */
-.fx-rainbow::after, .fx-rainbow-soft::after, .fx-rainbow-faint::after {
-  content: ''; position: absolute; inset: -2px; border-radius: inherit; z-index: -1;
-  background: conic-gradient(from var(--fx-angle),
-    #ff2d55, #ff8a00, #ffe600, #36e27b, #00b3ff, #8a5cff, #ff2d55);
-  padding: var(--fx-ring, 2.5px);
-  -webkit-mask: linear-gradient(#000 0 0) content-box, linear-gradient(#000 0 0);
-  -webkit-mask-composite: xor; mask-composite: exclude;
-  opacity: var(--fx-ring-op, 1);
-  animation: fx-spin var(--fx-speed, 3s) linear infinite;
-}
-
-/* turbo — strongest bloom */
-.fx-rainbow       { --fx-op: 1;    --fx-blur: 11px; --fx-speed: 3s; --fx-ring: 2.5px; }
-/* fullstack — strong */
-.fx-rainbow-soft  { --fx-op: 0.92; --fx-blur: 9px;  --fx-speed: 5s; --fx-ring: 2.5px; }
-/* spa — present but lighter bloom (still a crisp edge ring) */
-.fx-rainbow-faint { --fx-op: 0.7;  --fx-blur: 8px;  --fx-speed: 7s; --fx-ring: 2px; --fx-ring-op: 0.9; }
-
-/* Respect the user's motion preference — kill non-essential animation */
+/* Reduced Motion */
 @media (prefers-reduced-motion: reduce) {
-  *, *::before, *::after { animation-duration: 0.001ms !important; animation-iteration-count: 1 !important; transition-duration: 0.001ms !important; }
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }

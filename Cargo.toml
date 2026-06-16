@@ -17,10 +17,11 @@ members = [
     "crates/crush-ai",
     "crates/crush-tui",
     "crates/crush-api",
+    "crates/crush-apispec",
     "crates/crush-proto",
     "crates/crush-deploy",
     "crates/crush-services",
-    "crates/crush-gui/src-tauri",
+    "crates/crush-gui/src-tauri", "crates/crush-toolchain", "crates/crush-doctor",
 ]
 # Built separately by crush-network's build script (needs the BPF target);
 # must not resolve as a member of this workspace.
@@ -96,6 +97,7 @@ crush-runtime-macos = { path = "crates/crush-runtime-macos" }
 crush-runtime-wasm = { path = "crates/crush-runtime-wasm" }
 crush-tui = { path = "crates/crush-tui" }
 crush-api = { path = "crates/crush-api" }
+crush-apispec = { path = "crates/crush-apispec" }
 crush-reliability = { path = "crates/crush-reliability" }
 crush-volume = { path = "crates/crush-volume" }
 crush-deploy = { path = "crates/crush-deploy" }

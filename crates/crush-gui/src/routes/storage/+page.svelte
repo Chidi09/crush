@@ -1,6 +1,13 @@
 <script lang="ts">
-  import { onMount } from 'svelte';
+  import { onMount, onDestroy } from 'svelte';
+  import { getCurrentWebview } from '@tauri-apps/api/webview';
   import Icon from '$lib/components/Icon.svelte';
+  import Drawer from '$lib/components/Drawer.svelte';
+  import ProgressRing from '$lib/components/ProgressRing.svelte';
+  import SegmentedControl from '$lib/components/SegmentedControl.svelte';
+  import Skeleton from '$lib/components/Skeleton.svelte';
+  import Breadcrumb from '$lib/components/Breadcrumb.svelte';
+  import { confirmAction, promptInput } from '$lib/stores/confirm.svelte.ts';
   import * as api from '$lib/tauri';
   import type { S3Connection, BucketInfo, ObjectInfo, ObjectMetadata } from '$lib/tauri';
 
@@ -12,6 +19,15 @@
   let objects = $state<ObjectInfo[]>([]);
   let currentPrefix = $state(''); // e.g. 'images/'
   let loading = $state(false);
+  
+  // Phase O View States
+  let viewMode = $state<'grid' | 'list'>('grid');
+  let isGridView = $derived(viewMode === 'grid');
+  let isDragging = $state(false);
+  let uploadProgress = $state<Record<string, number>>({});
+  // Lazy image-thumbnail cache: object key → presigned URL ('' = failed/in-flight).
+  let thumbCache = $state<Record<string, string>>({});
+  const IMG_RE = /\.(png|jpe?g|gif|webp|avif|bmp|svg)$/i;
   
   // Selection
   let selectedKeys = $state<string[]>([]);
@@ -104,18 +120,17 @@
     ];
   });
 
-  // Breadcrumbs navigation
-  let breadcrumbs = $derived.by(() => {
-    if (!currentPrefix) return [];
+  // Breadcrumbs navigation (Phase O1)
+  let breadcrumbItems = $derived.by(() => {
+    let items = [{ name: selectedBucket || 'Home', prefix: '' }];
+    if (!currentPrefix) return items;
     const parts = currentPrefix.split('/').filter(Boolean);
     let cumulative = '';
-    return parts.map(part => {
+    for (const part of parts) {
       cumulative += part + '/';
-      return {
-        name: part,
-        prefix: cumulative,
-      };
-    });
+      items.push({ name: part, prefix: cumulative });
+    }
+    return items;
   });
 
   // Total bucket size / object count
@@ -125,9 +140,54 @@
     return { count, size };
   });
 
+  // Lazily fetch presigned thumbnail URLs for image objects in the current view.
+  // Capped so a folder of thousands of images doesn't fan out into thousands of
+  // presign calls; the rest fall back to the file-type icon.
+  async function ensureThumbs(items: any[]) {
+    if (!activeConn || !selectedBucket) return;
+    let fetched = 0;
+    for (const it of items) {
+      if (fetched >= 60) break;
+      if (it.isFolder || !IMG_RE.test(it.name)) continue;
+      if (thumbCache[it.key] !== undefined) continue;
+      thumbCache[it.key] = ''; // mark in-flight to avoid duplicate fetches
+      fetched++;
+      try {
+        thumbCache[it.key] = await api.storageGetPresignedUrl(activeConn, selectedBucket, it.key, 'GET', 300);
+      } catch {
+        thumbCache[it.key] = '';
+      }
+    }
+  }
+
+  $effect(() => {
+    if (isGridView && currentItems.length) ensureThumbs(currentItems);
+  });
+
   // --- Actions & Helpers ---
   onMount(async () => {
     await loadConnections();
+
+    // Real OS-level drag-and-drop (Tauri webview event carries actual paths).
+    try {
+      unlistenDrop = await getCurrentWebview().onDragDropEvent((event) => {
+        const p = event.payload;
+        if (p.type === 'enter' || p.type === 'over') {
+          if (selectedBucket) isDragging = true;
+        } else if (p.type === 'leave') {
+          isDragging = false;
+        } else if (p.type === 'drop') {
+          isDragging = false;
+          if (selectedBucket && p.paths?.length) uploadPaths(p.paths);
+        }
+      });
+    } catch (e) {
+      console.error('drag-drop registration failed', e);
+    }
+  });
+
+  onDestroy(() => {
+    if (unlistenDrop) unlistenDrop();
   });
 
   async function loadConnections() {
@@ -177,6 +237,7 @@
   async function loadObjects() {
     if (!activeConn || !selectedBucket) return;
     loading = true;
+    thumbCache = {};
     try {
       objects = await api.storageListObjects(activeConn, selectedBucket);
     } catch (e) {
@@ -204,7 +265,7 @@
 
   async function deleteBucket(bucketName: string) {
     if (!activeConn) return;
-    const force = confirm(`Bucket "${bucketName}" may contain objects. Force delete bucket and all its objects?`);
+    const force = await confirmAction({ title: 'Delete bucket', message: `Bucket "${bucketName}" may contain objects. Force delete the bucket and all its objects?`, confirmText: 'Delete bucket', danger: true });
     if (!force) return;
     loading = true;
     try {
@@ -221,25 +282,51 @@
     }
   }
 
+  // Real batch upload progress (files completed / total). The single-shot S3
+  // PUT has no byte-level progress, so we report honest per-file completion.
+  let uploadBatch = $state<{ done: number; total: number; name: string; errors: number } | null>(null);
+
+  // Upload a set of real local file paths into the current bucket/prefix.
+  async function uploadPaths(paths: string[]) {
+    if (!activeConn || !selectedBucket || paths.length === 0) return;
+    uploadBatch = { done: 0, total: paths.length, name: '', errors: 0 };
+    for (const path of paths) {
+      const filename = path.split(/[/\\]/).pop() || 'file';
+      uploadBatch = { ...uploadBatch, name: filename };
+      const key = currentPrefix + filename;
+      try {
+        await api.storageUploadObject(activeConn, selectedBucket, key, path);
+      } catch (e) {
+        console.error('upload failed', key, e);
+        uploadBatch = { ...uploadBatch, errors: uploadBatch.errors + 1 };
+      }
+      uploadBatch = { ...uploadBatch, done: uploadBatch.done + 1 };
+    }
+    const errs = uploadBatch.errors;
+    uploadBatch = null;
+    await loadObjects();
+    if (errs > 0) alert(`${errs} file(s) failed to upload.`);
+  }
+
   // Object Actions
   async function uploadFile() {
     if (!activeConn || !selectedBucket) return;
     try {
       const path = await api.storagePickUploadFile();
       if (!path) return;
-      
-      loading = true;
-      // Get filename from path
-      const filename = path.split(/[/\\]/).pop() || 'file';
-      const key = currentPrefix + filename;
-      
-      await api.storageUploadObject(activeConn, selectedBucket, key, path);
-      await loadObjects();
+      await uploadPaths([path]);
     } catch (e) {
       alert(`Upload failed: ${String(e)}`);
-    } finally {
-      loading = false;
     }
+  }
+
+  // Phase O3 Drag and Drop — wired to Tauri's webview drag-drop events
+  // (registered in onMount), which carry real filesystem paths. The browser
+  // DragEvent path can't see real paths in a Tauri webview, so it's a no-op.
+  let unlistenDrop: (() => void) | null = null;
+  async function handleDrop(e: DragEvent) {
+    e.preventDefault();
+    isDragging = false;
   }
 
   async function downloadObject(item: ObjectInfo) {
@@ -261,7 +348,7 @@
 
   async function deleteSelectedObjects() {
     if (!activeConn || !selectedBucket || selectedKeys.length === 0) return;
-    if (!confirm(`Delete ${selectedKeys.length} selected object(s)?`)) return;
+    if (!await confirmAction({ title: 'Delete objects', message: `Delete ${selectedKeys.length} selected object(s)?`, confirmText: 'Delete', danger: true })) return;
     
     loading = true;
     try {
@@ -277,7 +364,7 @@
 
   async function createFolder() {
     if (!activeConn || !selectedBucket) return;
-    const folderName = prompt('Enter folder name:');
+    const folderName = await promptInput({ title: 'New folder', placeholder: 'images', confirmText: 'Create' });
     if (!folderName || !folderName.trim()) return;
     
     loading = true;
@@ -335,7 +422,7 @@
       alert('Cannot delete default local MinIO connection.');
       return;
     }
-    if (!confirm(`Delete S3 connection "${activeConn.name}"?`)) return;
+    if (!await confirmAction({ title: 'Delete connection', message: `Delete S3 connection "${activeConn.name}"?`, confirmText: 'Delete', danger: true })) return;
     
     try {
       const updated = connections.filter(c => c.name !== activeConn!.name);
@@ -473,20 +560,25 @@
   }
 
   // Sync / folder mirror helper
+  let syncing = $state(false);
   async function syncLocalFolder() {
     if (!activeConn || !selectedBucket) return;
     try {
       const folderPath = await api.pickProjectDirectory();
       if (!folderPath) return;
-      
-      loading = true;
-      // We can scan files in the local folder and upload them one by one.
-      alert(`Syncing is simulated: selected local directory ${folderPath} will mirror into S3 bucket "${selectedBucket}"`);
+
+      syncing = true;
+      // Recursively mirror the local directory into the bucket under the current prefix.
+      const res = await api.storageUploadDirectory(activeConn, selectedBucket, currentPrefix, folderPath);
       await loadObjects();
+      const mb = (res.total_bytes / (1024 * 1024)).toFixed(1);
+      let msg = `Synced ${res.uploaded}/${res.total_files} files (${mb} MB) into "${selectedBucket}".`;
+      if (res.errors.length) msg += `\n\n${res.errors.length} failed:\n${res.errors.slice(0, 5).join('\n')}`;
+      alert(msg);
     } catch (e) {
-      alert(String(e));
+      alert(`Sync failed: ${String(e)}`);
     } finally {
-      loading = false;
+      syncing = false;
     }
   }
 
@@ -605,15 +697,10 @@
         <div class="workspace-header crush-card animate-slide-up">
           <div class="left-section">
             <div class="breadcrumbs">
-              <button class="crumb-home" onclick={() => { currentPrefix = ''; selectedKeys = []; }}>
-                {selectedBucket}
-              </button>
-              {#each breadcrumbs as crumb}
-                <span class="divider">/</span>
-                <button class="crumb" onclick={() => { currentPrefix = crumb.prefix; selectedKeys = []; }}>
-                  {crumb.name}
-                </button>
-              {/each}
+              <Breadcrumb
+                items={breadcrumbItems.map(c => ({ label: c.name, value: c.prefix }))}
+                onnavigate={(prefix) => { currentPrefix = prefix; selectedKeys = []; }}
+              />
             </div>
             {#if objects.length > 0}
               <div class="stats mt-1">
@@ -625,6 +712,10 @@
           </div>
 
           <div class="right-section flex gap-2">
+            <SegmentedControl
+              options={[{ value: 'grid', label: 'Grid' }, { value: 'list', label: 'List' }]}
+              bind:selected={viewMode}
+            />
             <input 
               type="text" 
               class="crush-input search-input" 
@@ -634,11 +725,11 @@
             <button class="btn" onclick={loadObjects} title="Refresh Objects">
               <Icon name="refresh" size={14} />
             </button>
-            <button class="btn" onclick={syncLocalFolder} title="Mirror Local Folder">
-              Sync Folder
+            <button class="btn" onclick={createFolder} title="New Folder">
+              <Icon name="folder" size={14} /> Folder
             </button>
-            <button class="btn" onclick={createFolder}>
-              New Folder
+            <button class="btn" onclick={syncLocalFolder} disabled={syncing} title="Mirror a local folder into this bucket">
+              <Icon name="refresh" size={14} /> {syncing ? 'Syncing…' : 'Sync Folder'}
             </button>
             <button class="btn primary" onclick={uploadFile}>
               <Icon name="sparkles" size={14} /> Upload File
@@ -656,113 +747,192 @@
           </div>
         {/if}
 
-        <!-- Object List Grid -->
-        <div class="object-list-card crush-card mt-4 animate-slide-up flex-1 flex flex-col">
-          <div class="ctable flex-1 overflow-y-auto">
-            <div class="crow chead obj-row">
-              <span class="checkbox-col"></span>
-              <span>Name</span>
-              <span>Size</span>
-              <span>Last Modified</span>
-              <span>Actions</span>
+        <!-- Phase O3 Drag and Drop Zone -->
+        <!-- svelte-ignore a11y-no-static-element-interactions -->
+        <div 
+          class="object-list-card crush-card mt-4 animate-slide-up flex-1 flex flex-col relative transition-all duration-200"
+          class:border-primary-500={isDragging}
+          class:bg-primary-500={isDragging}
+          class:bg-opacity-10={isDragging}
+          ondragover={(e) => { e.preventDefault(); isDragging = true; }}
+          ondragleave={() => isDragging = false}
+          ondrop={handleDrop}
+        >
+          {#if isDragging}
+            <div class="absolute inset-0 flex flex-col items-center justify-center z-10 pointer-events-none text-primary-400">
+              <Icon name="sparkles" size={48} class="mb-4" />
+              <h2 class="text-xl font-bold">Drop files to upload to {selectedBucket}</h2>
             </div>
+          {/if}
 
-            <!-- Folder Up Row -->
-            {#if currentPrefix}
-              <div 
-                class="crow obj-row folder-up" 
-                role="button" 
-                tabindex="0" 
-                onclick={() => {
-                  const parts = currentPrefix.split('/').filter(Boolean);
-                  parts.pop();
-                  currentPrefix = parts.length > 0 ? parts.join('/') + '/' : '';
-                  selectedKeys = [];
-                }}
-                onkeydown={(e) => {
-                  if (e.key === 'Enter' || e.key === ' ') {
+          {#if uploadBatch}
+            <div class="upload-banner crush-card">
+              <ProgressRing value={Math.round((uploadBatch.done / uploadBatch.total) * 100)} size={36} strokeWidth={4} />
+              <div class="upload-banner-text">
+                <div class="upload-banner-title">Uploading {uploadBatch.done} / {uploadBatch.total}</div>
+                <div class="upload-banner-sub">{uploadBatch.name}{uploadBatch.errors ? ` · ${uploadBatch.errors} failed` : ''}</div>
+              </div>
+            </div>
+          {/if}
+
+          <!-- Phase O2 Masonry Grid Toggle -->
+          <div class="flex-1 overflow-y-auto p-4">
+            {#if loading && objects.length === 0}
+              <!-- Loading skeletons -->
+              {#if isGridView}
+                <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                  {#each Array(12) as _}
+                    <div class="flex flex-col items-center p-4 border border-[var(--border)] rounded-lg gap-2">
+                      <Skeleton width="48px" height="48px" />
+                      <Skeleton width="80%" height="0.8rem" />
+                      <Skeleton width="50%" height="0.7rem" />
+                    </div>
+                  {/each}
+                </div>
+              {:else}
+                <div class="flex flex-col gap-2">
+                  {#each Array(10) as _}
+                    <Skeleton width="100%" height="2.2rem" />
+                  {/each}
+                </div>
+              {/if}
+            {:else if isGridView}
+              <div class="grid grid-cols-2 md:grid-cols-4 lg:grid-cols-6 gap-4">
+                {#if currentPrefix}
+                  <button class="flex flex-col items-center justify-center p-4 border border-[var(--border)] rounded-lg hover:bg-surface-hover hover:-translate-y-1 transition-all" onclick={() => {
                     const parts = currentPrefix.split('/').filter(Boolean);
                     parts.pop();
                     currentPrefix = parts.length > 0 ? parts.join('/') + '/' : '';
                     selectedKeys = [];
-                  }
-                }}
-              >
-                <span class="checkbox-col"></span>
-                <span class="flex items-center gap-2">
-                  <Icon name="folder" size={14} class="text-primary-400" />
-                  <strong>.. (Up one level)</strong>
-                </span>
-                <span>—</span>
-                <span>—</span>
-                <span>—</span>
-              </div>
-            {/if}
+                  }}>
+                    <Icon name="folder" size={32} class="text-primary-400 mb-2" />
+                    <span class="text-sm font-medium">.. (Up)</span>
+                  </button>
+                {/if}
+                
+                {#each currentItems as item}
+                  <button class="group flex flex-col items-center p-4 border rounded-lg transition-all relative outline-none"
+                    class:border-primary-500={selectedKeys.includes(item.key)}
+                    class:border-[var(--border)]={!selectedKeys.includes(item.key)}
+                    class:hover:bg-surface-hover={true}
+                    class:hover:-translate-y-1={true}
+                    onclick={(e) => {
+                      if (e.metaKey || e.ctrlKey) toggleSelection(item.key);
+                      else if (item.isFolder) { currentPrefix = item.key; selectedKeys = []; }
+                      else openPreview(item);
+                    }}
+                  >
+                    <!-- Checkbox for multi-select in grid -->
+                    {#if !item.isFolder}
+                      <div class="absolute top-2 left-2 opacity-0 group-hover:opacity-100 transition-opacity" class:opacity-100={selectedKeys.includes(item.key)}>
+                        <input type="checkbox" checked={selectedKeys.includes(item.key)} onclick={(e) => e.stopPropagation()} onchange={() => toggleSelection(item.key)} />
+                      </div>
+                    {/if}
 
-            {#if currentItems.length === 0}
-              <div class="crow text-center muted p-8">
-                <span>No objects in this path</span>
+                    {#if uploadProgress[item.key] !== undefined}
+                      <div class="mb-2">
+                        <ProgressRing value={uploadProgress[item.key]} size={32} strokeWidth={3} />
+                      </div>
+                    {:else if item.isFolder}
+                      <Icon name="folder" size={32} class="text-primary-400 mb-2 group-hover:scale-110 transition-transform" />
+                    {:else if IMG_RE.test(item.name) && thumbCache[item.key]}
+                      <div class="thumb-wrap mb-2">
+                        <img src={thumbCache[item.key]} alt={item.name} class="thumb-img" loading="lazy" />
+                      </div>
+                    {:else if IMG_RE.test(item.name)}
+                      <div class="thumb-wrap mb-2"><Skeleton width="100%" height="100%" /></div>
+                    {:else}
+                      <Icon name="mail" size={32} class="text-text-muted mb-2 group-hover:scale-110 transition-transform" />
+                    {/if}
+
+                    <span class="text-sm font-medium w-full text-center truncate" title={item.name}>{item.name}</span>
+                    <span class="text-xs text-text-muted mt-1">{item.isFolder ? 'Folder' : formatBytes(item.size)}</span>
+                    
+                    <!-- Quick actions on hover -->
+                    {#if !item.isFolder}
+                      <div class="absolute top-2 right-2 flex gap-1 opacity-0 group-hover:opacity-100 transition-opacity">
+                        <div class="bg-surface border border-[var(--border)] rounded flex p-1 shadow-sm" onclick={(e) => e.stopPropagation()}>
+                          <button class="p-1 hover:text-white" onclick={() => openMetadata(item.key)} title="Details"><Icon name="settings" size={12}/></button>
+                        </div>
+                      </div>
+                    {/if}
+                  </button>
+                {/each}
               </div>
             {:else}
-              {#each currentItems as item}
-                <div class="crow obj-row" class:selected={selectedKeys.includes(item.key)}>
-                  <span class="checkbox-col">
-                    {#if !item.isFolder}
-                      <input 
-                        type="checkbox" 
-                        checked={selectedKeys.includes(item.key)} 
-                        onchange={() => toggleSelection(item.key)} 
-                      />
-                    {/if}
-                  </span>
-                  
-                  {#if item.isFolder}
-                    <div 
-                      class="flex items-center gap-2 cursor-pointer font-bold w-full"
-                      role="button"
-                      tabindex="0"
-                      onclick={() => { currentPrefix = item.key; selectedKeys = []; }}
-                      onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') { currentPrefix = item.key; selectedKeys = []; } }}
-                    >
-                      <Icon name="folder" size={14} class="text-primary-400" />
-                      <span class="text-ellipsis">{item.name}</span>
-                    </div>
-                  {:else}
-                    <div 
-                      class="flex items-center gap-2 cursor-pointer w-full text-ellipsis"
-                      role="button"
-                      tabindex="0"
-                      onclick={() => openPreview(item)}
-                      onkeydown={(e) => { if (e.key === 'Enter' || e.key === ' ') openPreview(item); }}
-                    >
-                      <Icon name="mail" size={14} class="muted" />
-                      <span class="text-ellipsis">{item.name}</span>
-                    </div>
-                  {/if}
-
-                  <span class="mono">{item.isFolder ? '—' : formatBytes(item.size)}</span>
-                  <span class="mono dim">{item.isFolder ? '—' : formatDateTime(item.last_modified)}</span>
-                  
-                  <div class="actions">
-                    {#if !item.isFolder}
-                      <button class="ghost-btn sm" onclick={() => downloadObject(item)} title="Download file">
-                        Download
-                      </button>
-                      <button class="ghost-btn sm" onclick={() => openPresign(item.key)} title="Copy URL/Presign">
-                        Presign
-                      </button>
-                      <button class="ghost-btn sm" onclick={() => openMetadata(item.key)} title="View Metadata">
-                        Metadata
-                      </button>
-                      <button class="ghost-btn sm text-red" onclick={() => { selectedKeys = [item.key]; deleteSelectedObjects(); }} title="Delete">
-                        <Icon name="trash" size={12} />
-                      </button>
-                    {:else}
-                      <span>—</span>
-                    {/if}
-                  </div>
+              <div class="ctable">
+                <div class="crow chead obj-row">
+                  <span class="checkbox-col"></span>
+                  <span>Name</span>
+                  <span>Size</span>
+                  <span>Last Modified</span>
+                  <span>Actions</span>
                 </div>
-              {/each}
+
+                {#if currentPrefix}
+                  <div class="crow obj-row folder-up" role="button" tabindex="0" onclick={() => {
+                      const parts = currentPrefix.split('/').filter(Boolean);
+                      parts.pop();
+                      currentPrefix = parts.length > 0 ? parts.join('/') + '/' : '';
+                      selectedKeys = [];
+                    }}
+                  >
+                    <span class="checkbox-col"></span>
+                    <span class="flex items-center gap-2">
+                      <Icon name="folder" size={14} class="text-primary-400" />
+                      <strong>.. (Up one level)</strong>
+                    </span>
+                    <span>—</span>
+                    <span>—</span>
+                    <span>—</span>
+                  </div>
+                {/if}
+
+                {#if currentItems.length === 0}
+                  <div class="crow text-center muted p-8"><span>No objects in this path</span></div>
+                {:else}
+                  {#each currentItems as item}
+                    <div class="crow obj-row" class:selected={selectedKeys.includes(item.key)}>
+                      <span class="checkbox-col">
+                        {#if !item.isFolder}
+                          <input type="checkbox" checked={selectedKeys.includes(item.key)} onchange={() => toggleSelection(item.key)} />
+                        {/if}
+                      </span>
+                      
+                      {#if item.isFolder}
+                        <div class="flex items-center gap-2 cursor-pointer font-bold w-full" role="button" tabindex="0" onclick={() => { currentPrefix = item.key; selectedKeys = []; }}>
+                          <Icon name="folder" size={14} class="text-primary-400" />
+                          <span class="text-ellipsis">{item.name}</span>
+                        </div>
+                      {:else}
+                        <div class="flex items-center gap-2 cursor-pointer w-full text-ellipsis" role="button" tabindex="0" onclick={() => openPreview(item)}>
+                          {#if uploadProgress[item.key] !== undefined}
+                            <ProgressRing value={uploadProgress[item.key]} size={16} strokeWidth={2} />
+                          {:else}
+                            <Icon name="mail" size={14} class="muted" />
+                          {/if}
+                          <span class="text-ellipsis">{item.name}</span>
+                        </div>
+                      {/if}
+
+                      <span class="mono">{item.isFolder ? '—' : formatBytes(item.size)}</span>
+                      <span class="mono dim">{item.isFolder ? '—' : formatDateTime(item.last_modified)}</span>
+                      
+                      <div class="actions">
+                        {#if !item.isFolder}
+                          <button class="ghost-btn sm" onclick={() => openMetadata(item.key)} title="View Metadata">Details</button>
+                          <button class="ghost-btn sm" onclick={() => downloadObject(item)} title="Download file">Download</button>
+                          <button class="ghost-btn sm text-red" onclick={() => { selectedKeys = [item.key]; deleteSelectedObjects(); }} title="Delete">
+                            <Icon name="trash" size={12} />
+                          </button>
+                        {:else}
+                          <span>—</span>
+                        {/if}
+                      </div>
+                    </div>
+                  {/each}
+                {/if}
+              </div>
             {/if}
           </div>
         </div>
@@ -858,42 +1028,54 @@
   </div>
 {/if}
 
-<!-- Object Metadata Modal -->
-{#if showMetadataModal && activeMetadataObj}
-  <div class="modal-backdrop" role="button" tabindex="-1" onclick={() => showMetadataModal = false} onkeydown={(e) => { if (e.key === 'Escape') showMetadataModal = false; }}>
-    <div class="modal-card crush-card animate-slide-up" role="presentation" onclick={(e) => e.stopPropagation()} onkeydown={(e) => e.stopPropagation()}>
-      <h3>Object Metadata</h3>
-      <div class="modal-fields">
-        <div class="field-row">
-          <label for="meta-key-lbl">Key Path</label>
-          <input id="meta-key-lbl" type="text" class="crush-input" value={activeMetadataObj.key} disabled />
-        </div>
-        <div class="field-row">
-          <label for="meta-content-input">Content Type</label>
-          <input id="meta-content-input" type="text" class="crush-input" bind:value={metaContentType} />
+<!-- Phase O4 Object Metadata Details Panel (Drawer) -->
+<Drawer bind:open={showMetadataModal} title="Object Details" side="right">
+  {#if activeMetadataObj}
+    <div class="flex flex-col gap-6">
+      <div class="p-4 bg-surface-raised rounded-lg border border-[var(--border)]">
+        <h4 class="text-sm font-semibold mb-2">Key</h4>
+        <div class="font-mono text-xs text-text-muted break-all">{activeMetadataObj.key}</div>
+      </div>
+
+      <div class="field-row">
+        <label for="meta-content-input" class="text-sm font-medium">Content Type</label>
+        <input id="meta-content-input" type="text" class="crush-input mt-1" bind:value={metaContentType} />
+      </div>
+      
+      <div>
+        <div class="flex items-center justify-between mb-2">
+          <span class="text-sm font-medium">Custom Metadata</span>
+          <button class="btn sm" onclick={() => metaPairs = [...metaPairs, { key: '', value: '' }]}>
+            <Icon name="plus" size={12} /> Add
+          </button>
         </div>
         
-        <div class="mt-4">
-          <span class="sec-label">Custom Tags</span>
-          {#each metaPairs as pair, i}
-            <div class="flex gap-2 mt-2">
-              <input type="text" class="crush-input flex-1" placeholder="Key" bind:value={pair.key} />
-              <input type="text" class="crush-input flex-1" placeholder="Value" bind:value={pair.value} />
-              <button class="ghost-btn text-red sm" onclick={() => metaPairs = metaPairs.filter((_, idx) => idx !== i)}>Remove</button>
-            </div>
-          {/each}
-          <button class="btn sm mt-2" onclick={() => metaPairs = [...metaPairs, { key: '', value: '' }]}>+ Add Custom Tag</button>
-        </div>
+        {#if metaPairs.length === 0}
+          <div class="text-sm text-text-muted italic py-2">No custom tags</div>
+        {/if}
+
+        {#each metaPairs as pair, i}
+          <div class="flex gap-2 mt-2 items-center">
+            <input type="text" class="crush-input flex-1" placeholder="Key" bind:value={pair.key} />
+            <input type="text" class="crush-input flex-1" placeholder="Value" bind:value={pair.value} />
+            <button class="p-1 text-text-muted hover:text-red-400 transition-colors" onclick={() => metaPairs = metaPairs.filter((_, idx) => idx !== i)} title="Remove">
+              <Icon name="x" size={14} />
+            </button>
+          </div>
+        {/each}
       </div>
-      <div class="modal-footer">
-        <button class="btn" onclick={() => showMetadataModal = false}>Cancel</button>
-        <button class="btn primary" onclick={saveMetadata} disabled={savingMetadata}>
-          {savingMetadata ? 'Saving...' : 'Save Metadata'}
+
+      <div class="flex gap-3 mt-4 pt-4 border-t border-[var(--border)]">
+        <button class="btn flex-1" onclick={() => openPresign(activeMetadataObj!.key)}>
+          <Icon name="link" size={14} /> Get Link
+        </button>
+        <button class="btn primary flex-1" onclick={saveMetadata} disabled={savingMetadata}>
+          {savingMetadata ? 'Saving...' : 'Save Changes'}
         </button>
       </div>
     </div>
-  </div>
-{/if}
+  {/if}
+</Drawer>
 
 <!-- Object Preview Modal -->
 {#if showPreviewModal}
@@ -979,6 +1161,48 @@
 {/if}
 
 <style>
+  /* Grid image thumbnails (Phase O2) */
+  .thumb-wrap {
+    width: 100%;
+    aspect-ratio: 1 / 1;
+    border-radius: var(--radius-md, 8px);
+    overflow: hidden;
+    background: var(--color-crush-surface);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+  }
+  .thumb-img {
+    width: 100%;
+    height: 100%;
+    object-fit: cover;
+    transition: transform 0.18s ease;
+  }
+  .group:hover .thumb-img { transform: scale(1.06); }
+
+  /* Real upload progress banner (Phase O3) */
+  .upload-banner {
+    position: absolute;
+    bottom: 16px;
+    right: 16px;
+    z-index: 20;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    padding: 10px 16px 10px 10px;
+    border-radius: 10px;
+    box-shadow: var(--elevation-3, 0 8px 24px rgba(0,0,0,0.4));
+  }
+  .upload-banner-title { font-size: 13px; font-weight: 600; color: var(--color-crush-text); }
+  .upload-banner-sub {
+    font-size: 11px;
+    color: var(--color-crush-text-muted);
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+  }
+
   .studio-container {
     display: flex;
     flex-direction: column;
@@ -1166,23 +1390,6 @@
     gap: 8px;
     font-size: 16px;
     font-weight: 600;
-  }
-
-  .crumb-home, .crumb {
-    background: none;
-    border: none;
-    color: var(--color-crush-text);
-    font-weight: 600;
-    cursor: pointer;
-    padding: 0;
-  }
-
-  .crumb-home:hover, .crumb:hover {
-    text-decoration: underline;
-  }
-
-  .breadcrumbs .divider {
-    color: var(--color-crush-text-muted);
   }
 
   .stats {

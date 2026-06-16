@@ -46,6 +46,8 @@ crush-image = { workspace = true }
 crush-build = { workspace = true }
 crush-services = { workspace = true }
 crush-ai = { workspace = true }
+crush-apispec = { workspace = true }
+reqwest = { workspace = true }
 futures = { workspace = true }
 
 [target.'cfg(target_os = "windows")'.dependencies]

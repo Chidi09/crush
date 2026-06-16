@@ -2325,3 +2325,62 @@ impl Default for Detection {
         }
     }
 }
+
+// ── R3.2: Config Drift Detection ──────────────────────────────────────────
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DriftReport {
+    pub has_drift: bool,
+    pub added_services: Vec<String>,
+    pub removed_services: Vec<String>,
+    pub changed_services: std::collections::HashMap<String, Vec<String>>,
+}
+
+impl CrushSpecDetector {
+    /// R3.2: Compares the currently detected services against services declared in the
+    /// existing `docker-compose.yml`.
+    pub fn check_compose_drift(&self, root: &Path) -> DriftReport {
+        let det = self.detect(&root.to_path_buf());
+        let mut report = DriftReport {
+            has_drift: false,
+            added_services: Vec::new(),
+            removed_services: Vec::new(),
+            changed_services: std::collections::HashMap::new(),
+        };
+
+        let compose_path = Self::find_compose_file(root);
+        if compose_path.is_none() {
+            return report;
+        }
+
+        let compose_content = std::fs::read_to_string(compose_path.unwrap()).unwrap_or_default();
+        let interpolated = Self::interpolate_env(&compose_content);
+        let parser = ComposeParser::new();
+        
+        if let Ok(compose) = parser.parse(&interpolated, root) {
+            let mut compose_services = std::collections::HashSet::new();
+            if let Some(ref smap) = compose.services {
+                for (name, _) in smap {
+                    compose_services.insert(name.clone());
+                }
+            }
+
+            let mut current_services = std::collections::HashSet::new();
+            for ext in &det.external_services {
+                current_services.insert(ext.name.to_lowercase());
+            }
+
+            for detected in current_services {
+                if !compose_services.contains(&detected) {
+                    report.added_services.push(detected);
+                }
+            }
+
+            report.has_drift = !report.added_services.is_empty() 
+                || !report.removed_services.is_empty() 
+                || !report.changed_services.is_empty();
+        }
+
+        report
+    }
+}

@@ -2,6 +2,14 @@
   import { onMount } from 'svelte';
   import Icon from '$lib/components/Icon.svelte';
   import TechIcon from '$lib/components/TechIcon.svelte';
+  import DataGrid from '$lib/components/DataGrid.svelte';
+  import HoverCard from '$lib/components/HoverCard.svelte';
+  import CodeBlock from '$lib/components/CodeBlock.svelte';
+  import Drawer from '$lib/components/Drawer.svelte';
+  import JsonTree from '$lib/components/JsonTree.svelte';
+  import Heatmap from '$lib/components/Heatmap.svelte';
+  import DiffView from '$lib/components/DiffView.svelte';
+  import { confirmAction } from '$lib/stores/confirm.svelte.ts';
   import * as api from '$lib/tauri';
   import type { DbStatus, BackupFile, QueryResult, RedisKeyInfo } from '$lib/tauri';
 
@@ -41,12 +49,24 @@
   let tables = $state<{ schema: string; name: string }[]>([]);
   let tableSearch = $state('');
   let selectedTable = $state<{ schema: string; name: string } | null>(null);
-  let columns = $state<{ name: string; type: string; nullable: boolean }[]>([]);
-  let rows = $state<any[][]>([]);
+  type ColMeta = {
+    name: string;
+    type: string;
+    nullable: boolean;
+    isPk: boolean;
+    fk: { schema: string; table: string; column: string } | null;
+    enumValues: string[] | null;
+  };
+  let columns = $state<ColMeta[]>([]);
+  let rows = $state<Record<string, any>[]>([]);
+  // FK row-preview cache: keyed by `${schema}.${table}#${col}=${val}` → referenced row (or null while loading)
+  let fkPreviewCache = $state<Record<string, Record<string, any> | null | 'loading'>>({});
   let dataPage = $state(0);
   let dataLimit = $state(50);
   let dataTotalRows = $state(0);
   let filterText = $state('');
+  // Exact-match filter set when following an FK chip (column = value).
+  let fkFilter = $state<{ column: string; value: string } | null>(null);
   let dataLoading = $state(false);
   let tableSort = $state<{ column: string; desc: boolean } | null>(null);
 
@@ -105,6 +125,13 @@
   let showInsertMongoDocModal = $state(false);
   let insertMongoDocValue = $state('{\n  \n}');
   let editingMongoDoc = $state<{ index: number; content: string } | null>(null);
+  let mongoShowDiff = $state(false);
+  // Re-pretty-print the edited JSON so the diff compares structure, not formatting.
+  let mongoEditedPretty = $derived.by(() => {
+    if (!editingMongoDoc) return '';
+    try { return JSON.stringify(JSON.parse(editingMongoDoc.content), null, 2); }
+    catch { return editingMongoDoc.content; }
+  });
   let mongoLoading = $state(false);
 
   // --- PGMQ states ---
@@ -127,14 +154,36 @@
   let pgmqLoading = $state(false);
 
   // Focus action for inline cell editor
-  function focusOnMount(node: HTMLInputElement) {
-    node.focus();
+  function focusOnMount(node: HTMLElement) {
+    (node as HTMLInputElement | HTMLSelectElement | HTMLTextAreaElement).focus();
   }
 
   // --- Computed Derived States ---
   let filteredTables = $derived(
     tables.filter(t => t.name.toLowerCase().includes(tableSearch.toLowerCase()))
   );
+
+  // Schema data-density: live-row counts reshaped into a grid for the Heatmap.
+  // Postgres returns live_rows at index 4; MySQL at index 3.
+  const ROW_COUNT_IDX = $derived(activeConnection?.kind === 'postgres' ? 4 : 3);
+  let schemaDensity = $derived.by(() => {
+    const counts = schemaTables.map(r => {
+      const n = Number(r[ROW_COUNT_IDX]);
+      return Number.isFinite(n) ? Math.max(n, 0) : 0;
+    });
+    const COLS = 12;
+    const grid: number[][] = [];
+    for (let i = 0; i < counts.length; i += COLS) grid.push(counts.slice(i, i + COLS));
+    return grid;
+  });
+  let schemaMaxTable = $derived.by(() => {
+    let best = { name: '', rows: 0 };
+    for (const r of schemaTables) {
+      const n = Number(r[ROW_COUNT_IDX]) || 0;
+      if (n >= best.rows) best = { name: String(r[0]), rows: n };
+    }
+    return best;
+  });
 
   onMount(async () => {
     loading = true;
@@ -293,6 +342,7 @@
     dataPage = 0;
     tableSort = null;
     filterText = '';
+    fkFilter = null;
     await loadTableData(table);
   }
 
@@ -313,19 +363,45 @@
     if (!activeConnection) return;
     dataLoading = true;
     try {
-      let colQ = `SELECT column_name, data_type, is_nullable 
-                  FROM information_schema.columns 
-                  WHERE table_schema = '${table.schema}' AND table_name = '${table.name}' 
-                  ORDER BY ordinal_position;`;
-      
+      let isPg = activeConnection.kind === 'postgres';
+      let colQ = isPg
+        ? `SELECT column_name, data_type, is_nullable, udt_name
+           FROM information_schema.columns
+           WHERE table_schema = '${table.schema}' AND table_name = '${table.name}'
+           ORDER BY ordinal_position;`
+        : `SELECT column_name, data_type, is_nullable, column_type
+           FROM information_schema.columns
+           WHERE table_schema = '${table.schema}' AND table_name = '${table.name}'
+           ORDER BY ordinal_position;`;
+
       let colRes = await api.dbRunQuery(activeConnection.kind, activeConnection.url, colQ);
       if (colRes.error) throw new Error(colRes.error);
-      
-      columns = colRes.rows.map(row => ({
-        name: row[0],
-        type: row[1],
-        nullable: row[2] === 'YES' || row[2] === 'yes'
-      }));
+
+      // Relationship + key metadata, loaded in parallel. Failures degrade to a
+      // plain grid rather than blocking the data load.
+      let [pkCols, fkMap, enumMap] = await Promise.all([
+        loadPkSet(table),
+        loadFkMap(table),
+        isPg ? loadEnumMap(table) : Promise.resolve<Record<string, string[]>>({}),
+      ]);
+
+      columns = colRes.rows.map(row => {
+        const name = row[0];
+        const udt = String(row[3] ?? '');
+        // MySQL surfaces enums in column_type as `enum('a','b')`.
+        let enumValues: string[] | null = enumMap[name] ?? null;
+        if (!enumValues && !isPg && /^enum\(/i.test(udt)) {
+          enumValues = [...udt.matchAll(/'((?:[^']|'')*)'/g)].map(m => m[1].replace(/''/g, "'"));
+        }
+        return {
+          name,
+          type: row[1],
+          nullable: row[2] === 'YES' || row[2] === 'yes',
+          isPk: pkCols.includes(name),
+          fk: fkMap[name] ?? null,
+          enumValues,
+        };
+      });
 
       // Initialize insert form values
       let newForm: Record<string, string> = {};
@@ -334,16 +410,26 @@
       });
       insertFormValues = newForm;
 
-      // 2. Load Total Count
-      let countQ = `SELECT count(*) FROM ${quoteIdent(table.schema, activeConnection.kind)}.${quoteIdent(table.name, activeConnection.kind)}`;
-      if (filterText.trim()) {
-        let conditions = columns.map(c => `${quoteIdent(c.name, activeConnection!.kind)}::text ILIKE '%${escapeSqlVal(filterText)}%'`).join(' OR ');
-        if (activeConnection.kind === 'mysql') {
-          conditions = columns.map(c => `${quoteIdent(c.name, activeConnection!.kind)} LIKE '%${escapeSqlVal(filterText)}%'`).join(' OR ');
+      // Shared WHERE clause: optional FK exact-match (from chip navigation) AND
+      // an optional fuzzy filter across all columns.
+      const buildWhere = () => {
+        const clauses: string[] = [];
+        if (fkFilter) {
+          clauses.push(`${quoteIdent(fkFilter.column, activeConnection!.kind)}::text = '${escapeSqlVal(fkFilter.value)}'`);
         }
-        countQ += ` WHERE ${conditions}`;
-      }
-      
+        if (filterText.trim()) {
+          const op = activeConnection!.kind === 'mysql' ? 'LIKE' : 'ILIKE';
+          const cast = activeConnection!.kind === 'mysql' ? '' : '::text';
+          const fuzzy = columns.map(c => `${quoteIdent(c.name, activeConnection!.kind)}${cast} ${op} '%${escapeSqlVal(filterText)}%'`).join(' OR ');
+          clauses.push(`(${fuzzy})`);
+        }
+        return clauses.length ? ` WHERE ${clauses.join(' AND ')}` : '';
+      };
+      const whereClause = buildWhere();
+
+      // 2. Load Total Count
+      let countQ = `SELECT count(*) FROM ${quoteIdent(table.schema, activeConnection.kind)}.${quoteIdent(table.name, activeConnection.kind)}${whereClause}`;
+
       let countRes = await api.dbRunQuery(activeConnection.kind, activeConnection.url, countQ);
       if (!countRes.error && countRes.rows.length > 0) {
         dataTotalRows = parseInt(countRes.rows[0][0]);
@@ -352,14 +438,7 @@
       }
 
       // 3. Load Rows
-      let dataQ = `SELECT * FROM ${quoteIdent(table.schema, activeConnection.kind)}.${quoteIdent(table.name, activeConnection.kind)}`;
-      if (filterText.trim()) {
-        let conditions = columns.map(c => `${quoteIdent(c.name, activeConnection!.kind)}::text ILIKE '%${escapeSqlVal(filterText)}%'`).join(' OR ');
-        if (activeConnection.kind === 'mysql') {
-          conditions = columns.map(c => `${quoteIdent(c.name, activeConnection!.kind)} LIKE '%${escapeSqlVal(filterText)}%'`).join(' OR ');
-        }
-        dataQ += ` WHERE ${conditions}`;
-      }
+      let dataQ = `SELECT * FROM ${quoteIdent(table.schema, activeConnection.kind)}.${quoteIdent(table.name, activeConnection.kind)}${whereClause}`;
       if (tableSort) {
         dataQ += ` ORDER BY ${quoteIdent(tableSort.column, activeConnection.kind)} ${tableSort.desc ? 'DESC' : 'ASC'}`;
       }
@@ -368,13 +447,139 @@
       let dataRes = await api.dbRunQuery(activeConnection.kind, activeConnection.url, dataQ);
       if (dataRes.error) throw new Error(dataRes.error);
       
-      rows = dataRes.rows;
+      rows = dataRes.rows.map((r: any[]) => {
+        let obj: Record<string, any> = {};
+        columns.forEach((c, i) => { obj[c.name] = r[i]; });
+        return obj;
+      });
     } catch (e) {
       alert(`Failed to load table data: ${String(e)}`);
       rows = [];
     } finally {
       dataLoading = false;
     }
+  }
+
+  // --- Relationship metadata loaders (used to build the virtual relational grid) ---
+
+  async function loadPkSet(table: { schema: string; name: string }): Promise<string[]> {
+    if (!activeConnection) return [];
+    const q = `SELECT kcu.column_name
+               FROM information_schema.table_constraints tc
+               JOIN information_schema.key_column_usage kcu
+                 ON tc.constraint_name = kcu.constraint_name
+                AND tc.table_schema = kcu.table_schema
+               WHERE tc.constraint_type = 'PRIMARY KEY'
+                 AND tc.table_name = '${table.name}'
+                 AND tc.table_schema = '${table.schema}';`;
+    try {
+      const res = await api.dbRunQuery(activeConnection.kind, activeConnection.url, q);
+      return res.error ? [] : res.rows.map(r => r[0]);
+    } catch { return []; }
+  }
+
+  async function loadFkMap(table: { schema: string; name: string }): Promise<Record<string, { schema: string; table: string; column: string }>> {
+    if (!activeConnection) return {};
+    const isPg = activeConnection.kind === 'postgres';
+    // Both engines expose FKs through information_schema; Postgres needs the
+    // referenced column via constraint_column_usage, MySQL via referenced_* cols.
+    const q = isPg
+      ? `SELECT kcu.column_name, ccu.table_schema, ccu.table_name, ccu.column_name
+         FROM information_schema.table_constraints tc
+         JOIN information_schema.key_column_usage kcu
+           ON tc.constraint_name = kcu.constraint_name AND tc.table_schema = kcu.table_schema
+         JOIN information_schema.constraint_column_usage ccu
+           ON ccu.constraint_name = tc.constraint_name AND ccu.table_schema = tc.table_schema
+         WHERE tc.constraint_type = 'FOREIGN KEY'
+           AND tc.table_name = '${table.name}' AND tc.table_schema = '${table.schema}';`
+      : `SELECT column_name, referenced_table_schema, referenced_table_name, referenced_column_name
+         FROM information_schema.key_column_usage
+         WHERE table_name = '${table.name}' AND table_schema = '${table.schema}'
+           AND referenced_table_name IS NOT NULL;`;
+    try {
+      const res = await api.dbRunQuery(activeConnection.kind, activeConnection.url, q);
+      if (res.error) return {};
+      const map: Record<string, { schema: string; table: string; column: string }> = {};
+      for (const r of res.rows) {
+        if (r[0] && r[2] && r[3]) map[r[0]] = { schema: r[1] || table.schema, table: r[2], column: r[3] };
+      }
+      return map;
+    } catch { return {}; }
+  }
+
+  async function loadEnumMap(table: { schema: string; name: string }): Promise<Record<string, string[]>> {
+    if (!activeConnection) return {};
+    // Map each USER-DEFINED column to its enum labels (Postgres).
+    const q = `SELECT c.column_name, e.enumlabel
+               FROM information_schema.columns c
+               JOIN pg_type t ON t.typname = c.udt_name
+               JOIN pg_enum e ON e.enumtypid = t.oid
+               WHERE c.table_schema = '${table.schema}' AND c.table_name = '${table.name}'
+               ORDER BY e.enumsortorder;`;
+    try {
+      const res = await api.dbRunQuery(activeConnection.kind, activeConnection.url, q);
+      if (res.error) return {};
+      const map: Record<string, string[]> = {};
+      for (const r of res.rows) { (map[r[0]] ??= []).push(r[1]); }
+      return map;
+    } catch { return {}; }
+  }
+
+  // Fetch (and cache) the row a foreign key points at, for the hover preview.
+  async function fetchFkPreview(fk: { schema: string; table: string; column: string }, val: any) {
+    if (!activeConnection || val === null || val === undefined) return;
+    const key = `${fk.schema}.${fk.table}#${fk.column}=${val}`;
+    if (key in fkPreviewCache) return;
+    fkPreviewCache[key] = 'loading';
+    const q = `SELECT * FROM ${quoteIdent(fk.schema, activeConnection.kind)}.${quoteIdent(fk.table, activeConnection.kind)} WHERE ${quoteIdent(fk.column, activeConnection.kind)} = '${escapeSqlVal(val)}' LIMIT 1;`;
+    try {
+      const res = await api.dbRunQuery(activeConnection.kind, activeConnection.url, q);
+      if (res.error || res.rows.length === 0) { fkPreviewCache[key] = null; return; }
+      const obj: Record<string, any> = {};
+      res.columns.forEach((c, i) => { obj[c] = res.rows[0][i]; });
+      fkPreviewCache[key] = obj;
+    } catch { fkPreviewCache[key] = null; }
+  }
+
+  function fkPreviewFor(fk: { schema: string; table: string; column: string }, val: any) {
+    return fkPreviewCache[`${fk.schema}.${fk.table}#${fk.column}=${val}`];
+  }
+
+  // Click an FK chip → jump to the referenced table, filtered to that row.
+  async function navigateFk(fk: { schema: string; table: string; column: string }, val: any) {
+    if (val === null || val === undefined) return;
+    const target = tables.find(t => t.name === fk.table && t.schema === fk.schema)
+      ?? { schema: fk.schema, name: fk.table };
+    selectedTable = target;
+    dataPage = 0;
+    tableSort = null;
+    filterText = '';
+    fkFilter = { column: fk.column, value: String(val) };
+    await loadTableData(target);
+  }
+
+  // --- Cell type classification (drives the type-aware editors + rendering) ---
+  const colMetaFor = (name: string): ColMeta | undefined => columns.find(c => c.name === name);
+  const isBoolType = (t?: string) => !!t && /^bool/i.test(t);
+  const isJsonType = (t?: string) => !!t && /json/i.test(t);
+  const isNumericType = (t?: string) => !!t && /(int|numeric|decimal|real|double|float|serial|money)/i.test(t);
+  const isTimeType = (t?: string) => !!t && /(timestamp|date|time)/i.test(t);
+
+  function parseJsonSafe(val: any): any {
+    if (val === null || val === undefined) return null;
+    if (typeof val === 'object') return val;
+    try { return JSON.parse(String(val)); } catch { return undefined; }
+  }
+
+  function humanizeTime(val: any): string {
+    if (!val) return String(val ?? '');
+    const d = new Date(String(val));
+    if (isNaN(d.getTime())) return String(val);
+    const diff = Date.now() - d.getTime();
+    const abs = Math.abs(diff);
+    const mins = Math.round(abs / 60000), hrs = Math.round(abs / 3600000), days = Math.round(abs / 86400000);
+    const rel = mins < 1 ? 'just now' : mins < 60 ? `${mins}m` : hrs < 24 ? `${hrs}h` : days < 30 ? `${days}d` : d.toLocaleDateString();
+    return diff >= 0 ? rel : `in ${rel}`;
   }
 
   async function getPrimaryKeyCols(): Promise<string[]> {
@@ -396,7 +601,7 @@
     }
   }
 
-  async function saveCellEdit(rowIdx: number, colName: string, newValue: string, row: any[]) {
+  async function saveCellEdit(rowIdx: number, colName: string, newValue: string, row: Record<string, any>) {
     if (!activeConnection || !selectedTable) return;
     
     try {
@@ -404,13 +609,12 @@
       let whereClause = '';
       if (pkCols.length > 0) {
         whereClause = pkCols.map(c => {
-          let colIdx = columns.findIndex(col => col.name === c);
-          let val = row[colIdx];
+          let val = row[c];
           return `${quoteIdent(c, activeConnection!.kind)} = '${escapeSqlVal(val)}'`;
         }).join(' AND ');
       } else {
-        whereClause = columns.map((col, idx) => {
-          let val = row[idx];
+        whereClause = columns.map(col => {
+          let val = row[col.name];
           if (val === null) {
             return `${quoteIdent(col.name, activeConnection!.kind)} IS NULL`;
           } else {
@@ -436,22 +640,21 @@
     }
   }
 
-  async function deleteRow(row: any[]) {
+  async function deleteRow(row: Record<string, any>) {
     if (!activeConnection || !selectedTable) return;
-    if (!confirm('Are you sure you want to delete this row?')) return;
+    if (!await confirmAction({ title: 'Delete row', message: 'Are you sure you want to delete this row?', confirmText: 'Delete', danger: true })) return;
     
     try {
       let pkCols = await getPrimaryKeyCols();
       let whereClause = '';
       if (pkCols.length > 0) {
         whereClause = pkCols.map(c => {
-          let colIdx = columns.findIndex(col => col.name === c);
-          let val = row[colIdx];
+          let val = row[c];
           return `${quoteIdent(c, activeConnection!.kind)} = '${escapeSqlVal(val)}'`;
         }).join(' AND ');
       } else {
-        whereClause = columns.map((col, idx) => {
-          let val = row[idx];
+        whereClause = columns.map(col => {
+          let val = row[col.name];
           if (val === null) {
             return `${quoteIdent(col.name, activeConnection!.kind)} IS NULL`;
           } else {
@@ -518,7 +721,7 @@
       let isDestructive = /drop|truncate|alter|delete|update/i.test(sqlQuery) && 
         !(/where/i.test(sqlQuery));
       if (isDestructive) {
-        if (!confirm(`Warning: You are running a potentially destructive query without a WHERE clause:\n\n${sqlQuery}\n\nDo you want to continue?`)) {
+        if (!await confirmAction({ title: 'Destructive query', message: `You are running a potentially destructive query without a WHERE clause:\n\n${sqlQuery}\n\nDo you want to continue?`, confirmText: 'Run anyway', danger: true })) {
           sqlLoading = false;
           return;
         }
@@ -727,7 +930,7 @@
 
   async function deleteRedisKey(keyName: string) {
     if (!activeConnection) return;
-    if (!confirm(`Are you sure you want to delete key "${keyName}"?`)) return;
+    if (!await confirmAction({ title: 'Delete key', message: `Are you sure you want to delete key "${keyName}"?`, confirmText: 'Delete', danger: true })) return;
     try {
       await api.redisDelKey(activeConnection.port || 6379, activeConnection.password, keyName);
       await loadRedisKeys();
@@ -846,7 +1049,7 @@
 
   async function deleteMongoDoc(doc: any) {
     if (!activeConnection || !selectedMongoDb || !selectedMongoColl) return;
-    if (!confirm('Delete this document?')) return;
+    if (!await confirmAction({ title: 'Delete document', message: 'Delete this document?', confirmText: 'Delete', danger: true })) return;
     
     try {
       if (!doc._id) {
@@ -1053,7 +1256,7 @@
 
   async function deletePgmqMessage(msgId: any) {
     if (!activeConnection || activeConnection.kind !== 'postgres' || !selectedPgmqQueue) return;
-    if (!confirm(`Permanently delete message ${msgId}?`)) return;
+    if (!await confirmAction({ title: 'Delete message', message: `Permanently delete message ${msgId}?`, confirmText: 'Delete', danger: true })) return;
     try {
       let q = `SELECT pgmq.delete('${escapeSqlVal(selectedPgmqQueue)}', ${msgId});`;
       let res = await api.dbRunQuery('postgres', activeConnection.url, q);
@@ -1092,7 +1295,7 @@
 
   async function dropPgmqQueue(queueName: string) {
     if (!activeConnection || activeConnection.kind !== 'postgres') return;
-    if (!confirm(`Are you sure you want to drop queue "${queueName}"? All messages will be permanently lost.`)) return;
+    if (!await confirmAction({ title: 'Drop queue', message: `Drop queue "${queueName}"? All messages will be permanently lost.`, confirmText: 'Drop queue', danger: true })) return;
     pgmqLoading = true;
     try {
       let q = `SELECT pgmq.drop_queue('${escapeSqlVal(queueName)}');`;
@@ -1128,7 +1331,7 @@
   }
 
   async function restoreBackup(b: BackupFile) {
-    if (!confirm(`Are you sure you want to restore from ${b.name}? This will overwrite your current database.`)) return;
+    if (!await confirmAction({ title: 'Restore backup', message: `Restore from ${b.name}? This will overwrite your current database.`, confirmText: 'Restore', danger: true })) return;
     try {
       await api.dbRestore(b.name);
       alert('Database restored successfully.');
@@ -1138,7 +1341,7 @@
   }
 
   async function deleteBackup(b: BackupFile) {
-    if (!confirm(`Delete backup ${b.name}?`)) return;
+    if (!await confirmAction({ title: 'Delete backup', message: `Delete backup ${b.name}?`, confirmText: 'Delete', danger: true })) return;
     try {
       await api.dbDeleteBackup(b.name);
       backups = await api.dbBackups();
@@ -1350,6 +1553,13 @@
                     <button class="btn" onclick={() => loadTableData(selectedTable!)}>
                       <Icon name="refresh" size={14} />
                     </button>
+                    {#if fkFilter}
+                      <button class="fk-filter-chip" onclick={() => { fkFilter = null; loadTableData(selectedTable!); }}>
+                        <Icon name="link" size={12} />
+                        <span>{fkFilter.column} = {fkFilter.value}</span>
+                        <Icon name="x" size={12} />
+                      </button>
+                    {/if}
                   </div>
                   
                   <div class="right-controls">
@@ -1359,74 +1569,125 @@
                   </div>
                 </div>
 
-                <div class="data-table-container crush-card">
+                <div class="data-table-container crush-card w-full relative">
                   {#if dataLoading}
-                    <div class="loader-overlay">
+                    <div class="loader-overlay absolute inset-0 z-50 bg-black/50 flex flex-col items-center justify-center">
                       <span class="spinner"></span>
                       <span>Loading table data...</span>
                     </div>
-                  {:else}
-                    <table class="grid-table">
-                      <thead>
-                        <tr>
-                          <th></th> <!-- Actions -->
-                          {#each columns as col}
-                            <th onclick={() => {
-                              if (tableSort?.column === col.name) {
-                                tableSort = { column: col.name, desc: !tableSort.desc };
-                              } else {
-                                tableSort = { column: col.name, desc: false };
-                              }
-                              loadTableData(selectedTable!);
-                            }}>
-                              <div class="th-content">
-                                <span>{col.name}</span>
-                                <span class="col-type">{col.type}</span>
-                                {#if tableSort?.column === col.name}
-                                  <Icon name={tableSort.desc ? 'trendDown' : 'trendUp'} size={12} />
-                                {/if}
-                              </div>
-                            </th>
-                          {/each}
-                        </tr>
-                      </thead>
-                      <tbody>
-                        {#each rows as row, rIdx}
-                          <tr>
-                            <td class="action-cell">
-                              <button class="delete-row-btn" onclick={() => deleteRow(row)}>
-                                <Icon name="trash" size={14} />
-                              </button>
-                            </td>
-                            {#each columns as col, cIdx}
-                              <td 
-                                class="data-cell"
-                                ondblclick={() => editingCell = { rowIdx: rIdx, colName: col.name, value: String(row[cIdx] ?? '') }}
-                              >
-                                {#if editingCell?.rowIdx === rIdx && editingCell?.colName === col.name}
-                                  <input 
-                                    type="text" 
-                                    class="cell-editor-input"
-                                    bind:value={editingCell.value}
-                                    onkeydown={(e) => {
-                                      if (e.key === 'Enter') saveCellEdit(rIdx, col.name, editingCell!.value, row);
-                                      if (e.key === 'Escape') editingCell = null;
-                                    }}
-                                    onblur={() => saveCellEdit(rIdx, col.name, editingCell!.value, row)}
-                                    use:focusOnMount
-                                  />
-                                {:else}
-                                  <span class:null-val={row[cIdx] === null}>
-                                    {row[cIdx] === null ? 'NULL' : row[cIdx]}
-                                  </span>
-                                {/if}
-                              </td>
-                            {/each}
-                          </tr>
-                        {/each}
-                      </tbody>
-                    </table>
                   {/if}
+                  <DataGrid
+                    columns={[
+                      { key: '_action', label: '', width: '40px', frozen: true },
+                      ...columns.map(c => ({ key: c.name, label: c.isPk ? `🔑 ${c.name}` : c.name, frozen: c.isPk }))
+                    ]}
+                    rows={rows}
+                  >
+                    <svelte:fragment slot="cell" let:row let:col>
+                      {#if col.key === '_action'}
+                        <button class="delete-row-btn text-red-500 hover:text-red-400" onclick={() => deleteRow(row)}>
+                          <Icon name="trash" size={14} />
+                        </button>
+                      {:else}
+                        {@const meta = colMetaFor(col.key.replace(/^🔑 /, ''))}
+                        {@const realKey = meta?.name ?? col.key}
+                        {@const val = row[realKey]}
+                        {@const isEditing = editingCell?.rowIdx === rows.indexOf(row) && editingCell?.colName === realKey}
+                        <div
+                          class="w-full h-full min-h-[20px]"
+                          class:cursor-text={!meta?.fk}
+                          ondblclick={() => editingCell = { rowIdx: rows.indexOf(row), colName: realKey, value: val === null || val === undefined ? '' : (typeof val === 'object' ? JSON.stringify(val) : String(val)) }}
+                        >
+                          {#if isEditing}
+                            <!-- Type-aware editors -->
+                            {#if meta && isBoolType(meta.type)}
+                              <select class="cell-editor-input w-full" bind:value={editingCell!.value}
+                                onchange={() => saveCellEdit(rows.indexOf(row), realKey, editingCell!.value, row)} use:focusOnMount>
+                                <option value="true">true</option>
+                                <option value="false">false</option>
+                                {#if meta.nullable}<option value="">NULL</option>{/if}
+                              </select>
+                            {:else if meta && meta.enumValues && meta.enumValues.length}
+                              <select class="cell-editor-input w-full" bind:value={editingCell!.value}
+                                onchange={() => saveCellEdit(rows.indexOf(row), realKey, editingCell!.value, row)} use:focusOnMount>
+                                {#each meta.enumValues as ev}<option value={ev}>{ev}</option>{/each}
+                                {#if meta.nullable}<option value="">NULL</option>{/if}
+                              </select>
+                            {:else if meta && isJsonType(meta.type)}
+                              <textarea class="cell-editor-input w-full font-mono text-xs" rows="4" bind:value={editingCell!.value}
+                                onkeydown={(e) => { if (e.key === 'Escape') editingCell = null; }}
+                                onblur={() => saveCellEdit(rows.indexOf(row), realKey, editingCell!.value, row)} use:focusOnMount></textarea>
+                            {:else}
+                              <input
+                                type={meta && isNumericType(meta.type) ? 'number' : (meta && isTimeType(meta.type) ? 'datetime-local' : 'text')}
+                                class="cell-editor-input w-full bg-surface-raised border border-primary-500 rounded px-1 outline-none text-text"
+                                bind:value={editingCell!.value}
+                                onkeydown={(e) => {
+                                  if (e.key === 'Enter') saveCellEdit(rows.indexOf(row), realKey, editingCell!.value, row);
+                                  if (e.key === 'Escape') editingCell = null;
+                                }}
+                                onblur={() => saveCellEdit(rows.indexOf(row), realKey, editingCell!.value, row)}
+                                use:focusOnMount
+                              />
+                            {/if}
+                          {:else if val === null || val === undefined}
+                            <span class="text-text-faint italic">NULL</span>
+                          {:else if meta?.fk}
+                            <!-- FK chip: hover previews the referenced row, click navigates -->
+                            <HoverCard>
+                              <button class="fk-chip" onmouseenter={() => fetchFkPreview(meta.fk!, val)}
+                                onclick={() => navigateFk(meta.fk!, val)}>
+                                <Icon name="link" size={11} />
+                                <span>{val}</span>
+                                <span class="fk-arrow">→ {meta.fk.table}</span>
+                              </button>
+                              {#snippet content()}
+                                {@const preview = fkPreviewFor(meta.fk!, val)}
+                                <div class="fk-preview">
+                                  <div class="fk-preview-head">{meta.fk!.table}.{meta.fk!.column} = {val}</div>
+                                  {#if preview === 'loading' || preview === undefined}
+                                    <div class="fk-preview-loading">Loading…</div>
+                                  {:else if preview === null}
+                                    <div class="fk-preview-loading">No matching row</div>
+                                  {:else}
+                                    <table class="fk-preview-table">
+                                      <tbody>
+                                        {#each Object.entries(preview).slice(0, 8) as [k, v]}
+                                          <tr><td class="fk-k">{k}</td><td class="fk-v">{v === null ? 'NULL' : String(v)}</td></tr>
+                                        {/each}
+                                      </tbody>
+                                    </table>
+                                  {/if}
+                                </div>
+                              {/snippet}
+                            </HoverCard>
+                          {:else if meta && isBoolType(meta.type)}
+                            <span class="bool-cell" title={String(val)}>{(val === true || val === 't' || val === 'true' || val === 1 || val === '1') ? '●' : '○'}</span>
+                          {:else if meta && isJsonType(meta.type)}
+                            {@const parsed = parseJsonSafe(val)}
+                            <HoverCard>
+                              <span class="json-cell">{typeof val === 'object' ? JSON.stringify(val) : String(val)}</span>
+                              {#snippet content()}
+                                <div class="json-preview">
+                                  {#if parsed !== undefined}<JsonTree data={parsed} />{:else}<span class="text-text-faint">{String(val)}</span>{/if}
+                                </div>
+                              {/snippet}
+                            </HoverCard>
+                          {:else if meta && isTimeType(meta.type)}
+                            <HoverCard text={String(val)}>
+                              <span class="time-cell">{humanizeTime(val)}</span>
+                            </HoverCard>
+                          {:else if meta && isNumericType(meta.type)}
+                            <span class="num-cell">{val}</span>
+                          {:else}
+                            <HoverCard text={`${meta?.type ?? ''}`}>
+                              <span>{val}</span>
+                            </HoverCard>
+                          {/if}
+                        </div>
+                      {/if}
+                    </svelte:fragment>
+                  </DataGrid>
                 </div>
 
                 <!-- Pagination footer -->
@@ -1460,14 +1721,16 @@
         <!-- Tab: SQL Editor -->
         {#if activeTab === 'sql'}
           <div class="sql-editor-layout">
-            <div class="editor-pane">
-              <div class="editor-header">
-                <h3>Query Editor</h3>
+            <div class="editor-pane flex-1 flex flex-col">
+              <div class="editor-header flex justify-between items-center mb-2">
+                <h3>Query Workbench</h3>
                 <button class="btn primary" onclick={runSQL} disabled={sqlLoading}>
-                  <Icon name="play" size={14} /> Run Query
+                  <Icon name="play" size={14} /> {sqlLoading ? 'Running...' : 'Run Query'}
                 </button>
               </div>
-              <textarea class="sql-textarea crush-input" bind:value={sqlQuery}></textarea>
+              <div class="h-[200px] mb-4">
+                <textarea class="crush-input font-mono w-full h-full resize-none bg-surface-raised" bind:value={sqlQuery}></textarea>
+              </div>
 
               {#if sqlError}
                 <div class="error-panel">
@@ -1523,6 +1786,24 @@
         {#if activeTab === 'schema'}
           <div class="schema-layout stagger">
             <h2>Database Schema Overview</h2>
+            {#if schemaTables.length > 0}
+              <div class="density-card crush-card">
+                <div class="density-head">
+                  <div>
+                    <div class="density-title">Data density</div>
+                    <div class="density-sub">{schemaTables.length} tables · each cell is a table, brighter = more rows</div>
+                  </div>
+                  {#if schemaMaxTable.name}
+                    <div class="density-peak">
+                      <span class="density-peak-label">Largest</span>
+                      <span class="density-peak-name mono">{schemaMaxTable.name}</span>
+                      <span class="density-peak-rows">{schemaMaxTable.rows.toLocaleString()} rows</span>
+                    </div>
+                  {/if}
+                </div>
+                <Heatmap data={schemaDensity} colorBase="234, 88, 12" />
+              </div>
+            {/if}
             <div class="ctable">
               <div class="crow chead">
                 <span>Table Name</span>
@@ -1937,8 +2218,11 @@
                         <span class="mono text-xs">ID: {doc._id?.$oid || doc._id}</span>
                         <div class="actions">
                           {#if editingMongoDoc?.index === idx}
+                            <button class="btn sm" class:active={mongoShowDiff} onclick={() => mongoShowDiff = !mongoShowDiff}>
+                              <Icon name="logs" size={13} /> {mongoShowDiff ? 'Hide' : 'Diff'}
+                            </button>
                             <button class="btn sm primary" onclick={() => saveMongoDoc(idx)}>Save</button>
-                            <button class="btn sm" onclick={() => editingMongoDoc = null}>Cancel</button>
+                            <button class="btn sm" onclick={() => { editingMongoDoc = null; mongoShowDiff = false; }}>Cancel</button>
                           {:else}
                             <button class="btn sm" onclick={() => editingMongoDoc = { index: idx, content: JSON.stringify(doc, null, 2) }}>Edit</button>
                           {/if}
@@ -1950,6 +2234,12 @@
 
                       {#if editingMongoDoc?.index === idx}
                         <textarea class="crush-input doc-editor" bind:value={editingMongoDoc.content}></textarea>
+                        {#if mongoShowDiff}
+                          <div class="doc-diff">
+                            <div class="doc-diff-label">Pending changes</div>
+                            <DiffView left={JSON.stringify(doc, null, 2)} right={mongoEditedPretty} />
+                          </div>
+                        {/if}
                       {:else}
                         <pre class="doc-content">{JSON.stringify(doc, null, 2)}</pre>
                       {/if}
@@ -2647,6 +2937,96 @@
     color: var(--color-crush-text-muted);
     font-style: italic;
     font-size: 11px;
+  }
+
+  /* --- Virtual relational grid: FK chips + type-aware cells --- */
+  .fk-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 1px 7px 1px 5px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--color-crush-orange) 14%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-crush-orange) 35%, transparent);
+    color: var(--color-crush-text);
+    font-size: 11px;
+    cursor: pointer;
+    transition: background 0.12s ease, border-color 0.12s ease, transform 0.08s ease;
+    max-width: 100%;
+  }
+  .fk-chip:hover {
+    background: color-mix(in srgb, var(--color-crush-orange) 26%, transparent);
+    border-color: var(--color-crush-orange);
+  }
+  .fk-chip:active { transform: translateY(1px); }
+  .fk-arrow { color: var(--color-crush-text-muted); font-size: 10px; }
+
+  .fk-filter-chip {
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 3px 8px;
+    border-radius: 999px;
+    background: color-mix(in srgb, var(--color-crush-orange) 16%, transparent);
+    border: 1px solid color-mix(in srgb, var(--color-crush-orange) 40%, transparent);
+    color: var(--color-crush-text);
+    font-size: 12px;
+    cursor: pointer;
+  }
+  .fk-filter-chip:hover { background: color-mix(in srgb, var(--color-crush-orange) 28%, transparent); }
+
+  .fk-preview { display: flex; flex-direction: column; gap: 6px; text-align: left; }
+  .fk-preview-head {
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--color-crush-orange);
+    font-family: var(--font-mono, monospace);
+  }
+  .fk-preview-loading { font-size: 12px; color: var(--color-crush-text-muted); }
+  .fk-preview-table { width: 100%; border-collapse: collapse; font-size: 11px; }
+  .fk-preview-table td { padding: 2px 4px; vertical-align: top; }
+  .fk-k { color: var(--color-crush-text-muted); white-space: nowrap; padding-right: 8px !important; }
+  .fk-v { color: var(--color-crush-text); word-break: break-word; }
+
+  .json-preview { max-height: 260px; overflow: auto; text-align: left; }
+
+  .doc-diff { margin-top: 10px; }
+  .doc-diff-label {
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    color: var(--color-crush-text-muted);
+    margin-bottom: 5px;
+  }
+
+  /* --- Schema data-density heatmap --- */
+  .density-card { padding: 16px; margin-bottom: 16px; }
+  .density-head { display: flex; justify-content: space-between; align-items: flex-start; margin-bottom: 12px; gap: 12px; }
+  .density-title { font-size: 13px; font-weight: 600; color: var(--color-crush-text); }
+  .density-sub { font-size: 11px; color: var(--color-crush-text-muted); margin-top: 2px; }
+  .density-peak { display: flex; flex-direction: column; align-items: flex-end; gap: 1px; }
+  .density-peak-label { font-size: 10px; text-transform: uppercase; letter-spacing: 0.04em; color: var(--color-crush-text-muted); }
+  .density-peak-name { font-size: 12px; font-weight: 600; color: var(--color-crush-orange); }
+  .density-peak-rows { font-size: 11px; color: var(--color-crush-text-muted); }
+
+  .bool-cell { font-size: 13px; color: var(--color-crush-orange); }
+  .json-cell {
+    font-family: var(--font-mono, monospace);
+    font-size: 11px;
+    color: var(--color-crush-text-muted);
+    display: inline-block;
+    max-width: 220px;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+    vertical-align: bottom;
+  }
+  .time-cell { color: var(--color-crush-text); }
+  .num-cell {
+    display: block;
+    text-align: right;
+    font-variant-numeric: tabular-nums;
+    font-family: var(--font-mono, monospace);
   }
 
   .pagination-footer {

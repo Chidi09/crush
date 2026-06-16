@@ -600,20 +600,20 @@ pub async fn db_browse_table(
 }
 
 async fn browse_postgres(url: &str, sql: &str, sentinel: u32, offset: u32) -> Result<BrowseResult, String> {
-    // Wrap in a subquery so arbitrary SELECT works (CTEs, JOINs, etc.)
-    let wrapped = format!(
-        "SELECT * FROM ({}) _crush_browse LIMIT {} OFFSET {}",
-        sql.trim_end_matches(';'),
-        sentinel,
-        offset
-    );
     let (client, connection) = tokio_postgres::connect(url, tokio_postgres::NoTls)
         .await
         .map_err(|e| format!("connection failed: {e}"))?;
     let handle = tokio::spawn(async move { let _ = connection.await; });
 
     let start = Instant::now();
-    let res = client.simple_query(&wrapped).await;
+    
+    let mut query_str = format!("BEGIN; DECLARE _crush SCROLL CURSOR FOR {}; ", sql.trim_end_matches(';'));
+    if offset > 0 {
+        query_str.push_str(&format!("MOVE FORWARD {} IN _crush; ", offset));
+    }
+    query_str.push_str(&format!("FETCH {} FROM _crush; ROLLBACK;", sentinel));
+
+    let res = client.simple_query(&query_str).await;
     let duration_ms = start.elapsed().as_millis() as u64;
     handle.abort();
 
@@ -686,37 +686,51 @@ pub async fn db_estimate_impact(
             return Ok(ImpactEstimate { is_destructive: false, affected_rows: None, statement_type: "SELECT".to_string() });
         };
 
-    if engine != "postgres" {
-        // Only Postgres supports transactional dry-run here; MySQL/other engines
-        // return the type marker so the UI can at least show a warning.
-        return Ok(ImpactEstimate { is_destructive: true, affected_rows: None, statement_type: stmt_type.to_string() });
-    }
-
     match stmt_type {
         "DROP" | "TRUNCATE" => {
             // Require typed confirmation — we don't dry-run schema changes.
             Ok(ImpactEstimate { is_destructive: true, affected_rows: None, statement_type: stmt_type.to_string() })
         }
         "DELETE" | "UPDATE" => {
-            let (client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
-                .await
-                .map_err(|e| format!("connection failed: {e}"))?;
-            let _handle = tokio::spawn(async move { let _ = connection.await; });
+            if engine == "postgres" {
+                let (client, connection) = tokio_postgres::connect(&url, tokio_postgres::NoTls)
+                    .await
+                    .map_err(|e| format!("connection failed: {e}"))?;
+                let _handle = tokio::spawn(async move { let _ = connection.await; });
 
-            // Run inside a transaction that we immediately roll back.
-            let dry_sql = format!("BEGIN; {}; ROLLBACK;", sql.trim_end_matches(';'));
-            let res = client.simple_query(&dry_sql).await;
-            let affected = match res {
-                Ok(messages) => {
-                    messages.iter().find_map(|m| {
-                        if let tokio_postgres::SimpleQueryMessage::CommandComplete(n) = m {
-                            if *n > 0 { Some(*n) } else { None }
-                        } else { None }
-                    })
+                // Run inside a transaction that we immediately roll back.
+                let dry_sql = format!("BEGIN; {}; ROLLBACK;", sql.trim_end_matches(';'));
+                let res = client.simple_query(&dry_sql).await;
+                let affected = match res {
+                    Ok(messages) => {
+                        messages.iter().find_map(|m| {
+                            if let tokio_postgres::SimpleQueryMessage::CommandComplete(n) = m {
+                                // PostgreSQL typically sends CommandComplete(0) for BEGIN, then CommandComplete(N) for the query, then CommandComplete(0) for ROLLBACK.
+                                // We take the max of the returned numbers, since an UPDATE or DELETE will have its own CommandComplete.
+                                Some(*n)
+                            } else { None }
+                        }).unwrap_or(0)
+                    }
+                    Err(_) => 0,
+                };
+                Ok(ImpactEstimate { is_destructive: true, affected_rows: Some(affected), statement_type: stmt_type.to_string() })
+            } else if engine == "mysql" {
+                let dry_sql = format!("START TRANSACTION; {}; SELECT ROW_COUNT(); ROLLBACK;", sql.trim_end_matches(';'));
+                let res = query_mysql(&url, &dry_sql).await?;
+                let mut affected = None;
+                if let Some(row) = res.rows.first() {
+                    if let Some(val) = row.first() {
+                        if let serde_json::Value::String(s) = val {
+                            if let Ok(n) = s.parse::<i64>() {
+                                if n >= 0 { affected = Some(n as u64); }
+                            }
+                        }
+                    }
                 }
-                Err(_) => None,
-            };
-            Ok(ImpactEstimate { is_destructive: true, affected_rows: affected, statement_type: stmt_type.to_string() })
+                Ok(ImpactEstimate { is_destructive: true, affected_rows: affected, statement_type: stmt_type.to_string() })
+            } else {
+                Ok(ImpactEstimate { is_destructive: true, affected_rows: None, statement_type: stmt_type.to_string() })
+            }
         }
         _ => unreachable!(),
     }
@@ -728,3 +742,155 @@ pub async fn db_warn_unbounded(sql: String) -> bool {
     let upper = sql.trim().to_ascii_uppercase();
     upper.starts_with("SELECT") && !upper.contains("LIMIT")
 }
+
+// --- Database Sandbox Commands (Pillars D1/D3/D4) ---
+
+#[command]
+pub async fn db_create_sandbox(project_path: String) -> Result<String, String> {
+    let default_url = "postgresql://postgres:postgres@localhost:5432/postgres";
+    
+    // 1. Auto-teardown stale sandboxes (D4)
+    if let Ok((client, connection)) = tokio_postgres::connect(default_url, tokio_postgres::NoTls).await {
+        tokio::spawn(async move { let _ = connection.await; });
+        if let Ok(rows) = client.query("SELECT datname FROM pg_database WHERE datname LIKE 'crush_sandbox_%'", &[]).await {
+            for row in rows {
+                let datname: String = row.get(0);
+                // Drop database. Note: drop db cannot run inside txn or if there are active connections.
+                // Terminate other active connections first
+                let terminate_sql = format!(
+                    "SELECT pg_terminate_backend(pg_stat_activity.pid) FROM pg_stat_activity WHERE pg_stat_activity.datname = '{}' AND pid <> pg_backend_pid();",
+                    datname
+                );
+                let _ = client.execute(&terminate_sql, &[]).await;
+                let drop_sql = format!("DROP DATABASE IF EXISTS \"{}\";", datname);
+                let _ = client.execute(&drop_sql, &[]).await;
+            }
+        }
+    }
+
+    // 2. Ensure crush_seed_template exists and is migrated/seeded (D1/D3)
+    let has_template = if let Ok((client, connection)) = tokio_postgres::connect(default_url, tokio_postgres::NoTls).await {
+        tokio::spawn(async move { let _ = connection.await; });
+        let rows = client.query("SELECT 1 FROM pg_database WHERE datname = 'crush_seed_template'", &[]).await;
+        rows.is_ok() && !rows.unwrap().is_empty()
+    } else {
+        false
+    };
+
+    if !has_template {
+        // Create template DB
+        if let Ok((client, connection)) = tokio_postgres::connect(default_url, tokio_postgres::NoTls).await {
+            tokio::spawn(async move { let _ = connection.await; });
+            let _ = client.execute("CREATE DATABASE crush_seed_template;", &[]).await;
+        }
+
+        // Run migrations and seeds against template DB
+        let template_url = "postgresql://postgres:postgres@localhost:5432/crush_seed_template";
+        let root = std::path::Path::new(&project_path);
+
+        // Detect and run migrations
+        if root.join("prisma").join("schema.prisma").exists() {
+            let _ = tokio::process::Command::new("npx")
+                .args(["prisma", "db", "push", "--accept-data-loss"])
+                .current_dir(&project_path)
+                .env("DATABASE_URL", template_url)
+                .output()
+                .await;
+            let _ = tokio::process::Command::new("npx")
+                .args(["prisma", "db", "seed"])
+                .current_dir(&project_path)
+                .env("DATABASE_URL", template_url)
+                .output()
+                .await;
+        } else if root.join("knexfile.js").exists() || root.join("knexfile.ts").exists() {
+            let _ = tokio::process::Command::new("npx")
+                .args(["knex", "migrate:latest"])
+                .current_dir(&project_path)
+                .env("DATABASE_URL", template_url)
+                .output()
+                .await;
+            let _ = tokio::process::Command::new("npx")
+                .args(["knex", "seed:run"])
+                .current_dir(&project_path)
+                .env("DATABASE_URL", template_url)
+                .output()
+                .await;
+        }
+
+        // Run custom seed.sql if present (D3.2)
+        let seed_sql = root.join(".crush").join("seeds").join("seed.sql");
+        if seed_sql.exists() {
+            if let Ok(sql) = std::fs::read_to_string(&seed_sql) {
+                if let Ok((client, connection)) = tokio_postgres::connect(template_url, tokio_postgres::NoTls).await {
+                    tokio::spawn(async move { let _ = connection.await; });
+                    let _ = client.batch_execute(&sql).await;
+                }
+            }
+        }
+    }
+
+    // 3. Clone sandbox from template
+    let sandbox_id = uuid::Uuid::new_v4().simple().to_string();
+    let db_name = format!("crush_sandbox_{}", sandbox_id);
+
+    if let Ok((client, connection)) = tokio_postgres::connect(default_url, tokio_postgres::NoTls).await {
+        tokio::spawn(async move { let _ = connection.await; });
+        let clone_sql = format!("CREATE DATABASE \"{}\" TEMPLATE crush_seed_template;", db_name);
+        client.execute(&clone_sql, &[]).await.map_err(|e| e.to_string())?;
+    } else {
+        return Err("Failed to connect to Postgres host to clone sandbox database".to_string());
+    }
+
+    let sandbox_url = format!("postgresql://postgres:postgres@localhost:5432/{}", db_name);
+    Ok(sandbox_url)
+}
+
+#[command]
+pub async fn db_reset_sandbox(sandbox_id: String) -> Result<(), String> {
+    let default_url = "postgresql://postgres:postgres@localhost:5432/postgres";
+    let db_name = format!("crush_sandbox_{}", sandbox_id);
+
+    if let Ok((client, connection)) = tokio_postgres::connect(default_url, tokio_postgres::NoTls).await {
+        tokio::spawn(async move { let _ = connection.await; });
+        
+        // Terminate any active connections
+        let terminate_sql = format!(
+            "SELECT pg_terminate_backend(pg_stat_activity.pid) FROM pg_stat_activity WHERE pg_stat_activity.datname = '{}' AND pid <> pg_backend_pid();",
+            db_name
+        );
+        let _ = client.execute(&terminate_sql, &[]).await;
+
+        // Drop and recreate
+        let drop_sql = format!("DROP DATABASE IF EXISTS \"{}\";", db_name);
+        client.execute(&drop_sql, &[]).await.map_err(|e| e.to_string())?;
+
+        let clone_sql = format!("CREATE DATABASE \"{}\" TEMPLATE crush_seed_template;", db_name);
+        client.execute(&clone_sql, &[]).await.map_err(|e| e.to_string())?;
+    } else {
+        return Err("Failed to connect to Postgres host to reset sandbox database".to_string());
+    }
+
+    Ok(())
+}
+
+#[command]
+pub async fn db_destroy_sandbox(sandbox_id: String) -> Result<(), String> {
+    let default_url = "postgresql://postgres:postgres@localhost:5432/postgres";
+    let db_name = format!("crush_sandbox_{}", sandbox_id);
+
+    if let Ok((client, connection)) = tokio_postgres::connect(default_url, tokio_postgres::NoTls).await {
+        tokio::spawn(async move { let _ = connection.await; });
+        
+        let terminate_sql = format!(
+            "SELECT pg_terminate_backend(pg_stat_activity.pid) FROM pg_stat_activity WHERE pg_stat_activity.datname = '{}' AND pid <> pg_backend_pid();",
+            db_name
+        );
+        let _ = client.execute(&terminate_sql, &[]).await;
+
+        let drop_sql = format!("DROP DATABASE IF EXISTS \"{}\";", db_name);
+        client.execute(&drop_sql, &[]).await.map_err(|e| e.to_string())?;
+    }
+
+    Ok(())
+}
+

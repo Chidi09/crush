@@ -342,6 +342,14 @@ pub async fn server_container_stop(host: String, id: String) -> Result<(), Strin
     ssh_exec(&host, &format!("docker stop {safe}")).map(|_| ())
 }
 
+/// Full `docker inspect` for a container — returned as raw JSON for the UI to
+/// parse + render (summary fields + a JsonTree of the whole config).
+#[tauri::command]
+pub async fn server_container_inspect(host: String, id: String) -> Result<String, String> {
+    let safe = sanitize_id(&id)?;
+    ssh_exec(&host, &format!("docker inspect {safe}"))
+}
+
 /// Only allow container ids/names (alnum, dash, underscore, dot) through to the
 /// remote shell — never arbitrary strings.
 fn sanitize_id(id: &str) -> Result<String, String> {

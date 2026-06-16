@@ -3,6 +3,7 @@
   import Icon from '$lib/components/Icon.svelte';
   import * as api from '$lib/tauri';
   import type { DomainRecord } from '$lib/tauri';
+  import { confirmAction } from '$lib/stores/confirm.svelte.ts';
 
   let domains = $state<DomainRecord[]>([]);
   let loading = $state(true);
@@ -40,7 +41,7 @@
   }
 
   async function removeDomain(host: string) {
-    if (!confirm(`Remove domain ${host}?`)) return;
+    if (!await confirmAction({ title: 'Remove domain', message: `Remove domain ${host}?`, confirmText: 'Remove', danger: true })) return;
     try {
       await api.removeDomain(host);
       await load();

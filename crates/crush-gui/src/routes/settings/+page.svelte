@@ -5,6 +5,7 @@
   import type { SystemInfo, AppConfig } from '$lib/tauri';
   import { images, refreshImages } from '$lib/stores/images.svelte.ts';
   import { toast } from '$lib/stores/toast.svelte.ts';
+  import { confirmAction } from '$lib/stores/confirm.svelte.ts';
 
   let sys = $state<SystemInfo | null>(null);
   let pruning = $state(false);
@@ -74,7 +75,7 @@
 
   async function pruneImages() {
     if (pruning || $images.length === 0) return;
-    if (!confirm(`Delete all ${$images.length} cached images? This frees disk but they'll re-pull on demand.`)) return;
+    if (!await confirmAction({ title: 'Prune image cache', message: `Delete all ${$images.length} cached images? This frees disk but they'll re-pull on demand.`, confirmText: 'Delete all', danger: true })) return;
     pruning = true;
     try {
       await Promise.allSettled($images.map((i) => api.removeImage(i.id)));
@@ -85,7 +86,7 @@
   }
 
   async function pruneServiceData() {
-    if (!confirm("Are you sure you want to prune all native service database directories? This will delete all local Postgres, Redis, MongoDB, and MinIO data!")) return;
+    if (!await confirmAction({ title: 'Prune service data', message: 'This will delete all local Postgres, Redis, MongoDB, and MinIO data directories. This cannot be undone.', confirmText: 'Prune all data', danger: true })) return;
     toast("Service database directories pruned", "success");
   }
 

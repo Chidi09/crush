@@ -6,10 +6,15 @@
   import DeployWizard from '$lib/components/DeployWizard.svelte';
   import * as api from '$lib/tauri';
   import type { DeploymentRecord, CloudDeployment } from '$lib/tauri';
+  import { confirmAction } from '$lib/stores/confirm.svelte.ts';
 
   let all = $state<DeploymentRecord[]>([]);
   let cloud = $state<Record<string, CloudDeployment>>({});
   let loading = $state(true);
+  // Per-project real logo (data URL from disk) and live-deployment status.
+  let icons = $state<Record<string, string>>({});
+  let liveStatus = $state<Record<string, { ok: boolean; checking: boolean }>>({});
+  let liveTimer: ReturnType<typeof setInterval> | null = null;
 
   // Normalize project names so cloud + local records match (crush deploy uses
   // the Crushfile/dir name; runs may differ by case/separators).
@@ -41,7 +46,13 @@
     return out.sort((a, b) => b.latest.created_ms - a.latest.created_ms);
   });
 
-  onMount(load);
+  onMount(() => {
+    load();
+    // Keep live-deployment status fresh without hammering the network.
+    liveTimer = setInterval(refreshLiveness, 30000);
+    return () => { if (liveTimer) clearInterval(liveTimer); };
+  });
+
   async function load() {
     loading = true;
     try {
@@ -50,21 +61,51 @@
       const map: Record<string, CloudDeployment> = {};
       for (const c of list) map[projKey(c.project)] = c;
       cloud = map;
-      
+
       try {
         const stored = localStorage.getItem('crush:branches');
         if (stored) defaultBranches = JSON.parse(stored);
       } catch (e) {}
-      
+
       for (const d of all) {
         if (!defaultBranches[d.project]) {
           defaultBranches[d.project] = 'main';
         }
       }
+
+      loadIcons();
+      refreshLiveness();
     }
     catch (e) { console.error(e); all = []; }
     finally { loading = false; }
   }
+
+  // Resolve each project's real logo from disk (favicon/logo), keyed by project name.
+  async function loadIcons() {
+    const seen = new Set<string>();
+    for (const d of all) {
+      if (seen.has(d.project) || !d.project_path) continue;
+      seen.add(d.project);
+      if (icons[d.project] !== undefined) continue;
+      api.findProjectIcon(d.project_path)
+        .then((url) => { if (url) icons[d.project] = url; })
+        .catch(() => {});
+    }
+  }
+
+  // Probe each recorded cloud deployment to learn if it's actually live right now.
+  async function refreshLiveness() {
+    const entries = Object.values(cloud).filter((c) => c.url);
+    for (const c of entries) {
+      const key = projKey(c.project);
+      liveStatus[key] = { ok: liveStatus[key]?.ok ?? false, checking: true };
+      api.probeDeployment(c.url)
+        .then((r) => { liveStatus[key] = { ok: r.ok, checking: false }; })
+        .catch(() => { liveStatus[key] = { ok: false, checking: false }; });
+    }
+  }
+
+  function liveFor(project: string) { return liveStatus[projKey(project)]; }
 
   function saveBranch(project: string) {
     localStorage.setItem('crush:branches', JSON.stringify(defaultBranches));
@@ -113,7 +154,7 @@
   }
 
   async function stopDeploy(g: Group) {
-    if (!confirm(`Stop deployment for ${g.project}?`)) return;
+    if (!await confirmAction({ title: 'Stop deployment', message: `Stop deployment for ${g.project}?`, confirmText: 'Stop', danger: true })) return;
     try {
       await api.runCapture(g.latest.project_path, 'crush', ['deploy', '--stop'], {});
       alert(`Deployment for ${g.project} stopped.`);
@@ -124,7 +165,7 @@
   }
 
   async function deleteDeploy(g: Group) {
-    if (!confirm(`Delete deployment for ${g.project}? This will remove the server and state.`)) return;
+    if (!await confirmAction({ title: 'Delete deployment', message: `Delete deployment for ${g.project}? This will remove the server and state.`, confirmText: 'Delete', danger: true })) return;
     try {
       await api.runCapture(g.latest.project_path, 'crush', ['deploy', '--destroy'], {});
       alert(`Deployment for ${g.project} deleted.`);
@@ -198,8 +239,13 @@
           <div class="group-main">
             <div class="group-info" role="button" tabindex="0" onclick={() => openProject(g.project)} onkeydown={(e) => { if(e.key === 'Enter') openProject(g.project); }}>
               <div class="project-icon-wrapper">
+                <!-- Base layer: the stack logo, only ever seen when no real
+                     project icon is available. -->
                 <div class="pi-fallback"><TechIcon name={g.latest.framework ?? g.latest.runtime} size={20} /></div>
-                {#if g.latest.port}
+                {#if icons[g.project]}
+                  <!-- svelte-ignore a11y_missing_attribute -->
+                  <img src={icons[g.project]} class="pi-image" />
+                {:else if g.latest.port}
                   <!-- svelte-ignore a11y_missing_attribute -->
                   <img src={`http://localhost:${g.latest.port}/favicon.ico`} class="pi-image" onerror={(e) => { (e.currentTarget as HTMLElement).style.display = 'none'; }} />
                 {/if}
@@ -224,10 +270,20 @@
 
             <div class="group-platform">
               {#if cd}
-                <span class="live-chip" title={`Deployed to ${cd.provider}`}>
+                {@const live = liveFor(g.project)}
+                <span class="live-chip" class:is-down={live && !live.checking && !live.ok} title={`Deployed to ${cd.provider}`}>
                   <span class="rocket-glow"><Icon name="rocket" size={13} /></span>
                   <TechIcon name={cd.provider} size={13} />
                   <span class="live-provider">{cd.provider}</span>
+                </span>
+                <span class="health" title={
+                  live?.checking ? 'Checking…'
+                  : live?.ok ? 'Live — host is responding'
+                  : live ? 'Offline — host did not respond'
+                  : 'Status unknown'
+                }>
+                  <span class="health-dot" class:up={live?.ok} class:down={live && !live.checking && !live.ok} class:checking={live?.checking}></span>
+                  <span class="health-text">{live?.checking ? 'checking' : live?.ok ? 'live' : live ? 'offline' : '—'}</span>
                 </span>
                 {#if cd.url}
                   <button class="live-url" title={`Open ${cd.url}`} onclick={(e) => { e.stopPropagation(); openUrl(cd.url); }}>
@@ -357,6 +413,17 @@
   @media (prefers-reduced-motion: reduce) { .rocket-glow { animation: none; } }
   .live-url { display: inline-flex; align-items: center; gap: 5px; font-size: 11.5px; font-family: var(--font-mono); color: var(--color-crush-orange); background: none; border: 1px solid rgba(224,85,64,0.28); border-radius: 7px; padding: 2px 8px; cursor: pointer; }
   .live-url:hover { background: rgba(224,85,64,0.14); border-color: rgba(224,85,64,0.5); }
+  /* When a recorded deployment fails its liveness probe, drop the "live" glow. */
+  .live-chip.is-down { color: var(--color-crush-text-muted); background: rgba(127,127,140,0.08); border-color: rgba(127,127,140,0.28); }
+  .live-chip.is-down .rocket-glow { color: var(--color-crush-text-muted); filter: none; animation: none; }
+  .health { display: inline-flex; align-items: center; gap: 5px; font-size: 11px; color: var(--color-crush-text-muted); }
+  .health-text { text-transform: uppercase; letter-spacing: 0.03em; }
+  .health-dot { width: 7px; height: 7px; border-radius: 50%; background: var(--color-crush-muted); flex-shrink: 0; }
+  .health-dot.up { background: var(--color-crush-green); box-shadow: 0 0 6px rgba(74,222,128,0.6); }
+  .health-dot.down { background: var(--color-crush-red); box-shadow: 0 0 6px rgba(239,68,68,0.5); }
+  .health-dot.checking { background: var(--color-crush-orange); animation: health-pulse 1s ease-in-out infinite; }
+  @keyframes health-pulse { 0%,100% { opacity: 0.4; } 50% { opacity: 1; } }
+  @media (prefers-reduced-motion: reduce) { .health-dot.checking { animation: none; } }
   .dep-status { text-transform: capitalize; font-size: 13px; color: var(--color-crush-text); }
   .dep-when { font-size: 11.5px; color: var(--color-crush-muted); }
 

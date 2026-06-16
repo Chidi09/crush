@@ -77,6 +77,26 @@
     } catch { /* clipboard unavailable */ }
   }
 
+  // Proactive tunnel offer: when a run starts and the project integrates a
+  // webhook-class provider (Paystack/Stripe/Clerk) that needs a public URL,
+  // offer to open a tunnel — rather than making the user find the button.
+  let tunnelOfferDismissed = $state(false);
+  let lastOfferRunId = $state<string | null>(null);
+  $effect(() => {
+    if (run.activeRunId && run.activeRunId !== lastOfferRunId) {
+      lastOfferRunId = run.activeRunId;
+      tunnelOfferDismissed = false;
+    }
+  });
+  let showTunnelOffer = $derived(
+    !!run.activeRunId && webhookProviders.length > 0 && !tunnel && !tunnelBusy && !tunnelOfferDismissed
+  );
+  let webhookNames = $derived(webhookProviders.map((p) => p.name).join(', '));
+  async function acceptTunnelOffer() {
+    tunnelOfferDismissed = true;
+    await startTunnel();
+  }
+
   // Summary-card previews (top few items per resource).
   let runningContainers = $derived($containers.filter(c => c.status === 'running'));
   let topImages = $derived([...$images].sort((a, b) => b.size_bytes - a.size_bytes).slice(0, 3));
@@ -108,15 +128,21 @@
   // Disk breakdown → segmented usage bar
   const SEG_COLORS = ['#e05540', '#22d3ee', '#4ade80', '#c084fc', '#eab308', '#6b6b80'];
 
-  // Favicon: try to load from the running dev server once a port is known.
-  let faviconUrl = $state<string | null>(null);
-  $effect(() => {
-    if (run.port) {
-      faviconUrl = `http://localhost:${run.port}/favicon.ico`;
-    } else {
-      faviconUrl = null;
-    }
-  });
+  // Project icon: prefer the live dev-server favicon (most current) when running,
+  // otherwise the project's real logo read from disk — so the card shows the
+  // project brand even when nothing is running, instead of an empty slot.
+  let diskIcon = $state<string | null>(null);
+  let faviconUrl = $derived(run.port ? `http://localhost:${run.port}/favicon.ico` : diskIcon);
+
+  let pathCopied = $state(false);
+  async function copyPath() {
+    if (!projectPath) return;
+    try {
+      await navigator.clipboard.writeText(projectPath);
+      pathCopied = true;
+      setTimeout(() => { pathCopied = false; }, 1500);
+    } catch { /* clipboard unavailable */ }
+  }
 
   onMount(async () => {
     // startPolling is already called by the layout — don't restart it here.
@@ -153,12 +179,13 @@
   }
 
   async function detectStack(path: string) {
-    detecting = true; project = null; git = null; deployTargets = [];
+    detecting = true; project = null; git = null; deployTargets = []; diskIcon = null;
     try {
       project = await api.detectProject(path);
       git = await api.gitInfo(path);
       deployTargets = await api.detectDeployTargets(path).catch(() => []);
       branches = git?.is_repo ? await api.gitBranches(path, false).catch(() => []) : [];
+      api.findProjectIcon(path).then((url) => { diskIcon = url; }).catch(() => {});
     } catch (e) { console.error(e); } finally { detecting = false; }
   }
 
@@ -264,6 +291,39 @@
         onStop={() => run.stop()}
         onClose={() => run.close()}
       />
+
+      {#if showTunnelOffer}
+        <div class="tunnel-offer animate-slide-up">
+          <div class="to-icon"><Icon name="globe" size={18} /></div>
+          <div class="to-body">
+            <div class="to-title">{webhookNames} {webhookProviders.length > 1 ? 'need' : 'needs'} a public URL for webhooks</div>
+            <div class="to-sub">Start a free Cloudflare tunnel so {webhookProviders.length > 1 ? 'they' : 'it'} can reach your dev server on :{tunnelPort}.</div>
+          </div>
+          <div class="to-actions">
+            <button class="ghost-btn sm" onclick={() => tunnelOfferDismissed = true}>Not now</button>
+            <button class="btn-primary sm" onclick={acceptTunnelOffer} disabled={tunnelBusy || !tunnelPort}>
+              <Icon name="globe" size={13} /> {tunnelBusy ? 'opening…' : 'Start tunnel'}
+            </button>
+          </div>
+        </div>
+      {/if}
+
+      {#if tunnel}
+        <div class="tunnel-live animate-slide-up">
+          <span class="tl-dot"></span>
+          <a class="tunnel-url" href={tunnel.url} onclick={(e) => { e.preventDefault(); api.openUrl(tunnel!.url); }} title="Open public URL">
+            <Icon name="globe" size={13} /> {tunnel.url}
+          </a>
+          <span class="tunnel-via">via {tunnel.provider}</span>
+          <button class="ghost-btn sm" onclick={() => copyTunnel()} title="Copy URL">
+            <Icon name={copied ? 'check' : 'copy'} size={13} /> {copied ? 'copied' : 'copy'}
+          </button>
+          <button class="ghost-btn sm danger" onclick={() => stopTunnel()} disabled={tunnelBusy}>
+            <Icon name="x" size={13} /> stop
+          </button>
+        </div>
+      {/if}
+
       {#if run.isMobile}
         <!-- Mobile run: mirror the emulator/device alongside the log stream. -->
         <div class="mobile-split">
@@ -284,12 +344,17 @@
           <div class="proj-label">Current project</div>
           <div class="proj-name-row">
             {#if faviconUrl}
-              <img class="proj-favicon" src={faviconUrl} alt="" width="18" height="18"
-                onerror={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+              {#key faviconUrl}
+                <img class="proj-favicon" src={faviconUrl} alt="" width="18" height="18"
+                  onerror={(e) => { (e.currentTarget as HTMLImageElement).style.display = 'none'; }} />
+              {/key}
             {/if}
             <div class="proj-name">{project?.name ?? baseName(projectPath)}</div>
           </div>
-          <div class="proj-path">{projectPath}</div>
+          <button class="proj-path" onclick={copyPath} title="Copy path">
+            <span class="proj-path-text">{projectPath}</span>
+            <Icon name={pathCopied ? 'check' : 'copy'} size={12} />
+          </button>
         </div>
         <div class="proj-actions">
           {#if !run.activeRunId}
@@ -597,12 +662,29 @@
   .proj-name-row { display: flex; align-items: center; gap: 8px; margin-top: 2px; }
   .proj-favicon { border-radius: 3px; object-fit: contain; flex-shrink: 0; }
   .proj-name { font-size: 20px; font-weight: 600; }
-  .proj-path { font-family: var(--font-mono); font-size: 12px; color: var(--color-crush-muted); margin-top: 4px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .proj-path { display: inline-flex; align-items: center; gap: 6px; max-width: 100%; font-family: var(--font-mono); font-size: 12px; color: var(--color-crush-muted); margin-top: 4px; background: none; border: none; padding: 0; cursor: pointer; transition: color 0.15s; }
+  .proj-path:hover { color: var(--color-crush-text); }
+  .proj-path :global(svg) { flex-shrink: 0; opacity: 0.7; }
+  .proj-path-text { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
   .ghost-btn.danger { color: var(--color-crush-red); border-color: rgba(239,68,68,0.3); }
   .ghost-btn.danger:hover { background: rgba(239,68,68,0.08); border-color: rgba(239,68,68,0.5); }
   .proj-actions { display: flex; gap: 8px; flex-shrink: 0; }
   .btn-primary { display: inline-flex; align-items: center; gap: 6px; background: var(--color-crush-primary); color: var(--color-crush-on-primary); border: none; border-radius: 0.75rem; padding: 7px 18px; font-size: 13px; cursor: pointer; transition: background 0.15s; }
   .btn-primary:hover { background: var(--color-crush-primary-hover); }
+  .btn-primary.sm { padding: 6px 12px; font-size: 12.5px; }
+  .btn-primary:disabled { opacity: 0.6; cursor: not-allowed; }
+
+  /* Proactive tunnel offer banner (shown when a webhook-class provider is detected on run). */
+  .tunnel-offer { display: flex; align-items: center; gap: 14px; padding: 12px 16px; border-radius: 0.9rem; border: 1px solid rgba(74,222,128,0.3); background: linear-gradient(to right, rgba(74,222,128,0.10), transparent); }
+  .to-icon { display: inline-flex; align-items: center; justify-content: center; width: 36px; height: 36px; border-radius: 50%; background: rgba(74,222,128,0.12); color: #4ade80; flex-shrink: 0; }
+  .to-body { flex: 1; min-width: 0; }
+  .to-title { font-size: 13.5px; font-weight: 600; color: var(--color-crush-text); }
+  .to-sub { font-size: 12px; color: var(--color-crush-text-muted); margin-top: 2px; }
+  .to-actions { display: flex; align-items: center; gap: 8px; flex-shrink: 0; }
+
+  /* Compact live-tunnel bar shown during a run. */
+  .tunnel-live { display: flex; align-items: center; gap: 10px; padding: 8px 14px; border-radius: 0.8rem; border: 1px solid rgba(74,222,128,0.22); background: rgba(74,222,128,0.05); flex-wrap: wrap; }
+  .tl-dot { width: 8px; height: 8px; border-radius: 50%; background: #4ade80; box-shadow: 0 0 8px rgba(74,222,128,0.7); flex-shrink: 0; }
   .chips { display: flex; flex-wrap: wrap; gap: 8px; }
   .chip { display: inline-flex; align-items: center; gap: 6px; font-size: 12px; padding: 3px 10px; border-radius: 9999px; border: 1px solid var(--color-crush-border); color: var(--color-crush-text); background: rgba(255,255,255,0.02); }
   .chip :global(svg) { flex-shrink: 0; }

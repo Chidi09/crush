@@ -437,13 +437,67 @@ init returns a clear "offline" instead of hanging.
 
 ---
 
+## Phase R8 — Managed-service local fallback (run instead of fail) · P1
+A project wired to a managed cloud service (Supabase, Neon, PlanetScale, Upstash, Mongo Atlas, an
+S3/R2 bucket) shouldn't die in local dev when that service is **down, rate-limited, or you're
+offline**. Crush already runs the local equivalents — so offer to spin one up and swap the env.
+This is the native-first vision applied to resilience: *the app keeps running.*
+
+### R8.1 — Detect managed dependencies + their local equivalent · ▃
+**Goal.** Recognize a managed provider from env/config and know what we'd run instead.
+**Design.** Extend the existing external-service detection (`crush-build` `ExternalService`,
+surfaced in `crush detect`) with a provider→driver map:
+- `*.supabase.co` / `neon.tech` / any `postgres(ql)://` → **local Postgres**
+- `psdb.cloud` / PlanetScale / `mysql://` → **local MySQL**
+- `upstash.io` / `redis://` → **local Redis**
+- `mongodb+srv://*.mongodb.net` → **local Mongo**
+- S3/R2 endpoints → **local MinIO**
+Identify the env var(s) carrying the connection string (`DATABASE_URL`, `REDIS_URL`,
+`SUPABASE_DB_URL`, `*_DATASOURCE_URL`, …) so we know what to rewrite.
+**Anchors.** `crush-build/src/detect.rs` external-service detection; `crush-services`
+`native_driver_for`. **Acceptance.** A Supabase URL is detected as "managed Postgres → local Postgres,
+via `DATABASE_URL`".
+
+### R8.2 — Reachability gate + opt-in prompt at run start · ▃
+**Goal.** Only fall back when it actually helps, and never silently.
+**Design.** Before/at run, probe the managed endpoint (cheap TCP/DNS w/ short timeout, reusing the
+R7.3 offline guard). If unreachable — or the user pre-opted-in via a per-project toggle / `crush run
+--local-fallback` — emit a prompt:
+`"Supabase is unreachable. Spin a local Postgres and point DATABASE_URL at it for this run?
+[Use local] [Retry] [Run anyway]"` (GUI modal; CLI flag/prompt). Decision is remembered per project.
+**Anchors.** New `RunEvent::ManagedFallback { provider, var, target }`; reachability via the offline
+guard. **Acceptance.** With Supabase blocked, the run offers a local fallback instead of failing.
+
+### R8.3 — Spin local + swap env (reuse what we built) · ▃
+**Goal.** Bring up the local equivalent and redirect the app — no failure.
+**Design.** Start the native driver (`ServiceDriver`), then **rewrite the connection env in
+`dep_env`** — exactly the mechanism the sandbox already uses (`setup_database_sandbox` rewrites
+`DATABASE_URL`; `synthesize_dep_env`, `run.rs:505`). Optionally **seed** the local DB from the most
+recent `crush db snapshot` of that project (so the fallback has realistic data), tying into the
+seeding layer (D3 / dbsnapshot). **Acceptance.** App boots against local Postgres with the managed
+URL swapped; with a prior snapshot, data is present.
+
+### R8.4 — Restore + status · ▃
+**Goal.** Don't strand the project on local.
+**Design.** Show a clear badge in the run/dashboard ("running on local fallback — managed Supabase
+swapped"); on the next run, re-probe the managed endpoint and, if back, use the real one (or ask).
+Persist the mapping under `.crush/` so it's explicit and reversible. **Acceptance.** When the
+managed service returns, the next run uses it again; the fallback state is always visible, never sticky-silent.
+
+> Scope guard: this is *resilience*, not a migration tool. We swap the connection for a run and make
+> it obvious; we don't try to sync data between managed and local. Snapshot-seeding is the optional
+> bridge.
+
+---
+
 ## Suggested sequencing (by leverage, not by phase number)
 1. **R1.3 lockfile-hash** + **R5.1 grid LIMIT** + **R1.1 port takeover** — three P0s that each
    patch a *real, visible* failure in the current code. Small/medium, ship first.
 2. **R3.3 auto-snapshot** + **R2.2 `crush doctor`** + **R4.1 ACME breaker** — high safety per
    line of code; snapshot engine already exists.
-3. **R1.2 restart** + **R5.2 dry-run** + **R6.1 multipart** + **R7.3 offline guard** — core
-   robustness.
+3. **R1.2 restart** + **R5.2 dry-run** + **R6.1 multipart** + **R7.3 offline guard** + **R8
+   managed-service fallback** — core robustness. (R8 reuses R7.3's reachability probe + the
+   sandbox env-rewrite, so it's cheap once those exist and is a strong "run instead of fail" win.)
 4. **R2.1 toolchain manager** + **R3.1 simulate-prod** — the two epics that *define* the
    "Docker experience without Docker" promise. Biggest scope; do them deliberately.
 5. **R4.2 local CA**, **R7.1 Cmd+K**, **R1.4 sentinels**, **R1.5 diagnosis**, **R3.2 drift**,

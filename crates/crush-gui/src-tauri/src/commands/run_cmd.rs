@@ -6,6 +6,7 @@ use uuid::Uuid;
 pub async fn run_project(
     project_path: String,
     dev_mode: bool,
+    sandbox: bool,
     window: Window,
     state: State<'_, AppState>,
 ) -> Result<String, String> {
@@ -26,6 +27,7 @@ pub async fn run_project(
         on_port_conflict: crush_build::run::PortConflictPolicy::Reassign,
         // No auto-restart by default in GUI (user restarts manually).
         restart_policy: None,
+        sandbox,
     };
 
     let handle = crush_build::run::run_project(project_root.clone(), state.data_dir.clone(), options)

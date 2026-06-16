@@ -98,6 +98,12 @@ struct Cli {
     #[arg(long, value_name = "POLICY", help = "Auto-restart on crash: always | on-failure | unless-stopped")]
     restart: Option<String>,
 
+    #[arg(long, help = "Run the app inside a disposable database sandbox")]
+    sandbox: bool,
+
+    #[arg(long, value_name = "POLICY", help = "Action on port conflict: kill | reassign | fail")]
+    port_conflict: Option<String>,
+
     #[command(subcommand)]
     command: Option<Commands>,
 }
@@ -2114,12 +2120,17 @@ async fn run_l7_gateway_cmd(args: L7GatewayArgs) -> anyhow::Result<()> {
     
     std::fs::create_dir_all(&certs_dir)?;
 
+    let (shutdown_tx, shutdown_rx) = tokio::sync::broadcast::channel(1);
+
     tokio::select! {
-        r = gateway::run_l7_gateway(domains_file, certs_dir) => {
+        r = gateway::run_l7_gateway(domains_file, certs_dir, shutdown_rx) => {
             r.map_err(|e| anyhow::anyhow!("l7-gateway failed — {e}"))?;
         }
         _ = tokio::signal::ctrl_c() => {
             println!("\n{} l7-gateway stopped", "↳".cyan());
+            let _ = shutdown_tx.send(());
+            // let gateway finish draining
+            tokio::time::sleep(std::time::Duration::from_millis(100)).await;
         }
     }
     Ok(())
@@ -2748,14 +2759,19 @@ async fn main() -> anyhow::Result<()> {
                 smtp_capture_port: if cli.mail { Some(crush_build::mailbox::DEFAULT_PORT) } else { None },
                 // CLI defaults to Fail so existing non-interactive scripts don't
                 // silently bind a different port. Users can override with --port-conflict=reassign.
-                on_port_conflict: crush_build::run::PortConflictPolicy::Fail,
-                // Use restart policy if --restart flag is present.
+                on_port_conflict: match cli.port_conflict.as_deref() {
+                    Some("kill") => crush_build::run::PortConflictPolicy::Kill,
+                    Some("reassign") => crush_build::run::PortConflictPolicy::Reassign,
+                    _ => crush_build::run::PortConflictPolicy::Fail,
+                },
+                // Use restart policy if --restart flag is present, or default for dev.
                 restart_policy: cli.restart.as_deref().and_then(|s| match s {
                     "always" => Some(crush_reliability::restart::RestartPolicy::Always),
                     "on-failure" => Some(crush_reliability::restart::RestartPolicy::OnFailure { max_retries: Some(5) }),
                     "unless-stopped" => Some(crush_reliability::restart::RestartPolicy::UnlessStopped),
                     _ => None,
-                }),
+                }).or_else(|| if cli.dev { Some(crush_reliability::restart::RestartPolicy::OnFailure { max_retries: Some(5) }) } else { None }),
+                sandbox: cli.sandbox,
             };
 
             let handle = crush_build::run::run_project(project_root.clone(), data_dir.clone(), options).await?;
